@@ -13,11 +13,11 @@ importers:
   .:
     devDependencies:
       '@pokit/core':
-        specifier: ^1.0.0
-        version: 1.0.0
+        specifier: ^1.0.1
+        version: 1.0.1
       '@pokit/terminal':
-        specifier: ^1.0.0
-        version: 1.0.0(@pokit/core@1.0.0)
+        specifier: ^1.0.1
+        version: 1.0.1(@pokit/core@1.0.1)
       '@types/inquirer':
         specifier: ^9.0.9
         version: 9.0.9
@@ -32,10 +32,10 @@ importers:
         version: 9.3.7
       pok-plugins:
         specifier: github:djgrant/pok-plugins
-        version: https://codeload.github.com/djgrant/pok-plugins/tar.gz/68ca57ef90b1154a5cf79090fd83a6696d8032a0(@pokit/core@1.0.0)
+        version: https://codeload.github.com/djgrant/pok-plugins/tar.gz/68ca57ef90b1154a5cf79090fd83a6696d8032a0(@pokit/core@1.0.1)
       pokit:
-        specifier: ^0.5.0
-        version: 0.5.0
+        specifier: ^0.5.1
+        version: 0.5.1
       typescript:
         specifier: ^5.9.2
         version: 5.9.2
@@ -1282,15 +1282,15 @@ packages:
     resolution: {integrity: sha512-G2xbfWTrbqYRhR/vfeKNMQf/sS3/ti0iKJAAkRxHuXWZH/hne/dyIb9QKk5LuR6cJLARxsL6FMoAYmfspd74MQ==}
     engines: {node: ^12.22.0 || ^14.17.0 || >=16.0.0}
 
-  '@pokit/core@1.0.0':
-    resolution: {integrity: sha512-UEhEDJGqAGk9Y5UogPeS67KINkrXhsPlIqqQgFAHjms2sJVADeqqB0z8oROOlJ2IptqqGKoIwbD/EZhgmlTzIg==}
+  '@pokit/core@1.0.1':
+    resolution: {integrity: sha512-5aUaY+oYKsVkTgVUznGA3tfyDFpQSVbtSbUdz+kvjVpitbAXgWpvyFE4MWuW5Zak07j6S082mhyG7bkXcz6dog==}
     engines: {bun: '>=1.0.0', node: '>=22.17.0'}
 
-  '@pokit/terminal@1.0.0':
-    resolution: {integrity: sha512-cIT3dpi9OrL3y8t+KozRx2sBmB5zcYjq4EPTks6sFoy1XJ5lzgskU4FgKveXQLssZJ9uoIk5OibopZoet3fhHw==}
+  '@pokit/terminal@1.0.1':
+    resolution: {integrity: sha512-nKFnRbz1GN2UQzhMTfUd9EoaGwU2N51WLW29MYddMU2PxN+xc1NFFFfzlF9Nvkvms4AMwC2D/v0W+lJv7rc0pw==}
     engines: {bun: '>=1.0.0'}
     peerDependencies:
-      '@pokit/core': 1.0.0
+      '@pokit/core': 1.0.1
 
   '@polka/url@1.0.0-next.29':
     resolution: {integrity: sha512-wwQAWhWSuHaag8c4q/KN/vCoeOJYshAIvMQwD4GpSb3OiZklFfvAgmj0VCBBImRpuF/aFgIRzllXlVX93Jevww==}
@@ -3422,8 +3422,8 @@ packages:
     peerDependencies:
       '@pokit/core': '>=0.13.0'
 
-  pokit@0.5.0:
-    resolution: {integrity: sha512-xrC+gt1ddT5JnR8Tu25fyS9Vc2hpLIHM30Hmgc6dFl2MyZvz0uj8lnBsiRzRKjzxOqnJnvMj65NKqFLclKnxVQ==}
+  pokit@0.5.1:
+    resolution: {integrity: sha512-LRUVyusMr/2L+D9lXasDChrSI+SBRtsGEESWydc9WLnRWgcgKLCgTxrZcMXQC385GUkF2n9JmQ8VGWkXiR3PRw==}
     engines: {bun: '>=1.0.0'}
     hasBin: true
 
@@ -4934,13 +4934,13 @@ snapshots:
 
   '@oxlint/plugins@1.88.0': {}
 
-  '@pokit/core@1.0.0':
+  '@pokit/core@1.0.1':
     dependencies:
       picomatch: 4.0.7
 
-  '@pokit/terminal@1.0.0(@pokit/core@1.0.0)':
+  '@pokit/terminal@1.0.1(@pokit/core@1.0.1)':
     dependencies:
-      '@pokit/core': 1.0.0
+      '@pokit/core': 1.0.1
       marked: 15.0.12
       picocolors: 1.1.1
 
@@ -6841,15 +6841,15 @@ snapshots:
 
   pngjs@7.0.0: {}
 
-  pok-plugins@https://codeload.github.com/djgrant/pok-plugins/tar.gz/68ca57ef90b1154a5cf79090fd83a6696d8032a0(@pokit/core@1.0.0):
+  pok-plugins@https://codeload.github.com/djgrant/pok-plugins/tar.gz/68ca57ef90b1154a5cf79090fd83a6696d8032a0(@pokit/core@1.0.1):
     dependencies:
-      '@pokit/core': 1.0.0
+      '@pokit/core': 1.0.1
       bumpp: 10.4.1
       zod: 4.4.3
     transitivePeerDependencies:
       - magicast
 
-  pokit@0.5.0: {}
+  pokit@0.5.1: {}
 
   postcss-selector-parser@6.0.10:
     dependencies:
