@@ -72,11 +72,8 @@ export class WorkflowRunner<
         return { status: "completed", result: response.result };
       case "step-delay":
       case "effect-wait":
-        return { status: "suspended", wakeAt: response.wakeAt };
       case "store-wait":
-        return response.wakeAt === undefined
-          ? { status: "suspended" }
-          : { status: "suspended", wakeAt: response.wakeAt };
+        return { status: "suspended", wakeAt: response.wakeAt };
     }
   };
 

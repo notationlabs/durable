@@ -65,10 +65,8 @@ export class WorkflowDelay extends StepResponse {
 export class StepStoreWait extends StepResponse {
   static type = "store-wait";
   readonly type = "store-wait";
-  wakeAt?: number;
-  constructor(wakeAt?: number) {
+  constructor(readonly wakeAt?: number) {
     super();
-    if (wakeAt !== undefined) this.wakeAt = wakeAt;
   }
 }
 
