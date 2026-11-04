@@ -7,6 +7,7 @@ import {
   redeliveryDelay,
   type ExecutionLease,
   type Runtime,
+  type StoreWaiter,
 } from "@yieldstar/core";
 import { MemoryRuntime } from "@yieldstar/test-runtime";
 import { SqliteRuntime } from "@yieldstar/sqlite-runtime";
@@ -55,12 +56,32 @@ const router = {
       deadline: Date.now() + DAY,
     });
   }),
+  // A rejection wakes this selector but does not match it.
+  "approve-order-now": workflow(async function* (step) {
+    const approval = step.store(ApprovalStore, { id: EXECUTION_ID });
+    return yield* approval.when(
+      STEP_KEY,
+      (state) => state.decision === "approved" && state.decision,
+      { deadline: Date.now() + DAY }
+    );
+  }),
+};
+
+// An earlier version of `review-order` that waited under the same key
+// without a deadline.
+const untimedRouter = {
+  "review-order": workflow(async function* (step) {
+    const approval = step.store(ApprovalStore, { id: EXECUTION_ID });
+    return yield* approval.when(STEP_KEY, (state) => state.decision);
+  }),
 };
 
 type Harness = {
   runtime: Runtime;
   /** Opens the same backend in a new runtime, as after a worker restart. */
   restart(): Runtime;
+  /** The step keys of the registered store waiters. */
+  waiters(): string[];
   dispose(): void;
 };
 
@@ -69,7 +90,15 @@ const runtimes: { name: string; create(): Harness }[] = [
     name: "memory",
     create() {
       const runtime = new MemoryRuntime();
-      return { runtime, restart: () => runtime, dispose() {} };
+      return {
+        runtime,
+        restart: () => runtime,
+        waiters: () =>
+          [...(runtime.stores as unknown as { waiters: Map<string, StoreWaiter> }).waiters.values()].map(
+            (waiter) => waiter.stepKey
+          ),
+        dispose() {},
+      };
     },
   },
   {
@@ -79,6 +108,11 @@ const runtimes: { name: string; create(): Harness }[] = [
       return {
         runtime: new SqliteRuntime(db),
         restart: () => new SqliteRuntime(db),
+        waiters: () =>
+          db
+            .query<{ step_key: string }>("SELECT step_key FROM store_waiters")
+            .all()
+            .map((row) => row.step_key),
         dispose: () => db.close(),
       };
     },
@@ -299,19 +333,40 @@ describe.each(runtimes)("timed store.when on $name", ({ create }) => {
     });
   });
 
-  // History 4
-  test("a crash after the waiter is registered, before the deadline is recorded, is finished by redelivery", async () => {
-    await admit();
+  /**
+   * Makes the first step write after a successful waiter registration reject,
+   * as when the worker dies after registering the waiter and before the
+   * delivery is acknowledged.
+   */
+  function failWriteAfterRegistration() {
+    let registered = false;
+    const registerWaiter = runtime.stores.registerWaiter.bind(runtime.stores);
+    vi.spyOn(runtime.stores, "registerWaiter").mockImplementation(async (waiter) => {
+      await registerWaiter(waiter);
+      registered = true;
+    });
     const writeStep = runtime.heap.writeStep.bind(runtime.heap);
-    vi.spyOn(runtime.heap, "writeStep")
-      .mockRejectedValueOnce(new Error("disk full"))
-      .mockImplementation(writeStep);
+    let failed = false;
+    vi.spyOn(runtime.heap, "writeStep").mockImplementation(async (params) => {
+      if (registered && !failed) {
+        failed = true;
+        throw new Error("disk full");
+      }
+      return writeStep(params);
+    });
+  }
+
+  // History 4
+  test("a crash after the waiter is registered, before acknowledgement, leaves the waiter and the deadline", async () => {
+    await admit();
+    failWriteAfterRegistration();
     const [lease] = await claim();
     await expect(run(lease!)).rejects.toBeInstanceOf(InfrastructureError);
+    expect(harness.waiters()).toEqual([STEP_KEY]);
+    expect(await readStep()).toEqual({ type: "store-wait", wakeAt: DEADLINE, done: false });
     await runtime.executions.release({ lease: lease! });
-    expect(await readStep()).toBeNull();
 
-    // The waiter alone is installed: a matching update wakes the execution.
+    // The registered waiter wakes the redelivery with the decision.
     await decide("approved");
     advance(redeliveryDelay(1));
     expect(await deliver()).toEqual({
@@ -322,21 +377,45 @@ describe.each(runtimes)("timed store.when on $name", ({ create }) => {
       result: { status: "matched", value: "approved" },
       done: true,
     });
+    expect(harness.waiters()).toEqual([]);
   });
 
-  test("a failed delivery that installed only the waiter is redelivered and arms the deadline", async () => {
+  test("a crash after the deadline is recorded, before the waiter is registered, is finished by redelivery", async () => {
     await admit();
-    const writeStep = runtime.heap.writeStep.bind(runtime.heap);
-    vi.spyOn(runtime.heap, "writeStep")
-      .mockRejectedValueOnce(new Error("disk full"))
-      .mockImplementation(writeStep);
+    vi.spyOn(runtime.stores, "registerWaiter").mockRejectedValueOnce(new Error("disk full"));
     const [lease] = await claim();
     await expect(run(lease!)).rejects.toBeInstanceOf(InfrastructureError);
     await runtime.executions.release({ lease: lease! });
+    expect(await readStep()).toEqual({ type: "store-wait", wakeAt: DEADLINE, done: false });
+    expect(harness.waiters()).toEqual([]);
+
+    advance(redeliveryDelay(1));
+    expect(await deliver()).toEqual({ status: "suspended", wakeAt: DEADLINE });
+    expect(harness.waiters()).toEqual([STEP_KEY]);
+
+    // Only the waiter can make the execution due before the deadline.
+    expect(await claim()).toEqual([]);
+    await decide("approved");
+    await deliver();
+    expect(await readStep()).toMatchObject({
+      result: { status: "matched", value: "approved" },
+      done: true,
+    });
+  });
+
+  test("a crash before the deadline is recorded leaves nothing installed, and redelivery arms both wakes", async () => {
+    await admit();
+    vi.spyOn(runtime.heap, "writeStep").mockRejectedValueOnce(new Error("disk full"));
+    const [lease] = await claim();
+    await expect(run(lease!)).rejects.toBeInstanceOf(InfrastructureError);
+    await runtime.executions.release({ lease: lease! });
+    expect(await readStep()).toBeNull();
+    expect(harness.waiters()).toEqual([]);
 
     advance(redeliveryDelay(1));
     expect(await deliver()).toEqual({ status: "suspended", wakeAt: DEADLINE });
     expect(await readStep()).toEqual({ type: "store-wait", wakeAt: DEADLINE, done: false });
+    expect(harness.waiters()).toEqual([STEP_KEY]);
 
     advanceTo(DEADLINE);
     await deliver();
@@ -391,6 +470,69 @@ describe.each(runtimes)("timed store.when on $name", ({ create }) => {
       status: "completed",
       result: { status: "timed-out" },
     });
+  });
+
+  test("a crash after the waiter is registered does not move a deadline computed from Date.now()", async () => {
+    await admit("review-order-now");
+    failWriteAfterRegistration();
+    const [lease] = await claim();
+    await expect(run(lease!)).rejects.toBeInstanceOf(InfrastructureError);
+    await runtime.executions.release({ lease: lease! });
+
+    // The redelivery computes Date.now() + DAY later than the first delivery.
+    advance(60 * MINUTE);
+    expect(await deliver()).toEqual({ status: "suspended", wakeAt: DEADLINE });
+    expect(await readStep()).toEqual({ type: "store-wait", wakeAt: DEADLINE, done: false });
+
+    advanceTo(DEADLINE);
+    expect(await deliver()).toEqual({
+      status: "completed",
+      result: { status: "timed-out" },
+    });
+  });
+
+  test("a commit that does not match wakes the execution, which suspends again with the recorded deadline", async () => {
+    await admit("approve-order-now");
+    expect(await deliver()).toEqual({ status: "suspended", wakeAt: DEADLINE });
+
+    advance(60 * MINUTE);
+    await decide("rejected");
+    expect(await deliver()).toEqual({ status: "suspended", wakeAt: DEADLINE });
+    expect(await readStep()).toEqual({ type: "store-wait", wakeAt: DEADLINE, done: false });
+    expect(harness.waiters()).toEqual([STEP_KEY]);
+
+    await decide("approved");
+    expect(await deliver()).toEqual({
+      status: "completed",
+      result: { status: "matched", value: "approved" },
+    });
+  });
+
+  test("an unfinished record without a deadline, left by an untimed when under the same key, uses the argument", async () => {
+    await admit();
+    const untimedRunner = new WorkflowRunner(runtime, { router: untimedRouter, logger });
+    const [lease] = await claim();
+    const outcome = await untimedRunner.run(
+      {
+        workflowId: "review-order",
+        executionId: EXECUTION_ID,
+        params: { deadline: DEADLINE },
+        context: new Map(),
+      },
+      { lease: lease!, signal: new AbortController().signal }
+    );
+    expect(outcome).toEqual({ status: "suspended" });
+    await runtime.executions.acknowledge({ lease: lease!, outcome });
+    expect(await readStep()).toEqual({ type: "store-wait", done: false });
+
+    // The timed version of the workflow is deployed and woken.
+    await runtime.executions.requestWake({ executionId: EXECUTION_ID, wakeAt: Date.now() });
+    expect(await deliver()).toEqual({ status: "suspended", wakeAt: DEADLINE });
+    expect(await readStep()).toEqual({ type: "store-wait", wakeAt: DEADLINE, done: false });
+
+    advanceTo(DEADLINE);
+    await deliver();
+    expect(await readStep()).toMatchObject({ result: { status: "timed-out" }, done: true });
   });
 
   // History 6
