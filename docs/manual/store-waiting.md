@@ -22,6 +22,61 @@ const message = yield* store.when(`next-message:${turn}`, (s) =>
 );
 ```
 
+## Waiting with a deadline
+
+Pass `{ deadline }` to wait for the condition or for a time, whichever comes first. The deadline is an absolute timestamp in milliseconds. The step compares it with the runtime clock, which is `Date.now()` by default. Workflow code cannot read the runtime clock, so a runtime created with its own `clock` must keep that clock in step with `Date.now()`, as tests do when they fake both. Otherwise the comparison mixes two clocks. The timed form always takes an explicit key:
+
+```ts
+const approval = step.store(ApprovalStore, { id: orderId });
+
+const result = yield* approval.when(
+  `decision:${orderId}`,
+  (state) => state.decision,
+  { deadline: Date.now() + 24 * 60 * 60 * 1000 }
+);
+
+if (result.status === "timed-out") {
+  yield* step.run(`cancel:${orderId}`, () => cancelOrder(orderId));
+} else {
+  // result.value is the decision
+}
+```
+
+The timed form returns a `TimedWhenResult<R>`:
+
+```ts
+type TimedWhenResult<R> =
+  | { status: "matched"; value: NonNullable<R> }
+  | { status: "timed-out" };
+```
+
+The form without a deadline does not change, and returns the selected value. In the timed form, `deadline` is required and must be a finite number. A workflow whose deadline is optional therefore needs two call sites, one for each form, and must handle both return types:
+
+```ts
+const decision = deadline === undefined
+  ? yield* approval.when(`decision:${orderId}`, (state) => state.decision)
+  : yield* approval.when(`decision:${orderId}`, (state) => state.decision, { deadline });
+```
+
+The step records the first result it finds: `matched` if the selector matches, otherwise `timed-out` once the deadline has passed. The rules are:
+
+- **The first evaluation records the deadline.** The step is recorded unfinished with the deadline as its wake time, as `step.delay` records its wake time. Later evaluations use the recorded deadline and ignore the argument. So a deadline computed from `Date.now()` does not move when the workflow replays. If the unfinished record has no deadline, because an earlier version of the workflow used the same key without one, the step uses the argument and records it.
+- **The selector runs first.** Each evaluation runs the selector before it compares the deadline with the clock. A match returns `matched`, even when the deadline has already passed. Without a match, a deadline that has passed returns `timed-out`.
+- **Only the first recorded result counts.** Once the step records `timed-out`, a later matching update cannot replace it, and replay returns `timed-out`. The same holds for `matched`.
+- **A commit that does not match changes nothing.** The commit makes the execution due, the selector runs again, and the step suspends again with the recorded deadline as `wakeAt`.
+- **The deadline never ends the wait early.** The step does not time out before the deadline. The runtime makes the execution due at the deadline, but it does not promise to deliver it at that exact moment.
+- **Recording the result removes both wakes.** The write that records the result deletes the waiter. The deadline wake needs no removal: once the step has a result, the delivery no longer reports the deadline as its wake time, and acknowledging that delivery drops the old wake.
+
+An unresolved evaluation takes these steps in order, as a `when` or `take` without a deadline does:
+
+1. It records the unfinished step with the deadline.
+2. It registers the waiter.
+3. It ends the delivery as `suspended` with `wakeAt` set to the deadline.
+
+If the worker crashes before the delivery is acknowledged, the execution is delivered again. The redelivery reads the recorded deadline if step 1 completed, runs the selector again, and registers the waiter again. A worker whose lease has been taken over cannot record a result, so it cannot delete the waiter of the worker that holds the lease now.
+
+A timed `when` covers one store and one deadline. It cannot wait on several stores.
+
 ## How wake-ups work
 
 The selector runs against a tracking proxy – a wrapper around the state that records which paths the selector read. If the selector does not match, the runtime stores those paths in a _waiter_: the store name and ID, the store version the selector saw, the read paths, and the waiting `executionId` and step key. The waiter carries no copy of the workflow event.

@@ -12,7 +12,7 @@ import {
   type EffectOutcome,
 } from "@yieldstar/core";
 
-/** What `lookup` reports about an effect ID (RFC 005). */
+/** What `lookup` reports about an effect ID. */
 export type EffectLookup<T> =
   | { status: "settled"; result: T }
   | { status: "failed"; error: Error }

@@ -52,7 +52,7 @@ vitest run runtime-conformance.test.ts
 
 ## Execution client suite
 
-`registerExecutionClientConformance` checks a runtime's `ExecutionClient` and fenced heap writes: admission, wake merging, claims, acknowledgement and terminal outcomes; leases, renewal, release and the `running` status; the redelivery delay and `unacknowledgedDeliveryCount`; fencing of heap writes, renewals, releases and acknowledgements against a stale holder; and `start`, its idempotency by request ID, parameter validation, mismatches and the target's parent link. The suite passes a `clock` to `create`; build every runtime on it so the suite controls time, including lease expiry.
+`registerExecutionClientConformance` checks a runtime's `ExecutionClient` and fenced heap writes: admission, wake merging, claims, acknowledgement and terminal outcomes; a store waiter combined with a suspended `wakeAt`, as a timed `when` leaves them; leases, renewal, release and the `running` status; the redelivery delay and `unacknowledgedDeliveryCount`; fencing of heap writes, renewals, releases and acknowledgements against a stale holder; and `start`, its idempotency by request ID, parameter validation, mismatches and the target's parent link. The suite passes a `clock` to `create`; build every runtime on it so the suite controls time, including lease expiry.
 
 The harness has three optional capabilities:
 

@@ -1,10 +1,12 @@
 import {
   InfrastructureError,
   StepResponse,
+  StepStoreWait,
   StoreValidationError,
   WorkflowValueError,
   type ExecutionClient,
   type StoreClient,
+  type StoreWaiter,
 } from "@yieldstar/core";
 
 export type RuntimeClients = {
@@ -31,6 +33,21 @@ export class StepRuntimeCall<T = unknown> extends StepResponse {
   constructor(call: (clients: RuntimeClients) => Promise<T>) {
     super();
     this.call = call;
+  }
+}
+
+/**
+ * A store wait that did not match. The driver records it as a `StepStoreWait`
+ * without the waiter, registers the waiter, then suspends. If registration
+ * fails with a workflow-facing error, the driver resumes the step with the
+ * failed `RuntimeCallResult`.
+ */
+export class StepStoreWaitRequest extends StepStoreWait {
+  constructor(
+    readonly waiter: StoreWaiter,
+    wakeAt?: number
+  ) {
+    super(wakeAt);
   }
 }
 

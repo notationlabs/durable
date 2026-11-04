@@ -9,10 +9,16 @@ import type {
 } from "@yieldstar/core";
 import type { StepRunner } from "../internal/step-runner";
 import { isIterable } from "../internal/utils";
-import { decodeStepRecord, encodeStepRecord } from "../internal/step-record";
+import {
+  StepUnfinished,
+  UnfinishedCacheCheck,
+  decodeStepRecord,
+  encodeStepRecord,
+} from "../internal/step-record";
 import { createStepRunner } from "../internal/step-runner";
 import {
   StepRuntimeCall,
+  StepStoreWaitRequest,
   executeRuntimeCall,
   infrastructure,
 } from "../internal/runtime-call";
@@ -86,6 +92,32 @@ export function workflow<
     const workflowIterator = workflowFn(stepRunner, event, logger);
     const { executionId } = event;
 
+    /** Writes one attempt of a step. A lost lease or a conflicting record ends the delivery. */
+    async function writeStep(params: {
+      stepKey: string;
+      stepAttempt: number;
+      done: boolean;
+      stepResponseJson: string;
+    }) {
+      stopIfAborted(signal);
+      const written = await infrastructure(() =>
+        heapClient.writeStep({ lease, ...params })
+      );
+      if (isLeaseLost(written)) {
+        throw new InfrastructureError(new LeaseLostError(executionId));
+      }
+      // The existing record stands. Ending the delivery as a retry makes the
+      // next delivery replay it.
+      if (
+        written.stepResponseJson !== params.stepResponseJson ||
+        written.meta.done !== params.done
+      ) {
+        throw new InfrastructureError(
+          new StepConflictError(executionId, params.stepKey)
+        );
+      }
+    }
+
     let iteratorResult: IteratorResult<any> | null = null;
     let nextIteratorResult: IteratorResult<any> | null = null;
     // A step that produced a result resumes with its decoded record, which
@@ -130,8 +162,11 @@ export function workflow<
         stepAttempt = cached.meta.attempt + 1;
       }
 
-      // An unfinished record is a failed attempt: run the step again.
+      // A step with an unfinished record runs again. A step that yields an
+      // UnfinishedCacheCheck receives the record.
+      let unfinished: typeof cached = null;
       if (cached?.meta.done === false) {
+        unfinished = cached;
         cached = null;
       }
 
@@ -140,6 +175,7 @@ export function workflow<
       }
 
       let stepResponse: StepResponse;
+      let suspendedOnStore = false;
 
       if (iteratorResult.done) {
         stepResponse = new WorkflowResult(iteratorResult.value);
@@ -150,7 +186,9 @@ export function workflow<
       if (stepResponse instanceof StepCacheCheck) {
         const cachedResponse = cached
           ? decodeStepRecord(cached.stepResponseJson)
-          : null;
+          : unfinished && stepResponse instanceof UnfinishedCacheCheck
+            ? new StepUnfinished(decodeStepRecord(unfinished.stepResponseJson))
+            : null;
         // Resuming the step runs the step function unless it is cached.
         stopIfAborted(signal);
         iteratorResult = await workflowIterator.next(cachedResponse);
@@ -161,9 +199,38 @@ export function workflow<
         // An infrastructure error rejects the delivery without resuming it.
         while (
           stepResponse instanceof StepRuntimeCall ||
-          stepResponse instanceof StepEffectCall
+          stepResponse instanceof StepEffectCall ||
+          stepResponse instanceof StepStoreWaitRequest
         ) {
           stopIfAborted(signal);
+          if (stepResponse instanceof StepStoreWaitRequest) {
+            const { waiter } = stepResponse;
+            // 1. Record the unfinished step. A timed wait's deadline must be
+            //    durable before the waiter can wake a redelivery.
+            const record = encodeStepRecord(stepResponse, stepKey);
+            await writeStep({
+              stepKey,
+              stepAttempt,
+              done: false,
+              stepResponseJson: record.json,
+            });
+            // 2. Register the waiter.
+            const registered = await executeRuntimeCall(
+              new StepRuntimeCall(({ stores }) => stores.registerWaiter(waiter)),
+              { stores: storeClient, executions: executionClient }
+            );
+            // 3. Suspend.
+            if (registered.ok) {
+              stepResponse = record.response;
+              suspendedOnStore = true;
+              break;
+            }
+            // The failure is recorded as the next attempt.
+            stepAttempt++;
+            iteratorResult = await workflowIterator.next(registered);
+            stepResponse = iteratorResult.value;
+            continue;
+          }
           const callResult =
             stepResponse instanceof StepEffectCall
               ? await executeEffectCall(stepResponse.request, {
@@ -222,33 +289,13 @@ export function workflow<
         (stepResponse instanceof StepStoreWait ||
           stepResponse instanceof StepEffectWait);
 
-      if (!cached && stepResponseJson !== undefined) {
-        const done = !needsRetry && !needsWake;
-        stopIfAborted(signal);
-        const written = await infrastructure(() =>
-          heapClient.writeStep({
-            lease,
-            stepKey,
-            stepAttempt,
-            done,
-            stepResponseJson: stepResponseJson!,
-          })
-        );
-        // Another claim has taken over: stop without an outcome.
-        if (isLeaseLost(written)) {
-          throw new InfrastructureError(new LeaseLostError(executionId));
-        }
-        // The step was already recorded with a different value. The record
-        // stands, so this delivery must not continue with its own value: end
-        // it as a retry, and the next delivery replays the recorded one.
-        if (
-          written.stepResponseJson !== stepResponseJson ||
-          written.meta.done !== done
-        ) {
-          throw new InfrastructureError(
-            new StepConflictError(executionId, stepKey)
-          );
-        }
+      if (!cached && stepResponseJson !== undefined && !suspendedOnStore) {
+        await writeStep({
+          stepKey,
+          stepAttempt,
+          done: !needsRetry && !needsWake,
+          stepResponseJson,
+        });
       }
 
       if (stepResponse instanceof WorkflowResult) {

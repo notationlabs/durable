@@ -64,7 +64,7 @@ export type EffectRecord = {
 };
 
 /**
- * The runtime's record of external effects, keyed by effect ID (RFC 005).
+ * The runtime's record of external effects, keyed by effect ID.
  * Effect records are never deleted, including when an execution that began
  * one is cancelled or pruned.
  *

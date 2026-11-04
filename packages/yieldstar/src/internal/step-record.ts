@@ -1,5 +1,6 @@
 import {
   DurableValueError,
+  StepCacheCheck,
   StepDelay,
   StepEffectWait,
   StepError,
@@ -13,6 +14,20 @@ import {
   durableValueCodec,
   encodeThrownValue,
 } from "@yieldstar/core";
+
+/** A `StepCacheCheck` that resumes with the step's unfinished record as a `StepUnfinished`, not null. */
+export class UnfinishedCacheCheck extends StepCacheCheck {}
+
+/** The latest unfinished record of a step that yielded an `UnfinishedCacheCheck`. */
+export class StepUnfinished extends StepResponse {
+  static type = "step-unfinished";
+  readonly type = "step-unfinished";
+  readonly response: StepResponse;
+  constructor(response: StepResponse) {
+    super();
+    this.response = response;
+  }
+}
 
 /**
  * Encodes a step response for its step record, and returns the response that
@@ -66,6 +81,9 @@ function encodeResponse(response: StepResponse, stepKey: string): string {
   if (response instanceof StepEffectWait) {
     return `{"type":"effect-wait","wakeAt":${JSON.stringify(response.wakeAt)}}`;
   }
+  if (response instanceof StepStoreWait && response.wakeAt !== undefined) {
+    return `{"type":"store-wait","wakeAt":${JSON.stringify(response.wakeAt)}}`;
+  }
   if (response instanceof StepStoreWait || response instanceof StepInvalid) {
     return `{"type":${JSON.stringify(response.type)}}`;
   }
@@ -96,7 +114,9 @@ export function decodeStepRecord(json: string): StepResponse {
       case "effect-wait":
         return new StepEffectWait(record.wakeAt);
       case "store-wait":
-        return new StepStoreWait();
+        return new StepStoreWait(
+          typeof record.wakeAt === "number" ? record.wakeAt : undefined
+        );
       case "step-invalid":
         return new StepInvalid();
     }

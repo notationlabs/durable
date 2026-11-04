@@ -58,10 +58,14 @@ export class WorkflowDelay extends StepResponse {
   }
 }
 
+/**
+ * A store wait, recorded as an unfinished step.
+ * @param wakeAt the deadline of a timed `when`. The execution is also due then.
+ */
 export class StepStoreWait extends StepResponse {
   static type = "store-wait";
   readonly type = "store-wait";
-  constructor() {
+  constructor(readonly wakeAt?: number) {
     super();
   }
 }

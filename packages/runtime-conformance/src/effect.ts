@@ -74,7 +74,7 @@ registerErrorClass("ConformanceCardDeclinedError", CardDeclinedError);
 
 /**
  * Registers the runtime-adapter suite for `EffectClient` and the wakes it
- * requests (RFC 005).
+ * requests.
  */
 export function registerEffectClientConformance({
   name,
