@@ -786,16 +786,15 @@ export function registerExecutionClientConformance({
       });
 
       /**
-       * Suspends `executionId` as a timed `when` does (RFC 007): its waiter is
-       * registered, its unfinished step is recorded, and the delivery is
-       * acknowledged with the deadline as `wakeAt`.
+       * Suspends `executionId` as a timed `when` does (RFC 007): its unfinished
+       * step is recorded with the deadline, its waiter is registered, and the
+       * delivery is acknowledged with the deadline as `wakeAt`.
        */
       async function suspendTimedWait(runtime: Runtime, executionId: string, deadline: number) {
         await admit(runtime, executionId);
         const lease = await claimOne(runtime, executionId);
         const snapshot = await runtime.stores.getStore({ definition: Store, id: executionId });
         const registered = waiter(executionId, snapshot.instanceId, snapshot.version);
-        await runtime.stores.registerWaiter(registered);
         await runtime.heap.writeStep({
           lease,
           stepKey: registered.stepKey,
@@ -803,6 +802,7 @@ export function registerExecutionClientConformance({
           done: false,
           stepResponseJson: JSON.stringify({ type: "store-wait", wakeAt: deadline }),
         });
+        await runtime.stores.registerWaiter(registered);
         await runtime.executions.acknowledge({
           lease,
           outcome: { status: "suspended", wakeAt: deadline },
@@ -861,7 +861,7 @@ export function registerExecutionClientConformance({
         expect(await claim(runtime)).toEqual([]);
       });
 
-      it("keeps a timed wait's wakeAt only when the next suspended acknowledgement carries it again", async ({
+      it("keeps a timed wait's wakeAt when the next suspended acknowledgement carries it", async ({
         runtime,
         clock,
         advance,
@@ -876,14 +876,22 @@ export function registerExecutionClientConformance({
           lease,
           outcome: { status: "suspended", wakeAt: deadline },
         });
-        advance(deadline - clock.now);
-        const timedOut = await claimOne(runtime, "timed-spurious");
-        await runtime.executions.acknowledge({ lease: timedOut, outcome: { status: "suspended" } });
+        advance(deadline - clock.now - 1);
+        expect(await claim(runtime)).toEqual([]);
 
+        advance(1);
+        await claimOne(runtime, "timed-spurious");
+      });
+
+      it("drops a timed wait's wakeAt when the next suspended acknowledgement omits it", async ({
+        runtime,
+        clock,
+        advance,
+      }) => {
         await suspendTimedWait(runtime, "timed-dropped", clock.now + 1_000);
         await appendMessage(runtime, "timed-dropped", "m1");
-        const dropped = await claimOne(runtime, "timed-dropped");
-        await runtime.executions.acknowledge({ lease: dropped, outcome: { status: "suspended" } });
+        const lease = await claimOne(runtime, "timed-dropped");
+        await runtime.executions.acknowledge({ lease, outcome: { status: "suspended" } });
         advance(1_000);
         expect(await claim(runtime)).toEqual([]);
       });
