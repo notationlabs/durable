@@ -480,7 +480,12 @@ function createWorkflowStore<T>(params: {
     ): any {
       const timed = options !== undefined || (typeof arg1 !== "string" && arg2 !== undefined);
       if (timed) {
-        if (typeof arg1 !== "string" || arg1 === "") {
+        if (typeof arg1 !== "string") {
+          throw new TypeError(
+            "A timed store.when takes (key, selector, { deadline }); it was called without a key"
+          );
+        }
+        if (arg1 === "") {
           throw new Error("A timed store.when requires a non-empty step key");
         }
         const deadline = options?.deadline;

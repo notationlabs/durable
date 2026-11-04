@@ -623,7 +623,7 @@ test("timed when requires an explicit key and a finite deadline", async () => {
     { lease: lease!, signal: new AbortController().signal }
   );
   expect(results).toEqual([
-    "A timed store.when requires a non-empty step key",
+    "A timed store.when takes (key, selector, { deadline }); it was called without a key",
     "store.when deadline must be a finite number",
   ]);
   expect(outcome).toEqual({
