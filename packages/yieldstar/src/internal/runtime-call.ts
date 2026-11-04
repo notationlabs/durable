@@ -37,11 +37,10 @@ export class StepRuntimeCall<T = unknown> extends StepResponse {
 }
 
 /**
- * Yielded by a store wait that did not match. The driver records the step as
- * a plain `StepStoreWait`, which leaves the waiter out of the record, then
- * registers the waiter, then ends the delivery as suspended. A registration
- * that fails with a workflow-facing error resumes the step with the
- * `RuntimeCallResult`, so the step can record and throw the error.
+ * A store wait that did not match. The driver records it as a `StepStoreWait`
+ * without the waiter, registers the waiter, then suspends. If registration
+ * fails with a workflow-facing error, the driver resumes the step with the
+ * failed `RuntimeCallResult`.
  */
 export class StepStoreWaitRequest extends StepStoreWait {
   constructor(

@@ -817,7 +817,7 @@ export function registerStoreClientConformance({
         await harness.dispose?.();
       }
     });
-    describe("missing stores (RFC 006)", () => {
+    describe("missing stores", () => {
       type CreatedState = { createdBy: string; messages: { id: string }[] };
 
       /**

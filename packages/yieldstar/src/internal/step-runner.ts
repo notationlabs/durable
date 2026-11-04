@@ -98,14 +98,12 @@ export type WorkflowStore<T> = {
       DurableMatchSelector<T, R>
   ): AsyncGenerator<StepResponse, NonNullable<R>>;
   /**
-   * Waits for the selector to match or for `deadline`, whichever is recorded
-   * first (RFC 007). `deadline` is an absolute time in milliseconds, compared
-   * with the runtime clock. The runtime clock is `Date.now` by default. A
-   * runtime given its own clock must keep it in step with `Date.now()`, or
-   * the comparison mixes two clocks. The first evaluation records the
-   * deadline, and later evaluations use the recorded one. Each evaluation
-   * runs the selector first, so a match returns `matched` even after the
-   * deadline.
+   * Waits until the selector matches or the deadline passes, and returns the
+   * first result recorded. The selector is checked first, so a match returns
+   * `matched` even after the deadline.
+   * @param options.deadline absolute time in milliseconds, compared with the
+   * runtime clock. The first evaluation records it and later evaluations
+   * ignore the argument.
    */
   when<R>(
     key: string,
@@ -196,7 +194,7 @@ export function createStepRunner(params: {
   /**
    * Runs an external operation identified by `descriptor.effectId`, at most
    * once in effect: after an uncertain attempt, `lookup` decides whether the
-   * operation already happened before `perform` runs again (RFC 005).
+   * operation already happened before `perform` runs again.
    */
   function effect<T, Input extends Record<string, any> = DurableObject>(
     stepKey: string,
@@ -848,11 +846,8 @@ async function* whenStep<T, R>(params: {
 }
 
 /**
- * A `when` with a deadline (RFC 007). The step records the first result it
- * finds: matched if the selector matches, otherwise timed-out once the
- * deadline has passed. Without a result, it suspends with the deadline as
- * `wakeAt`, which the driver records with the unfinished step before it
- * registers the waiter. The write that records the result deletes the waiter.
+ * Records `matched` if the selector matches, otherwise `timed-out` once the
+ * deadline has passed. Otherwise suspends with the deadline as `wakeAt`.
  */
 async function* timedWhenStep<T, R>(params: {
   definition: StoreDefinition<any>;
@@ -869,9 +864,9 @@ async function* timedWhenStep<T, R>(params: {
 
   const cached = yield new UnfinishedCacheCheck();
 
-  // A deadline computed from the clock must not move on replay. A record
-  // without `wakeAt`, left by an untimed `when` under the same key, falls
-  // back to the argument.
+  // The recorded deadline wins over the argument, so a deadline computed
+  // from Date.now() does not move on replay. An untimed `when` under the
+  // same key leaves no deadline, and the argument is used.
   let recordedDeadline: number | undefined;
   if (cached instanceof StepUnfinished) {
     if (cached.response instanceof StepStoreWait) {
@@ -1000,10 +995,8 @@ async function* takeStep<T, R>(params: {
 }
 
 /**
- * Suspends the step until a store change wakes it, or until `wakeAt` when it
- * is given. The driver records the unfinished step, then registers the
- * waiter, then acknowledges the suspension. It resumes the step only when the
- * registration fails with an error that belongs to workflow code.
+ * Suspends the step until a store change wakes it, or until `wakeAt`. Resumes
+ * only when registering the waiter fails with a workflow-facing error.
  */
 async function* waitOnStore(
   waiter: StoreWaiter,

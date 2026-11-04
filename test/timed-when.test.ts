@@ -242,7 +242,6 @@ describe.each(runtimes)("timed store.when on $name", ({ create }) => {
     });
   });
 
-  // History 1
   test("a match before the deadline returns the value, and no delivery follows for the deadline", async () => {
     await admit();
     await deliver();
@@ -272,7 +271,6 @@ describe.each(runtimes)("timed store.when on $name", ({ create }) => {
     });
   });
 
-  // History 2
   test("a timeout recorded first is not replaced by a later matching update", async () => {
     await admit();
     await deliver();
@@ -301,7 +299,6 @@ describe.each(runtimes)("timed store.when on $name", ({ create }) => {
     });
   });
 
-  // History 3
   test("a match committed at the deadline wins, and a restart returns the same result", async () => {
     await admit();
     await deliver();
@@ -343,7 +340,6 @@ describe.each(runtimes)("timed store.when on $name", ({ create }) => {
     });
   });
 
-  // History 4
   test("a crash after the waiter is registered, before acknowledgement, leaves the waiter and the deadline", async () => {
     await admit();
     const [lease] = await claim();
@@ -440,7 +436,6 @@ describe.each(runtimes)("timed store.when on $name", ({ create }) => {
     expect(await readStep()).toMatchObject({ result: { status: "timed-out" }, done: true });
   });
 
-  // History 5
   test("a deadline computed from Date.now() is read from the record on later deliveries", async () => {
     await admit("review-order-now");
     expect(await deliver()).toEqual({ status: "suspended", wakeAt: DEADLINE });
@@ -487,7 +482,7 @@ describe.each(runtimes)("timed store.when on $name", ({ create }) => {
     await decide("rejected");
     expect(await deliver()).toEqual({ status: "suspended", wakeAt: DEADLINE });
     expect(await readStep()).toEqual({ type: "store-wait", wakeAt: DEADLINE, done: false });
-    // Each delivery writes the unfinished record once.
+    // Each delivery writes one unfinished record.
     expect(await readAttempt()).toBe(1);
     expect(harness.waiters()).toEqual([STEP_KEY]);
 
@@ -537,7 +532,6 @@ describe.each(runtimes)("timed store.when on $name", ({ create }) => {
     expect(harness.waiters()).toEqual([]);
   });
 
-  // History 6
   test("a stale holder's result is rejected and the current holder's waiter stays registered", async () => {
     await decide("approved");
     await admit();

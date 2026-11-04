@@ -92,10 +92,7 @@ export function workflow<
     const workflowIterator = workflowFn(stepRunner, event, logger);
     const { executionId } = event;
 
-    /**
-     * Writes one attempt of a step, fenced by the lease. A lost lease or a
-     * record that already holds a different value ends the delivery.
-     */
+    /** Writes one attempt of a step. A lost lease or a conflicting record ends the delivery. */
     async function writeStep(params: {
       stepKey: string;
       stepAttempt: number;
@@ -106,13 +103,11 @@ export function workflow<
       const written = await infrastructure(() =>
         heapClient.writeStep({ lease, ...params })
       );
-      // Another claim has taken over: stop without an outcome.
       if (isLeaseLost(written)) {
         throw new InfrastructureError(new LeaseLostError(executionId));
       }
-      // The step was already recorded with a different value. The record
-      // stands, so this delivery must not continue with its own value: end
-      // it as a retry, and the next delivery replays the recorded one.
+      // The existing record stands. Ending the delivery as a retry makes the
+      // next delivery replay it.
       if (
         written.stepResponseJson !== params.stepResponseJson ||
         written.meta.done !== params.done
@@ -167,8 +162,8 @@ export function workflow<
         stepAttempt = cached.meta.attempt + 1;
       }
 
-      // An unfinished record is a failed attempt: run the step again. A step
-      // that asks for it still receives the record, e.g. to read a deadline.
+      // A step with an unfinished record runs again. A step that yields an
+      // UnfinishedCacheCheck receives the record.
       let unfinished: typeof cached = null;
       if (cached?.meta.done === false) {
         unfinished = cached;
@@ -180,7 +175,6 @@ export function workflow<
       }
 
       let stepResponse: StepResponse;
-      // A store wait whose unfinished record is already written.
       let suspendedOnStore = false;
 
       if (iteratorResult.done) {
@@ -211,9 +205,8 @@ export function workflow<
           stopIfAborted(signal);
           if (stepResponse instanceof StepStoreWaitRequest) {
             const { waiter } = stepResponse;
-            // 1. Record the unfinished step. A timed wait's deadline is then
-            //    durable before its waiter can wake a delivery, so no
-            //    redelivery computes the deadline again.
+            // 1. Record the unfinished step. A timed wait's deadline must be
+            //    durable before the waiter can wake a redelivery.
             const record = encodeStepRecord(stepResponse, stepKey);
             await writeStep({
               stepKey,
@@ -226,13 +219,13 @@ export function workflow<
               new StepRuntimeCall(({ stores }) => stores.registerWaiter(waiter)),
               { stores: storeClient, executions: executionClient }
             );
-            // 3. Suspend; the delivery is acknowledged after registration.
+            // 3. Suspend.
             if (registered.ok) {
               stepResponse = record.response;
               suspendedOnStore = true;
               break;
             }
-            // The step records the failure as its next attempt.
+            // The failure is recorded as the next attempt.
             stepAttempt++;
             iteratorResult = await workflowIterator.next(registered);
             stepResponse = iteratorResult.value;

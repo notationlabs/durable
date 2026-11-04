@@ -59,8 +59,8 @@ export class WorkflowDelay extends StepResponse {
 }
 
 /**
- * A store wait, recorded as an unfinished step. A timed `when` sets `wakeAt`
- * to its deadline, so the execution is also due then (RFC 007).
+ * A store wait, recorded as an unfinished step.
+ * @param wakeAt the deadline of a timed `when`. The execution is also due then.
  */
 export class StepStoreWait extends StepResponse {
   static type = "store-wait";

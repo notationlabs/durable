@@ -15,17 +15,10 @@ import {
   encodeThrownValue,
 } from "@yieldstar/core";
 
-/**
- * Asks the driver to resume the step with its latest unfinished record wrapped
- * in a `StepUnfinished`, where a plain `StepCacheCheck` resumes it with null.
- */
+/** A `StepCacheCheck` that resumes with the step's unfinished record as a `StepUnfinished`, not null. */
 export class UnfinishedCacheCheck extends StepCacheCheck {}
 
-/**
- * The latest unfinished record of a step, given to a step that yielded an
- * `UnfinishedCacheCheck`. The step runs again; the record only carries state
- * from the earlier attempt, such as a timed wait's deadline.
- */
+/** The latest unfinished record of a step that yielded an `UnfinishedCacheCheck`. */
 export class StepUnfinished extends StepResponse {
   static type = "step-unfinished";
   readonly type = "step-unfinished";
