@@ -15,6 +15,30 @@ export class StepKey extends StepResponse {
 export class StepCacheCheck extends StepResponse {
   static type = "cache-check";
   readonly type = "cache-check";
+  /**
+   * When the step's latest record is unfinished, the driver resumes the step
+   * with that record wrapped in a `StepUnfinished`, instead of with null.
+   */
+  readonly unfinished: boolean;
+  constructor(options?: { unfinished?: boolean }) {
+    super();
+    this.unfinished = options?.unfinished ?? false;
+  }
+}
+
+/**
+ * The latest unfinished record of a step, given to a step that asked for it
+ * with `StepCacheCheck({ unfinished: true })`. The step runs again; the record
+ * only carries state from the earlier attempt, such as a timed wait's deadline.
+ */
+export class StepUnfinished extends StepResponse {
+  static type = "step-unfinished";
+  readonly type = "step-unfinished";
+  response: StepResponse;
+  constructor(response: StepResponse) {
+    super();
+    this.response = response;
+  }
 }
 
 export class StepInvalid extends StepResponse {
@@ -58,11 +82,18 @@ export class WorkflowDelay extends StepResponse {
   }
 }
 
+/**
+ * A store wait, recorded as an unfinished step after its waiter is registered.
+ * A timed `when` sets `wakeAt` to its deadline, so the delivery is also due
+ * then (RFC 007).
+ */
 export class StepStoreWait extends StepResponse {
   static type = "store-wait";
   readonly type = "store-wait";
-  constructor() {
+  wakeAt?: number;
+  constructor(wakeAt?: number) {
     super();
+    if (wakeAt !== undefined) this.wakeAt = wakeAt;
   }
 }
 

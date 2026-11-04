@@ -74,7 +74,9 @@ export class WorkflowRunner<
       case "effect-wait":
         return { status: "suspended", wakeAt: response.wakeAt };
       case "store-wait":
-        return { status: "suspended" };
+        return response.wakeAt === undefined
+          ? { status: "suspended" }
+          : { status: "suspended", wakeAt: response.wakeAt };
     }
   };
 
