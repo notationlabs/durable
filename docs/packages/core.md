@@ -53,7 +53,7 @@ type WorkflowRunOutcome =
   | { status: "failed"; error: Error };
 ```
 
-An event whose `workflowId` has no registered workflow resolves as `failed`. A store wait resolves as `suspended` without `wakeAt`, because a store commit wakes it. A timed `when` resolves as `suspended` with `wakeAt` set to its recorded deadline, after it has registered its waiter and recorded the unfinished step. A `step.effect` whose outcome is uncertain resolves as `suspended` with `wakeAt` set to now plus its `retryIn`, after it has watched the effect and recorded the unfinished step. On attempt number `maxAttempts`, it records a `WorkflowEffectError` with code `EFFECT_OUTCOME_UNKNOWN` instead.
+An event whose `workflowId` has no registered workflow resolves as `failed`. A store wait resolves as `suspended` without `wakeAt`, because a store commit wakes it. A timed `when` resolves as `suspended` with `wakeAt` set to its recorded deadline, after it has recorded the deadline with the unfinished step and registered its waiter. A `step.effect` whose outcome is uncertain resolves as `suspended` with `wakeAt` set to now plus its `retryIn`, after it has watched the effect and recorded the unfinished step. On attempt number `maxAttempts`, it records a `WorkflowEffectError` with code `EFFECT_OUTCOME_UNKNOWN` instead.
 
 Two step-write results also reject with an `InfrastructureError`, and both end the delivery without an outcome:
 
@@ -409,8 +409,7 @@ type WorkflowInvoker = {
 | Class             | Type string          | Description                                         |
 | ----------------- | -------------------- | --------------------------------------------------- |
 | `StepKey`         | `"step-key"`         | Cache key for the current step                      |
-| `StepCacheCheck`  | `"cache-check"`      | Signals the runner to look up cached state. With `{ unfinished: true }`, an unfinished record is returned wrapped in `StepUnfinished` |
-| `StepUnfinished`  | `"step-unfinished"`  | The latest unfinished record of a step, such as a timed wait's deadline |
+| `StepCacheCheck`  | `"cache-check"`      | Signals the runner to look up cached state          |
 | `StepResult`      | `"step-result"`      | Wraps a successful step return value                |
 | `StepError`       | `"step-error"`       | Wraps a caught error with optional retry policy     |
 | `StepDelay`       | `"step-delay"`       | Carries a `wakeAt` timestamp                        |

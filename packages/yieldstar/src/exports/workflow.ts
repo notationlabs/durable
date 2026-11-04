@@ -9,7 +9,13 @@ import type {
 } from "@yieldstar/core";
 import type { StepRunner } from "../internal/step-runner";
 import { isIterable } from "../internal/utils";
-import { decodeStepRecord, encodeStepRecord } from "../internal/step-record";
+import {
+  StepRecordUnfinished,
+  StepUnfinished,
+  UnfinishedCacheCheck,
+  decodeStepRecord,
+  encodeStepRecord,
+} from "../internal/step-record";
 import { createStepRunner } from "../internal/step-runner";
 import {
   StepRuntimeCall,
@@ -27,7 +33,6 @@ import {
   StepEffectWait,
   StepInvalid,
   StepStoreWait,
-  StepUnfinished,
   WorkflowResult,
   InfrastructureError,
   LeaseLostError,
@@ -86,6 +91,37 @@ export function workflow<
     const stepRunner = createStepRunner({ event, clock });
     const workflowIterator = workflowFn(stepRunner, event, logger);
     const { executionId } = event;
+
+    /**
+     * Writes one attempt of a step, fenced by the lease. A lost lease or a
+     * record that already holds a different value ends the delivery.
+     */
+    async function writeStep(params: {
+      stepKey: string;
+      stepAttempt: number;
+      done: boolean;
+      stepResponseJson: string;
+    }) {
+      stopIfAborted(signal);
+      const written = await infrastructure(() =>
+        heapClient.writeStep({ lease, ...params })
+      );
+      // Another claim has taken over: stop without an outcome.
+      if (isLeaseLost(written)) {
+        throw new InfrastructureError(new LeaseLostError(executionId));
+      }
+      // The step was already recorded with a different value. The record
+      // stands, so this delivery must not continue with its own value: end
+      // it as a retry, and the next delivery replays the recorded one.
+      if (
+        written.stepResponseJson !== params.stepResponseJson ||
+        written.meta.done !== params.done
+      ) {
+        throw new InfrastructureError(
+          new StepConflictError(executionId, params.stepKey)
+        );
+      }
+    }
 
     let iteratorResult: IteratorResult<any> | null = null;
     let nextIteratorResult: IteratorResult<any> | null = null;
@@ -154,7 +190,7 @@ export function workflow<
       if (stepResponse instanceof StepCacheCheck) {
         const cachedResponse = cached
           ? decodeStepRecord(cached.stepResponseJson)
-          : unfinished && stepResponse.unfinished
+          : unfinished && stepResponse instanceof UnfinishedCacheCheck
             ? new StepUnfinished(decodeStepRecord(unfinished.stepResponseJson))
             : null;
         // Resuming the step runs the step function unless it is cached.
@@ -167,9 +203,22 @@ export function workflow<
         // An infrastructure error rejects the delivery without resuming it.
         while (
           stepResponse instanceof StepRuntimeCall ||
-          stepResponse instanceof StepEffectCall
+          stepResponse instanceof StepEffectCall ||
+          stepResponse instanceof StepRecordUnfinished
         ) {
           stopIfAborted(signal);
+          if (stepResponse instanceof StepRecordUnfinished) {
+            await writeStep({
+              stepKey,
+              stepAttempt,
+              done: false,
+              stepResponseJson: encodeStepRecord(stepResponse.response, stepKey).json,
+            });
+            stepAttempt++;
+            iteratorResult = await workflowIterator.next();
+            stepResponse = iteratorResult.value;
+            continue;
+          }
           const callResult =
             stepResponse instanceof StepEffectCall
               ? await executeEffectCall(stepResponse.request, {
@@ -229,32 +278,12 @@ export function workflow<
           stepResponse instanceof StepEffectWait);
 
       if (!cached && stepResponseJson !== undefined) {
-        const done = !needsRetry && !needsWake;
-        stopIfAborted(signal);
-        const written = await infrastructure(() =>
-          heapClient.writeStep({
-            lease,
-            stepKey,
-            stepAttempt,
-            done,
-            stepResponseJson: stepResponseJson!,
-          })
-        );
-        // Another claim has taken over: stop without an outcome.
-        if (isLeaseLost(written)) {
-          throw new InfrastructureError(new LeaseLostError(executionId));
-        }
-        // The step was already recorded with a different value. The record
-        // stands, so this delivery must not continue with its own value: end
-        // it as a retry, and the next delivery replays the recorded one.
-        if (
-          written.stepResponseJson !== stepResponseJson ||
-          written.meta.done !== done
-        ) {
-          throw new InfrastructureError(
-            new StepConflictError(executionId, stepKey)
-          );
-        }
+        await writeStep({
+          stepKey,
+          stepAttempt,
+          done: !needsRetry && !needsWake,
+          stepResponseJson,
+        });
       }
 
       if (stepResponse instanceof WorkflowResult) {

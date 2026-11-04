@@ -202,7 +202,6 @@ export {
   StepResponse,
   StepResult,
   StepStoreWait,
-  StepUnfinished,
   WorkflowDelay,
   WorkflowRestart,
   WorkflowResult,

@@ -18,7 +18,6 @@ import {
   StepDelay,
   StepCacheCheck,
   StepStoreWait,
-  StepUnfinished,
   type StoreDefinition,
   type StoreDeleteFromResult,
   type StoreKey,
@@ -41,6 +40,11 @@ import {
 } from "@yieldstar/core";
 import { RetryableError } from "../exports/errors";
 import { getCallSiteHash } from "./utils";
+import {
+  StepRecordUnfinished,
+  StepUnfinished,
+  UnfinishedCacheCheck,
+} from "./step-record";
 import {
   StepRuntimeCall,
   workflowCallback,
@@ -97,11 +101,12 @@ export type WorkflowStore<T> = {
       DurableMatchSelector<T, R>
   ): AsyncGenerator<StepResponse, NonNullable<R>>;
   /**
-   * Waits for the selector to match or for `deadline`, an absolute time in
-   * milliseconds on the runtime clock, whichever is recorded first (RFC 007).
-   * The first evaluation records the deadline, and later evaluations use the
-   * recorded one. Each evaluation runs the selector first, so a match wins
-   * even after the deadline has passed.
+   * Waits for the selector to match or for `deadline`, whichever is recorded
+   * first (RFC 007). `deadline` is an absolute time in milliseconds, compared
+   * with the runtime clock. The runtime clock is `Date.now` unless the
+   * runtime was given its own clock. The first evaluation records the
+   * deadline, and later evaluations use the recorded one. Each evaluation
+   * runs the selector first, so a match wins even after the deadline.
    */
   when<R>(
     key: string,
@@ -839,10 +844,11 @@ async function* whenStep<T, R>(params: {
 }
 
 /**
- * A `when` with a deadline. The selector and the deadline compete to record
- * one result for the step. The deadline is recorded with the unfinished step
- * as its `wakeAt`, and the waiter is deleted by the write that records the
- * result (RFC 007).
+ * A `when` with a deadline (RFC 007). The step records the first result it
+ * finds: matched if the selector matches, otherwise timed-out once the
+ * deadline has passed. Without a result, it records the deadline as the
+ * unfinished step's `wakeAt`, then registers the waiter, then suspends. The
+ * write that records the result deletes the waiter.
  */
 async function* timedWhenStep<T, R>(params: {
   definition: StoreDefinition<any>;
@@ -857,17 +863,20 @@ async function* timedWhenStep<T, R>(params: {
 
   yield new StepKey(stepKey);
 
-  const cached = yield new StepCacheCheck({ unfinished: true });
+  const cached = yield new UnfinishedCacheCheck();
 
-  let deadline = params.deadline;
+  // A deadline computed from the clock must not move on replay. A record
+  // without `wakeAt`, left by an untimed `when` under the same key, falls
+  // back to the argument.
+  let recordedDeadline: number | undefined;
   if (cached instanceof StepUnfinished) {
-    // A deadline computed from the clock must not move on replay.
-    if (cached.response instanceof StepStoreWait && cached.response.wakeAt !== undefined) {
-      deadline = cached.response.wakeAt;
+    if (cached.response instanceof StepStoreWait) {
+      recordedDeadline = cached.response.wakeAt;
     }
   } else if (cached) {
     return yield* replay(cached);
   }
+  const deadline = recordedDeadline ?? params.deadline;
 
   const evaluated = yield* evaluateWhen(params);
 
@@ -880,6 +889,13 @@ async function* timedWhenStep<T, R>(params: {
 
   if (clock() >= deadline) {
     return yield* record<TimedWhenResult<R>>({ status: "timed-out" });
+  }
+
+  // Record the deadline before the waiter is registered. Otherwise a delivery
+  // that fails between the two leaves a waiter, and each delivery it wakes
+  // computes the deadline again.
+  if (recordedDeadline === undefined) {
+    yield new StepRecordUnfinished(new StepStoreWait(deadline));
   }
 
   yield* registerWaiter(evaluated.waiter, deadline);

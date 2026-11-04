@@ -1,5 +1,6 @@
 import {
   DurableValueError,
+  StepCacheCheck,
   StepDelay,
   StepEffectWait,
   StepError,
@@ -13,6 +14,43 @@ import {
   durableValueCodec,
   encodeThrownValue,
 } from "@yieldstar/core";
+
+/**
+ * Asks the driver to resume the step with its latest unfinished record wrapped
+ * in a `StepUnfinished`, where a plain `StepCacheCheck` resumes it with null.
+ */
+export class UnfinishedCacheCheck extends StepCacheCheck {}
+
+/**
+ * The latest unfinished record of a step, given to a step that yielded an
+ * `UnfinishedCacheCheck`. The step runs again; the record only carries state
+ * from the earlier attempt, such as a timed wait's deadline.
+ */
+export class StepUnfinished extends StepResponse {
+  static type = "step-unfinished";
+  readonly type = "step-unfinished";
+  readonly response: StepResponse;
+  constructor(response: StepResponse) {
+    super();
+    this.response = response;
+  }
+}
+
+/**
+ * Asks the driver to write `response` as an unfinished attempt of the step
+ * before the step continues, so that state such as a deadline is durable
+ * before the step registers a waiter. The driver counts the write as one
+ * attempt, and resumes the step with undefined.
+ */
+export class StepRecordUnfinished extends StepResponse {
+  static type = "record-unfinished";
+  readonly type = "record-unfinished";
+  readonly response: StepResponse;
+  constructor(response: StepResponse) {
+    super();
+    this.response = response;
+  }
+}
 
 /**
  * Encodes a step response for its step record, and returns the response that
