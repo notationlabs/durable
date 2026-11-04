@@ -11,6 +11,8 @@ export type {
   ExecutionClaimFilter,
   ExecutionClient,
   ExecutionLease,
+  ExecutionListPage,
+  ExecutionListRequest,
   ExecutionOutcome,
   ExecutionParent,
   ExecutionRecord,
@@ -26,6 +28,7 @@ export type {
 } from "./base/execution";
 export {
   ExecutionAdmissionError,
+  ExecutionListRequestError,
   InfrastructureError,
   LeaseLostError,
   StepConflictError,
@@ -111,6 +114,7 @@ export {
   executionIdConflict,
   executionNotFound,
   executionStatusAt,
+  matchExecutionAdmission,
   isExecutionClaimable,
   isLeaseCurrent,
   matchStartRequest,
@@ -131,6 +135,38 @@ export {
   ExecutionDispatcher,
 } from "./lib/execution-dispatcher";
 export { waitForExecutionOutcome } from "./lib/wait-for-outcome";
+export type {
+  ActiveExecutionView,
+  ExecutionObserver,
+  ExecutionView,
+  ExecutionViewBase,
+  ExecutionViewPage,
+  ExecutionWaitOptions,
+  TerminalExecutionView,
+  WaitResult,
+} from "./base/observation";
+export { isTerminalExecutionView, toExecutionView } from "./base/observation";
+export type {
+  ExecutionNotifier,
+  ExecutionObserverOptions,
+} from "./lib/execution-observer";
+export {
+  DEFAULT_OBSERVER_POLL_INTERVAL,
+  createExecutionObserver,
+} from "./lib/execution-observer";
+export type {
+  PreparedExecutionListRequest,
+  SequencedExecutionState,
+} from "./lib/execution-list";
+export {
+  DEFAULT_EXECUTION_LIST_LIMIT,
+  EXECUTION_STATUSES,
+  MAX_EXECUTION_LIST_LIMIT,
+  encodeExecutionListCursor,
+  matchesExecutionListRequest,
+  prepareExecutionListRequest,
+  toExecutionListPage,
+} from "./lib/execution-list";
 export type { StandardSchemaV1 } from "@standard-schema/spec";
 export type {
   Draft,

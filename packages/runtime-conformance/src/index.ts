@@ -117,7 +117,7 @@ async function admitWaiting(runtime: Runtime, ...executionIds: string[]) {
       params: undefined,
       context: new Map(),
     });
-    if (admitted.status !== "accepted") {
+    if (admitted.status === "rejected") {
       throw new Error(`admission of "${executionId}" was rejected: ${admitted.message}`);
     }
   }

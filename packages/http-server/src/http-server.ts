@@ -71,7 +71,7 @@ export const createTriggerHandler =
             params: event.params,
             context: event.context,
           });
-          if (admission.status === "accepted") {
+          if (admission.status !== "rejected") {
             return Response.json(
               { executionId: admission.executionId },
               { status: 202 }

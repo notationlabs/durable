@@ -1,6 +1,9 @@
 import type { EventEmitter } from "node:events";
 import type { ExecutionClient, ExecutionOutcome } from "../base/execution";
-import { isTerminalExecutionStatus } from "../base/execution";
+import {
+  DEFAULT_OBSERVER_POLL_INTERVAL,
+  waitForExecutionRecord,
+} from "./execution-observer";
 
 /**
  * Resolves with an execution's outcome once its record is terminal, or with
@@ -14,27 +17,11 @@ export async function waitForExecutionOutcome(
   executionId: string,
   options?: { emitter?: EventEmitter; pollInterval?: number; signal?: AbortSignal }
 ): Promise<ExecutionOutcome | undefined> {
-  const pollInterval = options?.pollInterval ?? 25;
-  const emitter = options?.emitter;
-  let wake: (() => void) | undefined;
-  const nudge = () => wake?.();
-  emitter?.on(executionId, nudge);
-  try {
-    while (true) {
-      options?.signal?.throwIfAborted();
-      const record = await executions.get(executionId);
-      if (!record) return undefined;
-      if (isTerminalExecutionStatus(record.status)) return record.outcome;
-      await new Promise<void>((resolve) => {
-        const timer = setTimeout(resolve, pollInterval);
-        wake = () => {
-          clearTimeout(timer);
-          resolve();
-        };
-      });
-      wake = undefined;
-    }
-  } finally {
-    emitter?.off(executionId, nudge);
-  }
+  const record = await waitForExecutionRecord(executions, executionId, {
+    pollInterval: options?.pollInterval ?? DEFAULT_OBSERVER_POLL_INTERVAL,
+    deadline: Infinity,
+    notifier: options?.emitter,
+    signal: options?.signal,
+  });
+  return record?.outcome;
 }
