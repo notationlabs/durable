@@ -1,5 +1,5 @@
 import { defineConfig } from "@pokit/core";
-import { docs, release } from "pok-plugins";
+import { release } from "pok-plugins";
 
 /** Bundles every package, then emits declarations; identical across packages, so it runs once. */
 const BUILD = "bun --filter '*' build && pnpm exec tsc -b";
@@ -29,6 +29,5 @@ export default defineConfig({
       ],
       preid: "alpha",
     }),
-    docs({ name: "yieldstar-docs" }),
   ],
 });
