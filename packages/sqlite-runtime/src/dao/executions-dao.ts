@@ -1,6 +1,11 @@
-import type { ExecutionState } from "@yieldstar/core";
+import type {
+  ExecutionState,
+  PreparedExecutionListRequest,
+  SequencedExecutionState,
+} from "@yieldstar/core";
 import { nextClaimAt } from "@yieldstar/core";
 import type { SqliteDriver } from "../sqlite-driver";
+import { runTransaction } from "../sqlite-transaction";
 
 class ExecutionRow {
   execution_id!: string;
@@ -20,6 +25,7 @@ class ExecutionRow {
   next_claim_at!: number | null;
   parent_execution_id!: string | null;
   parent_step_key!: string | null;
+  admission_sequence!: number;
 }
 
 class ExecutionIdRow {
@@ -28,8 +34,9 @@ class ExecutionIdRow {
 
 /**
  * Persists every ExecutionState field, plus `next_claim_at` (derived with
- * nextClaimAt) so claimDue can find due executions through an index.
- * Callers own the surrounding transaction.
+ * nextClaimAt) so claimDue can find due executions through an index, and
+ * `admission_sequence`, which orders `list`. Callers own the surrounding
+ * transaction.
  */
 export class ExecutionsDao {
   private db: SqliteDriver;
@@ -58,11 +65,41 @@ export class ExecutionsDao {
         redeliver_at INTEGER,
         next_claim_at INTEGER,
         parent_execution_id TEXT,
-        parent_step_key TEXT
+        parent_step_key TEXT,
+        admission_sequence INTEGER NOT NULL
       );
       CREATE INDEX IF NOT EXISTS idx_executions_next_claim_at
       ON executions(next_claim_at) WHERE next_claim_at IS NOT NULL;
     `);
+    this.addAdmissionSequence();
+    this.db.run(`
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_executions_admission_sequence
+      ON executions(admission_sequence);
+      CREATE INDEX IF NOT EXISTS idx_executions_workflow_admission_sequence
+      ON executions(workflow_id, admission_sequence);
+    `);
+  }
+
+  /**
+   * Databases created before `list` have no admission sequence. Their rows
+   * take their rowid, which SQLite assigns in insertion order while no row
+   * has been deleted. The check runs under the write lock, so processes that
+   * open the file together add the column once.
+   */
+  private addAdmissionSequence() {
+    const hasColumn = () =>
+      this.db
+        .query<{ name: string }>(`PRAGMA table_info(executions)`)
+        .all()
+        .some((column) => column.name === "admission_sequence");
+    if (hasColumn()) return;
+    runTransaction(this.db, () => {
+      if (hasColumn()) return;
+      this.db.run(`
+        ALTER TABLE executions ADD COLUMN admission_sequence INTEGER NOT NULL DEFAULT 0;
+        UPDATE executions SET admission_sequence = rowid;
+      `);
+    });
   }
 
   getState(executionId: string): ExecutionState | undefined {
@@ -101,7 +138,52 @@ export class ExecutionsDao {
       .map((row) => row.execution_id);
   }
 
-  /** Returns false when the execution ID is already in use. */
+  /**
+   * Up to `limit + 1` executions that match the request, newest first. `now`
+   * decides which executions are `running`.
+   */
+  listStates(
+    request: PreparedExecutionListRequest,
+    now: number
+  ): SequencedExecutionState[] {
+    // `running` is derived from a live lease, so the other statuses exclude
+    // executions whose lease has not expired.
+    const statusCondition =
+      request.status === undefined
+        ? ""
+        : request.status === "running"
+          ? "AND lease_expires_at IS NOT NULL AND lease_expires_at > $now"
+          : "AND status = $status AND (lease_expires_at IS NULL OR lease_expires_at <= $now)";
+    return this.db
+      .query<ExecutionRow>(
+        `SELECT * FROM executions
+         WHERE ($workflowId IS NULL OR workflow_id = $workflowId)
+           AND ($before IS NULL OR admission_sequence < $before)
+           ${statusCondition}
+         ORDER BY admission_sequence DESC
+         LIMIT $limit`
+      )
+      .all({
+        $workflowId: request.workflowId ?? null,
+        $before: request.beforeSequence ?? null,
+        $limit: request.limit + 1,
+        ...(request.status === undefined
+          ? {}
+          : request.status === "running"
+            ? { $now: now }
+            : { $now: now, $status: request.status }),
+      })
+      .map((row) => ({
+        state: toState(row),
+        admissionSequence: Number(row.admission_sequence),
+      }));
+  }
+
+  /**
+   * Returns false when the execution ID is already in use. A new execution
+   * takes the next admission sequence; the caller's IMMEDIATE transaction
+   * holds the write lock, so no other process reads the same maximum.
+   */
   insertState(state: ExecutionState): boolean {
     const result = this.db
       .query(
@@ -109,12 +191,14 @@ export class ExecutionsDao {
            execution_id, workflow_id, params, context, status, outcome,
            admitted_at, updated_at, due_at, claimed_due_at, lease_token,
            lease_expires_at, unacknowledged_delivery_count, redeliver_at,
-           next_claim_at, parent_execution_id, parent_step_key
+           next_claim_at, parent_execution_id, parent_step_key,
+           admission_sequence
          ) VALUES (
            $executionId, $workflowId, $params, $context, $status, $outcome,
            $admittedAt, $updatedAt, $dueAt, $claimedDueAt, $leaseToken,
            $leaseExpiresAt, $unacknowledgedDeliveryCount, $redeliverAt,
-           $nextClaimAt, $parentExecutionId, $parentStepKey
+           $nextClaimAt, $parentExecutionId, $parentStepKey,
+           (SELECT COALESCE(MAX(admission_sequence), 0) + 1 FROM executions)
          )
          ON CONFLICT(execution_id) DO NOTHING`
       )

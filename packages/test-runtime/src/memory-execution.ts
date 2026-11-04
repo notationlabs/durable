@@ -3,17 +3,20 @@ import {
   claimExecution,
   createExecutionState,
   createStartedExecution,
-  executionIdConflict,
   executionNotFound,
   isExecutionClaimable,
   isLeaseCurrent,
+  matchExecutionAdmission,
+  matchesExecutionListRequest,
   matchStartRequest,
   nextClaimAt,
   prepareExecutionAdmission,
+  prepareExecutionListRequest,
   prepareExecutionStart,
   releaseExecutionLease,
   renewExecutionLease,
   requestExecutionWake,
+  toExecutionListPage,
   toExecutionRecord,
   type ExecutionAcknowledgeResult,
   type ExecutionAdmissionRequest,
@@ -21,6 +24,8 @@ import {
   type ExecutionClaimFilter,
   type ExecutionClient,
   type ExecutionLease,
+  type ExecutionListPage,
+  type ExecutionListRequest,
   type ExecutionRecord,
   type ExecutionStartRequest,
   type ExecutionStartResult,
@@ -28,6 +33,7 @@ import {
   type ExecutionRenewResult,
   type ExecutionState,
   type ExecutionWakeResult,
+  type SequencedExecutionState,
   type StartRequestState,
   type WorkflowRunOutcome,
 } from "@yieldstar/core";
@@ -39,6 +45,8 @@ import {
  */
 export class MemoryExecutionClient implements ExecutionClient {
   private executions = new Map<string, ExecutionState>();
+  /** Execution IDs in admission order: an ID's admission sequence is its index plus one. */
+  private admissionOrder: string[] = [];
   /** Keyed by startRequestKey. */
   private startRequests = new Map<string, StartRequestState>();
   private clock: () => number;
@@ -59,11 +67,9 @@ export class MemoryExecutionClient implements ExecutionClient {
         message: prepared.message,
       };
     }
-    if (this.executions.has(prepared.executionId)) {
-      return executionIdConflict(prepared.executionId);
-    }
-    this.executions.set(
-      prepared.executionId,
+    const existing = this.executions.get(prepared.executionId);
+    if (existing) return matchExecutionAdmission(existing, prepared);
+    this.insert(
       createExecutionState({
         executionId: prepared.executionId,
         workflowId: request.workflowId,
@@ -93,7 +99,7 @@ export class MemoryExecutionClient implements ExecutionClient {
     while (this.executions.has(created.target.executionId)) {
       created = createStartedExecution({ start, caller, now: this.clock() });
     }
-    this.executions.set(created.target.executionId, created.target);
+    this.insert(created.target);
     this.startRequests.set(key, created.startRequest);
     return { status: "accepted", executionId: created.target.executionId };
   }
@@ -101,6 +107,23 @@ export class MemoryExecutionClient implements ExecutionClient {
   async get(executionId: string): Promise<ExecutionRecord | undefined> {
     const state = this.executions.get(executionId);
     return state ? toExecutionRecord(state, this.clock()) : undefined;
+  }
+
+  async list(request?: ExecutionListRequest): Promise<ExecutionListPage> {
+    const prepared = prepareExecutionListRequest(request);
+    const now = this.clock();
+    const matches: SequencedExecutionState[] = [];
+    const start = Math.min(
+      (prepared.beforeSequence ?? Infinity) - 1,
+      this.admissionOrder.length
+    );
+    for (let i = start - 1; i >= 0 && matches.length <= prepared.limit; i--) {
+      const state = this.executions.get(this.admissionOrder[i])!;
+      if (matchesExecutionListRequest(state, prepared, now)) {
+        matches.push({ state, admissionSequence: i + 1 });
+      }
+    }
+    return toExecutionListPage(matches, prepared, now);
   }
 
   async requestWake(request: {
@@ -136,6 +159,11 @@ export class MemoryExecutionClient implements ExecutionClient {
   isLeaseCurrent(lease: ExecutionLease): boolean {
     const state = this.executions.get(lease.executionId);
     return state !== undefined && isLeaseCurrent(state, lease);
+  }
+
+  private insert(state: ExecutionState) {
+    this.executions.set(state.executionId, state);
+    this.admissionOrder.push(state.executionId);
   }
 
   async claimDue(request: {
