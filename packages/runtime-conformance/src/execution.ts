@@ -1,11 +1,14 @@
 import {
   DEFAULT_LEASE_DURATION,
+  EXECUTION_STATUSES,
+  ExecutionListRequestError,
   defineStore,
   durableValueCodec,
   redeliveryDelay,
   registerErrorClass,
   type DurableObject,
   type ExecutionLease,
+  type ExecutionListRequest,
   type ExecutionStartResult,
   type Runtime,
   type StandardSchemaV1,
@@ -2143,6 +2146,503 @@ export function registerExecutionClientConformance({
           code: "START_REQUEST_MISMATCH",
         });
         expect(await claimedIds(restarted)).toEqual([first]);
+      });
+    });
+
+    describe("idempotent admission", () => {
+      const charge = {
+        executionId: "order-42",
+        workflowId: "charge-order",
+        params: { orderId: 42, amount: { value: 30, currency: "USD" } },
+        context: new Map([["token", "first"]]),
+        idempotent: true,
+      };
+
+      it("accepts a first idempotent admission like any other", async ({ runtime, clock }) => {
+        expect(await runtime.executions.admit(charge)).toEqual({
+          status: "accepted",
+          executionId: "order-42",
+        });
+        expect(await runtime.executions.get("order-42")).toMatchObject({
+          workflowId: "charge-order",
+          params: charge.params,
+          status: "admitted",
+          admittedAt: clock.now,
+        });
+        expect(await claimedIds(runtime)).toEqual(["order-42"]);
+      });
+
+      it("returns existing for a repeat with the same request and admits nothing", async ({
+        runtime,
+        harness,
+        advance,
+      }) => {
+        await runtime.executions.admit(charge);
+        const before = await runtime.executions.get("order-42");
+        advance(10);
+        const peer = (await harness.createPeer?.()) ?? runtime;
+        for (const client of [runtime, peer]) {
+          expect(await client.executions.admit(charge)).toEqual({
+            status: "existing",
+            executionId: "order-42",
+          });
+        }
+        expect(await runtime.executions.get("order-42")).toEqual(before);
+        expect(await claimedIds(runtime)).toEqual(["order-42"]);
+      });
+
+      it("returns existing for a repeat that differs only in context", async ({ runtime }) => {
+        await runtime.executions.admit(charge);
+        expect(
+          await runtime.executions.admit({
+            ...charge,
+            context: new Map([["token", "refreshed"]]),
+          })
+        ).toEqual({ status: "existing", executionId: "order-42" });
+        expect(
+          [...(await runtime.executions.get("order-42"))!.context.entries()]
+        ).toEqual([["token", "first"]]);
+      });
+
+      it("returns existing for a repeat whose params keys are in a different order", async ({
+        runtime,
+      }) => {
+        await runtime.executions.admit(charge);
+        expect(
+          await runtime.executions.admit({
+            ...charge,
+            params: { amount: { currency: "USD", value: 30 }, orderId: 42 },
+          })
+        ).toEqual({ status: "existing", executionId: "order-42" });
+      });
+
+      it("rejects a repeat that changes the workflow ID or params with EXECUTION_REQUEST_MISMATCH, leaving the record unchanged", async ({
+        runtime,
+        advance,
+      }) => {
+        await runtime.executions.admit(charge);
+        await runtime.executions.admit({
+          ...charge,
+          executionId: "without-params",
+          params: undefined,
+        });
+        const before = await runtime.executions.get("order-42");
+        advance(10);
+
+        const repeats: [string, { workflowId?: string; params?: unknown }][] = [
+          ["order-42", { workflowId: "refund-order" }],
+          ["order-42", { params: { orderId: 42, amount: { value: 40, currency: "USD" } } }],
+          ["order-42", { params: { ...charge.params, extraItem: true } }],
+          ["order-42", { params: { orderId: 42 } }],
+          ["order-42", { params: undefined }],
+          // An undefined property is not the same as a missing one.
+          ["order-42", { params: { ...charge.params, note: undefined } }],
+          // Missing parameters and an empty object do not match.
+          ["without-params", { params: {} }],
+        ];
+        for (const [executionId, change] of repeats) {
+          const mismatch = await runtime.executions.admit({
+            ...charge,
+            executionId,
+            ...change,
+          } as typeof charge);
+          expect(mismatch).toMatchObject({
+            status: "rejected",
+            code: "EXECUTION_REQUEST_MISMATCH",
+          });
+          expect(mismatch.status === "rejected" && typeof mismatch.message).toBe("string");
+        }
+
+        expect(await runtime.executions.get("order-42")).toEqual(before);
+        expect(await claimedIds(runtime)).toEqual(["order-42", "without-params"]);
+        expect(await runtime.executions.admit(charge)).toEqual({
+          status: "existing",
+          executionId: "order-42",
+        });
+      });
+
+      it("returns existing for a repeat of an execution admitted without idempotent mode", async ({
+        runtime,
+      }) => {
+        const { idempotent: _, ...plain } = charge;
+        expect(await runtime.executions.admit(plain)).toEqual({
+          status: "accepted",
+          executionId: "order-42",
+        });
+        expect(await runtime.executions.admit(charge)).toEqual({
+          status: "existing",
+          executionId: "order-42",
+        });
+      });
+
+      it("returns existing for a repeat of a terminal execution, and still rejects a mismatch", async ({
+        runtime,
+      }) => {
+        await runtime.executions.admit(charge);
+        const lease = await claimOne(runtime, "order-42");
+        await runtime.executions.acknowledge({
+          lease,
+          outcome: { status: "failed", error: new Error("card declined") },
+        });
+        await runtime.executions.admit({ ...charge, executionId: "order-43" });
+        const completed = await claimOne(runtime, "order-43");
+        await runtime.executions.acknowledge({
+          lease: completed,
+          outcome: { status: "completed", result: "receipt" },
+        });
+
+        for (const executionId of ["order-42", "order-43"]) {
+          expect(await runtime.executions.admit({ ...charge, executionId })).toEqual({
+            status: "existing",
+            executionId,
+          });
+          expect(
+            await runtime.executions.admit({
+              ...charge,
+              executionId,
+              workflowId: "refund-order",
+            })
+          ).toMatchObject({ status: "rejected", code: "EXECUTION_REQUEST_MISMATCH" });
+        }
+        expect(await claim(runtime)).toEqual([]);
+      });
+
+      it("accepts one and returns existing for the other of two concurrent repeats", async ({
+        runtime,
+        harness,
+      }) => {
+        const peer = (await harness.createPeer?.()) ?? runtime;
+        const results = await Promise.all([
+          runtime.executions.admit(charge),
+          peer.executions.admit(charge),
+        ]);
+        expect(results.map((result) => result.status).sort()).toEqual([
+          "accepted",
+          "existing",
+        ]);
+        for (const result of results) {
+          expect(result).toMatchObject({ executionId: "order-42" });
+        }
+        expect(await claimedIds(runtime)).toEqual(["order-42"]);
+        expect((await runtime.executions.list()).executions).toHaveLength(1);
+      });
+
+      it("rejects an idempotent admission without an ID with IDEMPOTENT_TRIGGER_REQUIRES_ID and admits nothing", async ({
+        runtime,
+      }) => {
+        const { executionId: _, ...withoutId } = charge;
+        const rejected = await runtime.executions.admit(withoutId);
+        expect(rejected).toMatchObject({
+          status: "rejected",
+          code: "IDEMPOTENT_TRIGGER_REQUIRES_ID",
+        });
+        expect(rejected.status === "rejected" && typeof rejected.message).toBe("string");
+        expect(await claim(runtime)).toEqual([]);
+        expect((await runtime.executions.list()).executions).toEqual([]);
+      });
+
+      it("rejects an idempotent flag that is not a boolean with INVALID_EXECUTION_EVENT", async ({
+        runtime,
+      }) => {
+        expect(
+          await runtime.executions.admit({
+            ...charge,
+            idempotent: "yes" as unknown as boolean,
+          })
+        ).toMatchObject({ status: "rejected", code: "INVALID_EXECUTION_EVENT" });
+        expect(await runtime.executions.get("order-42")).toBeUndefined();
+      });
+
+      it("still rejects a used ID with EXECUTION_ID_CONFLICT without idempotent mode", async ({
+        runtime,
+      }) => {
+        await runtime.executions.admit(charge);
+        for (const idempotent of [undefined, false]) {
+          expect(await runtime.executions.admit({ ...charge, idempotent })).toMatchObject({
+            status: "rejected",
+            code: "EXECUTION_ID_CONFLICT",
+          });
+        }
+        expect(await claimedIds(runtime)).toEqual(["order-42"]);
+      });
+
+      itAfterRestart("returns existing for a repeat after a restart", async ({
+        runtime,
+        restart,
+      }) => {
+        await runtime.executions.admit(charge);
+        const restarted = await restart();
+        expect(await restarted.executions.admit(charge)).toEqual({
+          status: "existing",
+          executionId: "order-42",
+        });
+        expect(
+          await restarted.executions.admit({ ...charge, workflowId: "refund-order" })
+        ).toMatchObject({ status: "rejected", code: "EXECUTION_REQUEST_MISMATCH" });
+        expect(await claimedIds(restarted)).toEqual(["order-42"]);
+      });
+    });
+
+    describe("list", () => {
+      async function listIds(
+        runtime: Runtime,
+        request?: ExecutionListRequest
+      ): Promise<{ ids: string[]; cursor?: string }> {
+        const page = await runtime.executions.list(request);
+        return {
+          ids: page.executions.map((record) => record.executionId),
+          ...(page.cursor !== undefined ? { cursor: page.cursor } : {}),
+        };
+      }
+
+      /** Pages through every matching execution, newest first. */
+      async function listAll(
+        runtime: Runtime,
+        request: Omit<ExecutionListRequest, "cursor"> = {}
+      ) {
+        const ids: string[] = [];
+        let cursor: string | undefined;
+        do {
+          const page = await listIds(runtime, { ...request, cursor });
+          ids.push(...page.ids);
+          cursor = page.cursor;
+        } while (cursor !== undefined);
+        return ids;
+      }
+
+      it("returns an empty page without a cursor when there are no executions", async ({
+        runtime,
+      }) => {
+        expect(await runtime.executions.list()).toEqual({ executions: [] });
+      });
+
+      it("returns records newest first, each as get returns it", async ({
+        runtime,
+        advance,
+      }) => {
+        for (const id of ["a", "b", "c", "d"]) {
+          await admit(runtime, id);
+          advance(1);
+        }
+        await drain(runtime);
+        await admit(runtime, "e");
+        const page = await runtime.executions.list();
+        expect(page.cursor).toBeUndefined();
+        expect(page.executions.map((record) => record.executionId)).toEqual([
+          "e",
+          "d",
+          "c",
+          "b",
+          "a",
+        ]);
+        for (const record of page.executions) {
+          expect(record).toEqual(await runtime.executions.get(record.executionId));
+        }
+      });
+
+      it("includes executions admitted by start", async ({ runtime }) => {
+        await admitSuspended(runtime, "caller");
+        const target = acceptedId(await startFrom(runtime, "caller", "ship"));
+        expect((await listIds(runtime)).ids).toEqual([target, "caller"]);
+      });
+
+      it("orders by admission, not by admittedAt, when clocks disagree", async ({
+        runtime,
+        harness,
+        clock,
+      }) => {
+        const peer = (await harness.createPeer?.()) ?? runtime;
+        await admit(runtime, "first");
+        // The second admission reads a clock an hour behind the first.
+        clock.now -= 3_600_000;
+        await admit(peer, "second");
+        clock.now += 3_600_000;
+        await admit(runtime, "third");
+
+        const records = (await runtime.executions.list()).executions;
+        expect(records.map((record) => record.executionId)).toEqual([
+          "third",
+          "second",
+          "first",
+        ]);
+        expect(records[1].admittedAt).toBeLessThan(records[2].admittedAt);
+        expect((await listIds(peer)).ids).toEqual(["third", "second", "first"]);
+      });
+
+      it("returns 50 executions per page by default and pages with cursors", async ({
+        runtime,
+      }) => {
+        const ids = Array.from({ length: 120 }, (_, i) => `e-${String(i).padStart(3, "0")}`);
+        for (const id of ids) await admit(runtime, id);
+        const newestFirst = [...ids].reverse();
+
+        const first = await listIds(runtime);
+        expect(first.ids).toEqual(newestFirst.slice(0, 50));
+        expect(typeof first.cursor).toBe("string");
+        const second = await listIds(runtime, { cursor: first.cursor });
+        expect(second.ids).toEqual(newestFirst.slice(50, 100));
+        const third = await listIds(runtime, { cursor: second.cursor });
+        expect(third).toEqual({ ids: newestFirst.slice(100) });
+      });
+
+      it("returns at most `limit` executions, and no cursor when a full page is the last", async ({
+        runtime,
+      }) => {
+        for (const id of ["a", "b", "c", "d"]) await admit(runtime, id);
+        const first = await listIds(runtime, { limit: 2 });
+        expect(first.ids).toEqual(["d", "c"]);
+        expect(await listIds(runtime, { limit: 2, cursor: first.cursor })).toEqual({
+          ids: ["b", "a"],
+        });
+        expect(await listIds(runtime, { limit: 4 })).toEqual({ ids: ["d", "c", "b", "a"] });
+      });
+
+      it("returns at most 1000 executions per page", async ({ runtime }) => {
+        for (let i = 0; i < 1001; i++) {
+          await runtime.executions.admit({
+            workflowId: "workflow",
+            params: undefined,
+            context: new Map(),
+          });
+        }
+        const first = await listIds(runtime, { limit: 5000 });
+        expect(first.ids).toHaveLength(1000);
+        const second = await listIds(runtime, { limit: 5000, cursor: first.cursor });
+        expect(second.ids).toHaveLength(1);
+        expect(second.cursor).toBeUndefined();
+        expect(new Set([...first.ids, ...second.ids]).size).toBe(1001);
+      });
+
+      it("never repeats an execution, and lists every earlier one, while new executions are admitted", async ({
+        runtime,
+        harness,
+      }) => {
+        const peer = (await harness.createPeer?.()) ?? runtime;
+        const earlier = Array.from({ length: 7 }, (_, i) => `earlier-${i}`);
+        for (const id of earlier) await admit(runtime, id);
+
+        const seen: string[] = [];
+        let page = await listIds(runtime, { limit: 2 });
+        let n = 0;
+        while (true) {
+          seen.push(...page.ids);
+          if (page.cursor === undefined) break;
+          await admit(n % 2 ? runtime : peer, `later-${n++}`);
+          page = await listIds(n % 2 ? peer : runtime, { limit: 2, cursor: page.cursor });
+        }
+        expect(seen).toEqual([...earlier].reverse());
+        expect((await listIds(runtime, { limit: 2 })).ids).toEqual([
+          `later-${n - 1}`,
+          `later-${n - 2}`,
+        ]);
+      });
+
+      it("filters by workflow ID", async ({ runtime }) => {
+        await admit(runtime, "charge-1", "charge-order");
+        await admit(runtime, "refund-1", "refund-order");
+        await admit(runtime, "charge-2", "charge-order");
+        await admit(runtime, "refund-2", "refund-order");
+        await admit(runtime, "charge-3", "charge-order");
+
+        expect(await listAll(runtime, { workflowId: "charge-order", limit: 2 })).toEqual([
+          "charge-3",
+          "charge-2",
+          "charge-1",
+        ]);
+        expect(await listAll(runtime, { workflowId: "refund-order" })).toEqual([
+          "refund-2",
+          "refund-1",
+        ]);
+        expect(await listAll(runtime, { workflowId: "unknown" })).toEqual([]);
+      });
+
+      it("filters by status at the runtime clock, including running", async ({
+        runtime,
+        advance,
+      }) => {
+        await admitSuspended(runtime, "suspended");
+        await admitCompleted(runtime, "completed", "receipt");
+        await admit(runtime, "failed");
+        await runtime.executions.acknowledge({
+          lease: await claimOne(runtime, "failed"),
+          outcome: { status: "failed", error: new Error("card declined") },
+        });
+        await admit(runtime, "expired", "refund-order");
+        await claimOne(runtime, "expired");
+        advance(LEASE);
+        // The expired lease's execution is not claimable again until the
+        // redelivery delay passes, so only this one is claimed.
+        await admit(runtime, "running");
+        await claimOne(runtime, "running");
+        await admit(runtime, "admitted");
+
+        const byStatus = async () =>
+          Object.fromEntries(
+            await Promise.all(
+              EXECUTION_STATUSES.map(
+                async (status) => [status, await listAll(runtime, { status, limit: 1 })] as const
+              )
+            )
+          );
+        expect(await byStatus()).toEqual({
+          admitted: ["admitted", "expired"],
+          running: ["running"],
+          suspended: ["suspended"],
+          completed: ["completed"],
+          failed: ["failed"],
+        });
+        expect(
+          await listAll(runtime, { workflowId: "refund-order", status: "admitted" })
+        ).toEqual(["expired"]);
+        expect(
+          await listAll(runtime, { workflowId: "refund-order", status: "running" })
+        ).toEqual([]);
+
+        advance(LEASE);
+        expect(await byStatus()).toEqual({
+          admitted: ["admitted", "running", "expired"],
+          running: [],
+          suspended: ["suspended"],
+          completed: ["completed"],
+          failed: ["failed"],
+        });
+      });
+
+      const invalidRequests: [string, unknown][] = [
+        ["a zero limit", { limit: 0 }],
+        ["a negative limit", { limit: -1 }],
+        ["a fractional limit", { limit: 1.5 }],
+        ["a string limit", { limit: "10" }],
+        ["an unknown status", { status: "cancelled" }],
+        ["a non-string workflow ID", { workflowId: 7 }],
+        ["a malformed cursor", { cursor: "not a cursor" }],
+        ["a cursor that is not one this runtime issued", { cursor: "e30" }],
+        ["a non-string cursor", { cursor: 7 }],
+        ["a request that is not an object", "everything"],
+      ];
+      for (const [label, request] of invalidRequests) {
+        it(`throws ExecutionListRequestError for ${label}`, async ({ runtime }) => {
+          await admit(runtime, "a");
+          const error = await runtime.executions
+            .list(request as ExecutionListRequest)
+            .then(
+              () => undefined,
+              (err: unknown) => err
+            );
+          expect(error).toBeInstanceOf(ExecutionListRequestError);
+          expect(error).toMatchObject({ code: "INVALID_LIST_REQUEST" });
+        });
+      }
+
+      itAfterRestart("resumes a cursor after a restart", async ({ runtime, restart }) => {
+        for (const id of ["a", "b", "c"]) await admit(runtime, id);
+        const first = await listIds(runtime, { limit: 2 });
+        const restarted = await restart();
+        await admit(restarted, "d");
+        expect(await listIds(restarted, { limit: 2, cursor: first.cursor })).toEqual({
+          ids: ["a"],
+        });
+        expect((await listIds(restarted)).ids).toEqual(["d", "c", "b", "a"]);
       });
     });
 

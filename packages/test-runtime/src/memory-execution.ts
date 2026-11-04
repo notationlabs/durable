@@ -113,14 +113,18 @@ export class MemoryExecutionClient implements ExecutionClient {
     const prepared = prepareExecutionListRequest(request);
     const now = this.clock();
     const matches: SequencedExecutionState[] = [];
-    const start = Math.min(
-      (prepared.beforeSequence ?? Infinity) - 1,
-      this.admissionOrder.length
+    const before = Math.min(
+      prepared.beforeSequence ?? Infinity,
+      this.admissionOrder.length + 1
     );
-    for (let i = start - 1; i >= 0 && matches.length <= prepared.limit; i--) {
-      const state = this.executions.get(this.admissionOrder[i])!;
+    for (
+      let sequence = before - 1;
+      sequence >= 1 && matches.length <= prepared.limit;
+      sequence--
+    ) {
+      const state = this.executions.get(this.admissionOrder[sequence - 1])!;
       if (matchesExecutionListRequest(state, prepared, now)) {
-        matches.push({ state, admissionSequence: i + 1 });
+        matches.push({ state, admissionSequence: sequence });
       }
     }
     return toExecutionListPage(matches, prepared, now);
