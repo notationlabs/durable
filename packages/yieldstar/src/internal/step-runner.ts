@@ -100,8 +100,9 @@ export type WorkflowStore<T> = {
   /**
    * Waits for the selector to match or for `deadline`, whichever is recorded
    * first (RFC 007). `deadline` is an absolute time in milliseconds, compared
-   * with the runtime clock. The runtime clock is `Date.now` unless the
-   * runtime was given its own clock. The first evaluation records the
+   * with the runtime clock. The runtime clock is `Date.now` by default. A
+   * runtime given its own clock must keep it in step with `Date.now()`, or
+   * the comparison mixes two clocks. The first evaluation records the
    * deadline, and later evaluations use the recorded one. Each evaluation
    * runs the selector first, so a match returns `matched` even after the
    * deadline.

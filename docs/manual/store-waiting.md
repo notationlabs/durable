@@ -24,7 +24,7 @@ const message = yield* store.when(`next-message:${turn}`, (s) =>
 
 ## Waiting with a deadline
 
-Pass `{ deadline }` to wait for the condition or for a time, whichever comes first. The deadline is an absolute timestamp in milliseconds. The step compares it with the runtime clock. The runtime clock is `Date.now()` unless the runtime was created with its own `clock`; in that case, compute the deadline from that clock rather than from `Date.now()`. The timed form always takes an explicit key:
+Pass `{ deadline }` to wait for the condition or for a time, whichever comes first. The deadline is an absolute timestamp in milliseconds. The step compares it with the runtime clock, which is `Date.now()` by default. Workflow code cannot read the runtime clock, so a runtime created with its own `clock` must keep that clock in step with `Date.now()`, as tests do when they fake both. Otherwise the comparison mixes two clocks. The timed form always takes an explicit key:
 
 ```ts
 const approval = step.store(ApprovalStore, { id: orderId });
