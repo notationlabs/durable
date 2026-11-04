@@ -149,6 +149,8 @@ yield* step.effect("key", { effectId, operation, input, lookup, perform, retryIn
 
 `step.store` returns a `WorkflowStore` handle synchronously and records no step, so a loop or helper can request the same store again. `id` defaults to `event.executionId`. The handle has the readonly properties `definition`, `id` and `key`, and the durable operations `get`, `select`, `update`, `updateFrom`, `deleteFrom`, `when` and `take`, each of which creates a missing store from the definition's `initial` – see [Durable Stores](../manual/stores.md) and [Waiting on State](../manual/store-waiting.md). Helpers that take the step runner can type it as `StepRunner`.
 
+`when(key, selector, { deadline })` waits for the selector to match or for `deadline`, whichever is recorded first, and returns a `TimedWhenResult<R>`: `{ status: "matched", value }` or `{ status: "timed-out" }` – see [Waiting with a deadline](../manual/store-waiting.md#waiting-with-a-deadline).
+
 `step.start` starts another workflow as its own execution, once per step key, and returns `{ executionId }` – see [Steps](../manual/steps.md#stepstart).
 
 `step.effect` calls an external system under a stable `effectId`, looking up an uncertain earlier attempt before performing it again, and returns the operation's result – see [Steps](../manual/steps.md#stepeffect). Its descriptor is typed `EffectDescriptor<T, Input>`, and `lookup` resolves with an `EffectLookup<T>`:
