@@ -24,7 +24,7 @@ const message = yield* store.when(`next-message:${turn}`, (s) =>
 
 ## Waiting with a deadline
 
-Pass `{ deadline }` to wait for the condition or for a time, whichever comes first. The deadline is an absolute timestamp in milliseconds, read against the runtime clock. The timed form always takes an explicit key:
+Pass `{ deadline }` to wait for the condition or for a time, whichever comes first. The deadline is an absolute timestamp in milliseconds. The step compares it with the runtime clock. The runtime clock is `Date.now()` unless the runtime was created with its own `clock`; in that case, compute the deadline from that clock rather than from `Date.now()`. The timed form always takes an explicit key:
 
 ```ts
 const approval = step.store(ApprovalStore, { id: orderId });
@@ -50,17 +50,30 @@ type TimedWhenResult<R> =
   | { status: "timed-out" };
 ```
 
-The form without a deadline does not change, and returns the selected value.
+The form without a deadline does not change, and returns the selected value. In the timed form, `deadline` is required and must be a finite number. A workflow whose deadline is optional therefore needs two call sites, one for each form, and must handle both return types:
 
-The selector and the deadline compete to finish one step. The rules are:
+```ts
+const decision = deadline === undefined
+  ? yield* approval.when(`decision:${orderId}`, (state) => state.decision)
+  : yield* approval.when(`decision:${orderId}`, (state) => state.decision, { deadline });
+```
 
-- **The first evaluation records the deadline.** The step is recorded unfinished with the deadline as its wake time, as `step.delay` records its wake time. Later evaluations use the recorded deadline and ignore the argument. So a deadline computed from `Date.now()` does not move when the workflow replays.
+The step records the first result it finds: `matched` if the selector matches, otherwise `timed-out` once the deadline has passed. The rules are:
+
+- **The first evaluation records the deadline.** The step is recorded unfinished with the deadline as its wake time, as `step.delay` records its wake time. Later evaluations use the recorded deadline and ignore the argument. So a deadline computed from `Date.now()` does not move when the workflow replays. If the unfinished record has no deadline, because an earlier version of the workflow used the same key without one, the step uses the argument and records it.
 - **The selector runs first.** Each evaluation runs the selector before it compares the deadline with the clock. A match returns `matched`, even when the deadline has already passed. Without a match, a deadline that has passed returns `timed-out`.
-- **The first recorded result wins.** Once the step records `timed-out`, a later matching update cannot replace it, and replay returns `timed-out`. The same holds for `matched`.
+- **Only the first recorded result counts.** Once the step records `timed-out`, a later matching update cannot replace it, and replay returns `timed-out`. The same holds for `matched`.
+- **A commit that does not match changes nothing.** The commit makes the execution due, the selector runs again, and the step suspends again with the recorded deadline as `wakeAt`.
 - **The deadline never ends the wait early.** The step does not time out before the deadline. The runtime makes the execution due at the deadline, but it does not promise to deliver it at that exact moment.
-- **The loser is cleaned up.** The write that records the result deletes the waiter. The timer needs no removal: once the step has a result, the delivery no longer reports the deadline as its wake time, and acknowledging that delivery drops the old wake.
+- **Recording the result removes both wakes.** The write that records the result deletes the waiter. The deadline wake needs no removal: once the step has a result, the delivery no longer reports the deadline as its wake time, and acknowledging that delivery drops the old wake.
 
-An unresolved evaluation registers the waiter first, then records the unfinished step with the deadline, and only then ends the delivery as `suspended` with `wakeAt` set to the deadline. If the worker crashes before the delivery is acknowledged, the execution is delivered again and the step installs whatever is missing. A worker whose lease has been taken over cannot record a result, so it cannot delete the waiter of the worker that holds the lease now.
+An unresolved evaluation takes these steps in order:
+
+1. On the first evaluation, it records the unfinished step with the deadline.
+2. It registers the waiter.
+3. It records the unfinished step for this delivery, and ends the delivery as `suspended` with `wakeAt` set to the deadline.
+
+If the worker crashes before the delivery is acknowledged, the execution is delivered again. The redelivery reads the recorded deadline if step 1 completed, runs the selector again, and registers the waiter again. A worker whose lease has been taken over cannot record a result, so it cannot delete the waiter of the worker that holds the lease now.
 
 A timed `when` covers one store and one deadline. It cannot wait on several stores.
 

@@ -106,7 +106,8 @@ export type WorkflowStore<T> = {
    * with the runtime clock. The runtime clock is `Date.now` unless the
    * runtime was given its own clock. The first evaluation records the
    * deadline, and later evaluations use the recorded one. Each evaluation
-   * runs the selector first, so a match wins even after the deadline.
+   * runs the selector first, so a match returns `matched` even after the
+   * deadline.
    */
   when<R>(
     key: string,
