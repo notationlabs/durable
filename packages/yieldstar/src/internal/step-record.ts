@@ -66,6 +66,9 @@ function encodeResponse(response: StepResponse, stepKey: string): string {
   if (response instanceof StepEffectWait) {
     return `{"type":"effect-wait","wakeAt":${JSON.stringify(response.wakeAt)}}`;
   }
+  if (response instanceof StepStoreWait && response.wakeAt !== undefined) {
+    return `{"type":"store-wait","wakeAt":${JSON.stringify(response.wakeAt)}}`;
+  }
   if (response instanceof StepStoreWait || response instanceof StepInvalid) {
     return `{"type":${JSON.stringify(response.type)}}`;
   }
@@ -96,7 +99,9 @@ export function decodeStepRecord(json: string): StepResponse {
       case "effect-wait":
         return new StepEffectWait(record.wakeAt);
       case "store-wait":
-        return new StepStoreWait();
+        return new StepStoreWait(
+          typeof record.wakeAt === "number" ? record.wakeAt : undefined
+        );
       case "step-invalid":
         return new StepInvalid();
     }

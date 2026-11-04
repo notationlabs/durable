@@ -21,6 +21,7 @@ export type {
   EffectLookup,
   StepRunner,
   StepRunOptions,
+  TimedWhenResult,
   WorkflowStore,
 } from "./internal/step-runner";
 export type {

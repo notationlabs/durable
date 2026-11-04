@@ -18,6 +18,7 @@ import {
   StepDelay,
   StepCacheCheck,
   StepStoreWait,
+  StepUnfinished,
   type StoreDefinition,
   type StoreDeleteFromResult,
   type StoreKey,
@@ -95,6 +96,19 @@ export type WorkflowStore<T> = {
     selector: StoreSelector<T, R | undefined | null | false> &
       DurableMatchSelector<T, R>
   ): AsyncGenerator<StepResponse, NonNullable<R>>;
+  /**
+   * Waits for the selector to match or for `deadline`, an absolute time in
+   * milliseconds on the runtime clock, whichever is recorded first (RFC 007).
+   * The first evaluation records the deadline, and later evaluations use the
+   * recorded one. Each evaluation runs the selector first, so a match wins
+   * even after the deadline has passed.
+   */
+  when<R>(
+    key: string,
+    selector: StoreSelector<T, R | undefined | null | false> &
+      DurableMatchSelector<T, R>,
+    options: { deadline: number }
+  ): AsyncGenerator<StepResponse, TimedWhenResult<R>>;
   take<R>(
     key: string,
     selector: StoreSelector<T, R | undefined | null | false> &
@@ -102,6 +116,10 @@ export type WorkflowStore<T> = {
     claim: (draft: Draft<T>, selected: NonNullable<R>) => void
   ): AsyncGenerator<StepResponse, NonNullable<R>>;
 };
+
+export type TimedWhenResult<R> =
+  | { status: "matched"; value: NonNullable<R> }
+  | { status: "timed-out" };
 
 /** A store selector whose result, which the step records, is durable. */
 type DurableSelector<T, R> = IfDurable<R, StoreSelector<T, Durable<R>>>;
@@ -139,6 +157,7 @@ export function createStepRunner(params: {
       definition,
       id: params?.id ?? event.executionId,
       event,
+      clock,
     });
   }
 
@@ -380,8 +399,9 @@ function createWorkflowStore<T>(params: {
   definition: StoreDefinition<any>;
   id: string;
   event: WorkflowEvent;
+  clock: () => number;
 }): WorkflowStore<T> {
-  const { id, event } = params;
+  const { id, event, clock } = params;
   const key = { storeName: params.definition.name, storeId: id };
   // Any operation may run `initial` on a missing store, so its errors must
   // reach workflow code instead of ending the delivery as infrastructure.
@@ -452,8 +472,29 @@ function createWorkflowStore<T>(params: {
       arg1:
         | string
         | StoreSelector<T, R | undefined | null | false>,
-      arg2?: StoreSelector<T, R | undefined | null | false>
-    ) {
+      arg2?: StoreSelector<T, R | undefined | null | false>,
+      options?: { deadline: number }
+    ): any {
+      const timed = options !== undefined || (typeof arg1 !== "string" && arg2 !== undefined);
+      if (timed) {
+        if (typeof arg1 !== "string" || arg1 === "") {
+          throw new Error("A timed store.when requires a non-empty step key");
+        }
+        const deadline = options?.deadline;
+        if (typeof deadline !== "number" || !Number.isFinite(deadline)) {
+          throw new TypeError("store.when deadline must be a finite number");
+        }
+        return timedWhenStep({
+          definition,
+          id,
+          event,
+          stepKey: arg1,
+          selector: arg2!,
+          deadline,
+          clock,
+        });
+      }
+
       const stepKey =
         typeof arg1 === "string" ? arg1 : getCallSiteHash(this.when);
       const selector = (
@@ -780,13 +821,88 @@ async function* whenStep<T, R>(params: {
   stepKey: string;
   selector: StoreSelector<T, R | undefined | null | false>;
 }): AsyncGenerator<StepResponse, NonNullable<R>, any> {
-  const { definition, id, event, stepKey, selector } = params;
+  const { stepKey } = params;
 
   yield new StepKey(stepKey);
 
   const cached = yield new StepCacheCheck();
 
   if (cached) return yield* replay(cached);
+
+  const evaluated = yield* evaluateWhen(params);
+
+  if (evaluated.matched) return yield* record(evaluated.value);
+
+  yield* registerWaiter(evaluated.waiter);
+
+  throw new Error("Store wait yielded control unexpectedly");
+}
+
+/**
+ * A `when` with a deadline. The selector and the deadline compete to record
+ * one result for the step. The deadline is recorded with the unfinished step
+ * as its `wakeAt`, and the waiter is deleted by the write that records the
+ * result (RFC 007).
+ */
+async function* timedWhenStep<T, R>(params: {
+  definition: StoreDefinition<any>;
+  id: string;
+  event: WorkflowEvent;
+  stepKey: string;
+  selector: StoreSelector<T, R | undefined | null | false>;
+  deadline: number;
+  clock: () => number;
+}): AsyncGenerator<StepResponse, TimedWhenResult<R>, any> {
+  const { stepKey, clock } = params;
+
+  yield new StepKey(stepKey);
+
+  const cached = yield new StepCacheCheck({ unfinished: true });
+
+  let deadline = params.deadline;
+  if (cached instanceof StepUnfinished) {
+    // A deadline computed from the clock must not move on replay.
+    if (cached.response instanceof StepStoreWait && cached.response.wakeAt !== undefined) {
+      deadline = cached.response.wakeAt;
+    }
+  } else if (cached) {
+    return yield* replay(cached);
+  }
+
+  const evaluated = yield* evaluateWhen(params);
+
+  if (evaluated.matched) {
+    return yield* record<TimedWhenResult<R>>({
+      status: "matched",
+      value: evaluated.value,
+    });
+  }
+
+  if (clock() >= deadline) {
+    return yield* record<TimedWhenResult<R>>({ status: "timed-out" });
+  }
+
+  yield* registerWaiter(evaluated.waiter, deadline);
+
+  throw new Error("Store wait yielded control unexpectedly");
+}
+
+/**
+ * Reads the store and runs the selector. Without a match, returns the waiter
+ * that a store change satisfying the selector's read paths would wake.
+ */
+async function* evaluateWhen<T, R>(params: {
+  definition: StoreDefinition<any>;
+  id: string;
+  event: WorkflowEvent;
+  stepKey: string;
+  selector: StoreSelector<T, R | undefined | null | false>;
+}): AsyncGenerator<
+  StepResponse,
+  { matched: true; value: NonNullable<R> } | { matched: false; waiter: StoreWaiter },
+  any
+> {
+  const { definition, id, event, stepKey, selector } = params;
 
   const read: RuntimeCallResult<StoreSnapshot<unknown>> =
     yield new StepRuntimeCall(({ stores }) =>
@@ -802,21 +918,22 @@ async function* whenStep<T, R>(params: {
   );
 
   if (result !== undefined && result !== null && result !== false) {
-    return yield* record(result as NonNullable<R>);
+    return { matched: true, value: result as NonNullable<R> };
   }
 
-  yield* registerWaiter({
-    workflowId: event.workflowId,
-    executionId: event.executionId,
-    stepKey,
-    storeName: definition.name,
-    storeId: id,
-    instanceId: snapshot.instanceId,
-    sinceVersion: snapshot.version,
-    readPaths,
-  });
-
-  throw new Error("Store wait yielded control unexpectedly");
+  return {
+    matched: false,
+    waiter: {
+      workflowId: event.workflowId,
+      executionId: event.executionId,
+      stepKey,
+      storeName: definition.name,
+      storeId: id,
+      instanceId: snapshot.instanceId,
+      sinceVersion: snapshot.version,
+      readPaths,
+    },
+  };
 }
 
 async function* takeStep<T, R>(params: {
@@ -869,9 +986,14 @@ async function* takeStep<T, R>(params: {
   throw new Error("Store take yielded control unexpectedly");
 }
 
-/** Registers a waiter, then suspends the step until a store change wakes it. */
+/**
+ * Registers a waiter, then suspends the step until a store change wakes it,
+ * or until `wakeAt` when it is given. The suspension is recorded and
+ * acknowledged only after the waiter is registered.
+ */
 async function* registerWaiter(
-  waiter: StoreWaiter
+  waiter: StoreWaiter,
+  wakeAt?: number
 ): AsyncGenerator<StepResponse, void, any> {
   const registered: RuntimeCallResult<void> = yield new StepRuntimeCall(
     ({ stores }) => stores.registerWaiter(waiter)
@@ -879,5 +1001,5 @@ async function* registerWaiter(
 
   if (!registered.ok) return yield* fail(waiter.stepKey, registered.error);
 
-  yield new StepStoreWait();
+  yield new StepStoreWait(wakeAt);
 }

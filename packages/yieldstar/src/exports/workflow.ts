@@ -27,6 +27,7 @@ import {
   StepEffectWait,
   StepInvalid,
   StepStoreWait,
+  StepUnfinished,
   WorkflowResult,
   InfrastructureError,
   LeaseLostError,
@@ -130,8 +131,11 @@ export function workflow<
         stepAttempt = cached.meta.attempt + 1;
       }
 
-      // An unfinished record is a failed attempt: run the step again.
+      // An unfinished record is a failed attempt: run the step again. A step
+      // that asks for it still receives the record, e.g. to read a deadline.
+      let unfinished: typeof cached = null;
       if (cached?.meta.done === false) {
+        unfinished = cached;
         cached = null;
       }
 
@@ -150,7 +154,9 @@ export function workflow<
       if (stepResponse instanceof StepCacheCheck) {
         const cachedResponse = cached
           ? decodeStepRecord(cached.stepResponseJson)
-          : null;
+          : unfinished && stepResponse.unfinished
+            ? new StepUnfinished(decodeStepRecord(unfinished.stepResponseJson))
+            : null;
         // Resuming the step runs the step function unless it is cached.
         stopIfAborted(signal);
         iteratorResult = await workflowIterator.next(cachedResponse);
