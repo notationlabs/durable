@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { expect, test } from "vitest";
 import { registerExecutionClientConformance } from "@yieldstar/runtime-conformance";
 import { MemoryRuntime } from "@yieldstar/test-runtime";
 import { SqliteRuntime } from "@yieldstar/sqlite-runtime";
@@ -72,4 +73,54 @@ registerExecutionClientConformance({
       },
     };
   },
+});
+
+test("a database created before list gives its executions admission sequences in insertion order", async () => {
+  const db = createSqliteDb({ path: ":memory:", wal: false });
+  try {
+    db.run(`
+      CREATE TABLE executions (
+        execution_id TEXT PRIMARY KEY,
+        workflow_id TEXT NOT NULL,
+        params TEXT NOT NULL,
+        context TEXT NOT NULL,
+        status TEXT NOT NULL,
+        outcome TEXT,
+        admitted_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        due_at INTEGER,
+        claimed_due_at INTEGER,
+        lease_token INTEGER NOT NULL DEFAULT 0,
+        lease_expires_at INTEGER,
+        unacknowledged_delivery_count INTEGER NOT NULL DEFAULT 0,
+        redeliver_at INTEGER,
+        next_claim_at INTEGER,
+        parent_execution_id TEXT,
+        parent_step_key TEXT
+      );
+      INSERT INTO executions (execution_id, workflow_id, params, context, status, admitted_at, updated_at)
+      VALUES ('old-1', 'charge-order', '{}', '[]', 'admitted', 20, 20),
+             ('old-2', 'charge-order', '{}', '[]', 'admitted', 10, 10);
+    `);
+
+    const runtime = new SqliteRuntime(db);
+    // A second runtime on the same database finds the column already added.
+    const peer = new SqliteRuntime(db);
+    expect(
+      await runtime.executions.admit({
+        executionId: "new",
+        workflowId: "charge-order",
+        params: {},
+        context: new Map(),
+      })
+    ).toEqual({ status: "accepted", executionId: "new" });
+
+    const page = await peer.executions.list({ limit: 2 });
+    expect(page.executions.map((record) => record.executionId)).toEqual(["new", "old-2"]);
+    const rest = await peer.executions.list({ limit: 2, cursor: page.cursor });
+    expect(rest).toMatchObject({ executions: [{ executionId: "old-1" }] });
+    expect(rest.cursor).toBeUndefined();
+  } finally {
+    db.close();
+  }
 });
