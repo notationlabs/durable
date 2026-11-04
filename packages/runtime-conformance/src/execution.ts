@@ -103,7 +103,7 @@ registerErrorClass("ConformanceGatewayTimeoutError", GatewayTimeoutError);
 
 /**
  * Registers the runtime-adapter suite for `ExecutionClient` and fenced heap
- * writes (RFC 001, RFC 002 and RFC 003).
+ * writes (RFC 001, RFC 002, RFC 003 and RFC 007).
  */
 export function registerExecutionClientConformance({
   name,
@@ -782,6 +782,109 @@ export function registerExecutionClientConformance({
         });
         await runtime.executions.acknowledge({ lease, outcome: { status: "suspended" } });
         await appendMessage(runtime, "recorded", "m2");
+        expect(await claim(runtime)).toEqual([]);
+      });
+
+      /**
+       * Suspends `executionId` as a timed `when` does (RFC 007): its waiter is
+       * registered, its unfinished step is recorded, and the delivery is
+       * acknowledged with the deadline as `wakeAt`.
+       */
+      async function suspendTimedWait(runtime: Runtime, executionId: string, deadline: number) {
+        await admit(runtime, executionId);
+        const lease = await claimOne(runtime, executionId);
+        const snapshot = await runtime.stores.getStore({ definition: Store, id: executionId });
+        const registered = waiter(executionId, snapshot.instanceId, snapshot.version);
+        await runtime.stores.registerWaiter(registered);
+        await runtime.heap.writeStep({
+          lease,
+          stepKey: registered.stepKey,
+          stepAttempt: 0,
+          done: false,
+          stepResponseJson: JSON.stringify({ type: "store-wait", wakeAt: deadline }),
+        });
+        await runtime.executions.acknowledge({
+          lease,
+          outcome: { status: "suspended", wakeAt: deadline },
+        });
+        return registered;
+      }
+
+      it("wakes a timed wait for a store commit before its wakeAt, and the result's write leaves neither wake", async ({
+        runtime,
+        clock,
+        advance,
+      }) => {
+        const deadline = clock.now + 1_000;
+        const registered = await suspendTimedWait(runtime, "timed-match", deadline);
+        expect(await claim(runtime)).toEqual([]);
+
+        await appendMessage(runtime, "timed-match", "m1");
+        const lease = await claimOne(runtime, "timed-match");
+        await runtime.heap.writeStep({
+          lease,
+          stepKey: registered.stepKey,
+          stepAttempt: 1,
+          done: true,
+          stepResponseJson: JSON.stringify({ status: "matched", value: { id: "m1" } }),
+        });
+        await runtime.executions.acknowledge({ lease, outcome: { status: "suspended" } });
+
+        advance(deadline - clock.now);
+        expect(await claim(runtime)).toEqual([]);
+        await appendMessage(runtime, "timed-match", "m2");
+        expect(await claim(runtime)).toEqual([]);
+      });
+
+      it("makes a timed wait due at its wakeAt and not before, and the result's write deletes its waiter", async ({
+        runtime,
+        clock,
+        advance,
+      }) => {
+        const deadline = clock.now + 1_000;
+        const registered = await suspendTimedWait(runtime, "timed-out", deadline);
+        advance(deadline - clock.now - 1);
+        expect(await claim(runtime)).toEqual([]);
+
+        advance(1);
+        const lease = await claimOne(runtime, "timed-out");
+        await runtime.heap.writeStep({
+          lease,
+          stepKey: registered.stepKey,
+          stepAttempt: 1,
+          done: true,
+          stepResponseJson: JSON.stringify({ status: "timed-out" }),
+        });
+        await runtime.executions.acknowledge({ lease, outcome: { status: "suspended" } });
+
+        await appendMessage(runtime, "timed-out", "m1");
+        expect(await claim(runtime)).toEqual([]);
+      });
+
+      it("keeps a timed wait's wakeAt only when the next suspended acknowledgement carries it again", async ({
+        runtime,
+        clock,
+        advance,
+      }) => {
+        const deadline = clock.now + 1_000;
+        await suspendTimedWait(runtime, "timed-spurious", deadline);
+
+        // A commit the selector does not match: the delivery suspends again.
+        await appendMessage(runtime, "timed-spurious", "m1");
+        const lease = await claimOne(runtime, "timed-spurious");
+        await runtime.executions.acknowledge({
+          lease,
+          outcome: { status: "suspended", wakeAt: deadline },
+        });
+        advance(deadline - clock.now);
+        const timedOut = await claimOne(runtime, "timed-spurious");
+        await runtime.executions.acknowledge({ lease: timedOut, outcome: { status: "suspended" } });
+
+        await suspendTimedWait(runtime, "timed-dropped", clock.now + 1_000);
+        await appendMessage(runtime, "timed-dropped", "m1");
+        const dropped = await claimOne(runtime, "timed-dropped");
+        await runtime.executions.acknowledge({ lease: dropped, outcome: { status: "suspended" } });
+        advance(1_000);
         expect(await claim(runtime)).toEqual([]);
       });
     });
