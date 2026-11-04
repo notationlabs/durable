@@ -786,9 +786,10 @@ export function registerExecutionClientConformance({
       });
 
       /**
-       * Suspends `executionId` as a timed `when` does (RFC 007): its unfinished
-       * step is recorded with the deadline, its waiter is registered, and the
-       * delivery is acknowledged with the deadline as `wakeAt`.
+       * Suspends `executionId` as the driver does for a timed `when` (RFC 007):
+       * 1. it records the unfinished step with the deadline, 2. it registers
+       * the waiter, 3. it acknowledges the delivery with the deadline as
+       * `wakeAt`. Each delivery writes the unfinished record once.
        */
       async function suspendTimedWait(runtime: Runtime, executionId: string, deadline: number) {
         await admit(runtime, executionId);

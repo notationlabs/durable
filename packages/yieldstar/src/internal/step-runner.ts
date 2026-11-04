@@ -40,13 +40,10 @@ import {
 } from "@yieldstar/core";
 import { RetryableError } from "../exports/errors";
 import { getCallSiteHash } from "./utils";
-import {
-  StepRecordUnfinished,
-  StepUnfinished,
-  UnfinishedCacheCheck,
-} from "./step-record";
+import { StepUnfinished, UnfinishedCacheCheck } from "./step-record";
 import {
   StepRuntimeCall,
+  StepStoreWaitRequest,
   workflowCallback,
   type RuntimeCallResult,
 } from "./runtime-call";
@@ -839,7 +836,7 @@ async function* whenStep<T, R>(params: {
 
   if (evaluated.matched) return yield* record(evaluated.value);
 
-  yield* registerWaiter(evaluated.waiter);
+  yield* waitOnStore(evaluated.waiter);
 
   throw new Error("Store wait yielded control unexpectedly");
 }
@@ -847,9 +844,9 @@ async function* whenStep<T, R>(params: {
 /**
  * A `when` with a deadline (RFC 007). The step records the first result it
  * finds: matched if the selector matches, otherwise timed-out once the
- * deadline has passed. Without a result, it records the deadline as the
- * unfinished step's `wakeAt`, then registers the waiter, then suspends. The
- * write that records the result deletes the waiter.
+ * deadline has passed. Without a result, it suspends with the deadline as
+ * `wakeAt`, which the driver records with the unfinished step before it
+ * registers the waiter. The write that records the result deletes the waiter.
  */
 async function* timedWhenStep<T, R>(params: {
   definition: StoreDefinition<any>;
@@ -892,14 +889,7 @@ async function* timedWhenStep<T, R>(params: {
     return yield* record<TimedWhenResult<R>>({ status: "timed-out" });
   }
 
-  // Record the deadline before the waiter is registered. Otherwise a delivery
-  // that fails between the two leaves a waiter, and each delivery it wakes
-  // computes the deadline again.
-  if (recordedDeadline === undefined) {
-    yield new StepRecordUnfinished(new StepStoreWait(deadline));
-  }
-
-  yield* registerWaiter(evaluated.waiter, deadline);
+  yield* waitOnStore(evaluated.waiter, deadline);
 
   throw new Error("Store wait yielded control unexpectedly");
 }
@@ -989,7 +979,7 @@ async function* takeStep<T, R>(params: {
 
   if (outcome.matched) return yield* record(outcome.selected as NonNullable<R>);
 
-  yield* registerWaiter({
+  yield* waitOnStore({
     workflowId: event.workflowId,
     executionId: event.executionId,
     stepKey,
@@ -1004,19 +994,19 @@ async function* takeStep<T, R>(params: {
 }
 
 /**
- * Registers a waiter, then suspends the step until a store change wakes it,
- * or until `wakeAt` when it is given. The suspension is recorded and
- * acknowledged only after the waiter is registered.
+ * Suspends the step until a store change wakes it, or until `wakeAt` when it
+ * is given. The driver records the unfinished step, then registers the
+ * waiter, then acknowledges the suspension. It resumes the step only when the
+ * registration fails with an error that belongs to workflow code.
  */
-async function* registerWaiter(
+async function* waitOnStore(
   waiter: StoreWaiter,
   wakeAt?: number
 ): AsyncGenerator<StepResponse, void, any> {
-  const registered: RuntimeCallResult<void> = yield new StepRuntimeCall(
-    ({ stores }) => stores.registerWaiter(waiter)
+  const registered: RuntimeCallResult<void> = yield new StepStoreWaitRequest(
+    waiter,
+    wakeAt
   );
 
   if (!registered.ok) return yield* fail(waiter.stepKey, registered.error);
-
-  yield new StepStoreWait(wakeAt);
 }

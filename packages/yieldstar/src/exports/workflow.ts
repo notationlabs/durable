@@ -10,7 +10,6 @@ import type {
 import type { StepRunner } from "../internal/step-runner";
 import { isIterable } from "../internal/utils";
 import {
-  StepRecordUnfinished,
   StepUnfinished,
   UnfinishedCacheCheck,
   decodeStepRecord,
@@ -19,6 +18,7 @@ import {
 import { createStepRunner } from "../internal/step-runner";
 import {
   StepRuntimeCall,
+  StepStoreWaitRequest,
   executeRuntimeCall,
   infrastructure,
 } from "../internal/runtime-call";
@@ -180,6 +180,8 @@ export function workflow<
       }
 
       let stepResponse: StepResponse;
+      // A store wait whose unfinished record is already written.
+      let suspendedOnStore = false;
 
       if (iteratorResult.done) {
         stepResponse = new WorkflowResult(iteratorResult.value);
@@ -204,18 +206,35 @@ export function workflow<
         while (
           stepResponse instanceof StepRuntimeCall ||
           stepResponse instanceof StepEffectCall ||
-          stepResponse instanceof StepRecordUnfinished
+          stepResponse instanceof StepStoreWaitRequest
         ) {
           stopIfAborted(signal);
-          if (stepResponse instanceof StepRecordUnfinished) {
+          if (stepResponse instanceof StepStoreWaitRequest) {
+            const { waiter } = stepResponse;
+            // 1. Record the unfinished step. A timed wait's deadline is then
+            //    durable before its waiter can wake a delivery, so no
+            //    redelivery computes the deadline again.
+            const record = encodeStepRecord(stepResponse, stepKey);
             await writeStep({
               stepKey,
               stepAttempt,
               done: false,
-              stepResponseJson: encodeStepRecord(stepResponse.response, stepKey).json,
+              stepResponseJson: record.json,
             });
+            // 2. Register the waiter.
+            const registered = await executeRuntimeCall(
+              new StepRuntimeCall(({ stores }) => stores.registerWaiter(waiter)),
+              { stores: storeClient, executions: executionClient }
+            );
+            // 3. Suspend; the delivery is acknowledged after registration.
+            if (registered.ok) {
+              stepResponse = record.response;
+              suspendedOnStore = true;
+              break;
+            }
+            // The step records the failure as its next attempt.
             stepAttempt++;
-            iteratorResult = await workflowIterator.next();
+            iteratorResult = await workflowIterator.next(registered);
             stepResponse = iteratorResult.value;
             continue;
           }
@@ -277,7 +296,7 @@ export function workflow<
         (stepResponse instanceof StepStoreWait ||
           stepResponse instanceof StepEffectWait);
 
-      if (!cached && stepResponseJson !== undefined) {
+      if (!cached && stepResponseJson !== undefined && !suspendedOnStore) {
         await writeStep({
           stepKey,
           stepAttempt,

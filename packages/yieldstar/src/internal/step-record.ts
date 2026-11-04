@@ -37,22 +37,6 @@ export class StepUnfinished extends StepResponse {
 }
 
 /**
- * Asks the driver to write `response` as an unfinished attempt of the step
- * before the step continues, so that state such as a deadline is durable
- * before the step registers a waiter. The driver counts the write as one
- * attempt, and resumes the step with undefined.
- */
-export class StepRecordUnfinished extends StepResponse {
-  static type = "record-unfinished";
-  readonly type = "record-unfinished";
-  readonly response: StepResponse;
-  constructor(response: StepResponse) {
-    super();
-    this.response = response;
-  }
-}
-
-/**
  * Encodes a step response for its step record, and returns the response that
  * workflow code must see: the record decoded again, so that a first run sees
  * exactly what replay reads. A result the codec rejects is recorded as a step

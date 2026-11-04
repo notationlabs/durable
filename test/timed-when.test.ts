@@ -3,6 +3,7 @@ import type { Logger } from "pino";
 import {
   DEFAULT_LEASE_DURATION,
   InfrastructureError,
+  StoreValidationError,
   WorkflowRunner,
   redeliveryDelay,
   type ExecutionLease,
@@ -210,10 +211,19 @@ describe.each(runtimes)("timed store.when on $name", ({ create }) => {
     return record && { ...JSON.parse(record.stepResponseJson), done: record.meta.done };
   }
 
+  async function readAttempt() {
+    const record = await runtime.heap.readStep({
+      executionId: EXECUTION_ID,
+      stepKey: STEP_KEY,
+    });
+    return record?.meta.attempt;
+  }
+
   test("an unresolved wait records its deadline and suspends with it as wakeAt", async () => {
     await admit();
     expect(await deliver()).toEqual({ status: "suspended", wakeAt: DEADLINE });
     expect(await readStep()).toEqual({ type: "store-wait", wakeAt: DEADLINE, done: false });
+    expect(await readAttempt()).toBe(0);
     expect(await runtime.executions.get(EXECUTION_ID)).toMatchObject({ status: "suspended" });
   });
 
@@ -333,35 +343,11 @@ describe.each(runtimes)("timed store.when on $name", ({ create }) => {
     });
   });
 
-  /**
-   * Makes the first step write after a successful waiter registration reject,
-   * as when the worker dies after registering the waiter and before the
-   * delivery is acknowledged.
-   */
-  function failWriteAfterRegistration() {
-    let registered = false;
-    const registerWaiter = runtime.stores.registerWaiter.bind(runtime.stores);
-    vi.spyOn(runtime.stores, "registerWaiter").mockImplementation(async (waiter) => {
-      await registerWaiter(waiter);
-      registered = true;
-    });
-    const writeStep = runtime.heap.writeStep.bind(runtime.heap);
-    let failed = false;
-    vi.spyOn(runtime.heap, "writeStep").mockImplementation(async (params) => {
-      if (registered && !failed) {
-        failed = true;
-        throw new Error("disk full");
-      }
-      return writeStep(params);
-    });
-  }
-
   // History 4
   test("a crash after the waiter is registered, before acknowledgement, leaves the waiter and the deadline", async () => {
     await admit();
-    failWriteAfterRegistration();
     const [lease] = await claim();
-    await expect(run(lease!)).rejects.toBeInstanceOf(InfrastructureError);
+    expect(await run(lease!)).toEqual({ status: "suspended", wakeAt: DEADLINE });
     expect(harness.waiters()).toEqual([STEP_KEY]);
     expect(await readStep()).toEqual({ type: "store-wait", wakeAt: DEADLINE, done: false });
     await runtime.executions.release({ lease: lease! });
@@ -472,17 +458,19 @@ describe.each(runtimes)("timed store.when on $name", ({ create }) => {
     });
   });
 
-  test("a crash after the waiter is registered does not move a deadline computed from Date.now()", async () => {
+  test("a crash after the deadline is recorded does not move a deadline computed from Date.now()", async () => {
     await admit("review-order-now");
-    failWriteAfterRegistration();
+    vi.spyOn(runtime.stores, "registerWaiter").mockRejectedValueOnce(new Error("disk full"));
     const [lease] = await claim();
     await expect(run(lease!)).rejects.toBeInstanceOf(InfrastructureError);
     await runtime.executions.release({ lease: lease! });
+    expect(await readStep()).toEqual({ type: "store-wait", wakeAt: DEADLINE, done: false });
 
     // The redelivery computes Date.now() + DAY later than the first delivery.
     advance(60 * MINUTE);
     expect(await deliver()).toEqual({ status: "suspended", wakeAt: DEADLINE });
     expect(await readStep()).toEqual({ type: "store-wait", wakeAt: DEADLINE, done: false });
+    expect(harness.waiters()).toEqual([STEP_KEY]);
 
     advanceTo(DEADLINE);
     expect(await deliver()).toEqual({
@@ -499,6 +487,8 @@ describe.each(runtimes)("timed store.when on $name", ({ create }) => {
     await decide("rejected");
     expect(await deliver()).toEqual({ status: "suspended", wakeAt: DEADLINE });
     expect(await readStep()).toEqual({ type: "store-wait", wakeAt: DEADLINE, done: false });
+    // Each delivery writes the unfinished record once.
+    expect(await readAttempt()).toBe(1);
     expect(harness.waiters()).toEqual([STEP_KEY]);
 
     await decide("approved");
@@ -533,6 +523,18 @@ describe.each(runtimes)("timed store.when on $name", ({ create }) => {
     advanceTo(DEADLINE);
     await deliver();
     expect(await readStep()).toMatchObject({ result: { status: "timed-out" }, done: true });
+  });
+
+  test("a registration that fails with a workflow-facing error is recorded after the deadline and thrown into the workflow", async () => {
+    await admit();
+    vi.spyOn(runtime.stores, "registerWaiter").mockRejectedValueOnce(
+      new StoreValidationError("invalid waiter")
+    );
+    const outcome = await deliver();
+    expect(outcome).toMatchObject({ status: "failed", error: { name: "StoreValidationError" } });
+    expect(await readStep()).toMatchObject({ type: "step-error", done: true });
+    expect(await readAttempt()).toBe(1);
+    expect(harness.waiters()).toEqual([]);
   });
 
   // History 6

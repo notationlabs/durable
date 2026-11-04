@@ -67,11 +67,11 @@ The step records the first result it finds: `matched` if the selector matches, o
 - **The deadline never ends the wait early.** The step does not time out before the deadline. The runtime makes the execution due at the deadline, but it does not promise to deliver it at that exact moment.
 - **Recording the result removes both wakes.** The write that records the result deletes the waiter. The deadline wake needs no removal: once the step has a result, the delivery no longer reports the deadline as its wake time, and acknowledging that delivery drops the old wake.
 
-An unresolved evaluation takes these steps in order:
+An unresolved evaluation takes these steps in order, as a `when` or `take` without a deadline does:
 
-1. On the first evaluation, it records the unfinished step with the deadline.
+1. It records the unfinished step with the deadline.
 2. It registers the waiter.
-3. It records the unfinished step for this delivery, and ends the delivery as `suspended` with `wakeAt` set to the deadline.
+3. It ends the delivery as `suspended` with `wakeAt` set to the deadline.
 
 If the worker crashes before the delivery is acknowledged, the execution is delivered again. The redelivery reads the recorded deadline if step 1 completed, runs the selector again, and registers the waiter again. A worker whose lease has been taken over cannot record a result, so it cannot delete the waiter of the worker that holds the lease now.
 
