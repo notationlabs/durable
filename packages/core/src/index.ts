@@ -214,6 +214,7 @@ export type {
   EventContext,
   ExecutionEvent,
   MiddlewareEvent,
+  TriggerAck,
   TriggerEvent,
   WorkflowEvent,
 } from "./base/event";

@@ -1,4 +1,5 @@
 import type {
+  TriggerAck,
   WorkflowRouter,
   TriggerEvent,
   WorkflowGeneratorReturnType,
@@ -46,7 +47,7 @@ export function createTestSdkFactory(params?: {
       async trigger<
         K extends keyof W & string,
         Params extends EventParamsOf<W[K]> = EventParamsOf<W[K]>
-      >(event: TriggerEvent<K, Params>): Promise<{ executionId: string }> {
+      >(event: TriggerEvent<K, Params>): Promise<TriggerAck> {
         dispatcher.start();
         return sdk.trigger(event as TriggerEvent<K, EventParamsOf<W[K]>>);
       },

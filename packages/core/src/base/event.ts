@@ -13,13 +13,37 @@ export type TriggerEvent<
       executionId?: string;
       params?: undefined;
       context?: Record<string, any>;
+      /**
+       * Makes a repeat of the trigger safe. When `executionId` is in use,
+       * the trigger returns `existing` if the workflow ID and params match,
+       * and fails with `EXECUTION_REQUEST_MISMATCH` otherwise. Requires
+       * `executionId`.
+       */
+      idempotent?: boolean;
     }
   : {
       workflowId: WorkflowId;
       executionId?: string;
       params: Params;
       context?: Record<string, any>;
+      /**
+       * Makes a repeat of the trigger safe. When `executionId` is in use,
+       * the trigger returns `existing` if the workflow ID and params match,
+       * and fails with `EXECUTION_REQUEST_MISMATCH` otherwise. Requires
+       * `executionId`.
+       */
+      idempotent?: boolean;
     };
+
+/**
+ * The answer to a trigger once admission commits. `existing` means an
+ * idempotent trigger matched an execution already admitted with the same
+ * request, and admitted nothing.
+ */
+export type TriggerAck = {
+  executionId: string;
+  status: "accepted" | "existing";
+};
 
 export type ExecutionEvent<Params extends EventParams = EventParams> = {
   workflowId: string;
