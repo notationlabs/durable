@@ -15,7 +15,7 @@ import {
 } from "../base/execution";
 import { isPrunedExecution } from "../base/retention";
 import { DEFAULT_LEASE_DURATION } from "./execution-state";
-import { DEFAULT_PRUNE_INTERVAL } from "./retention";
+import { DEFAULT_PRUNE_BATCH_SIZE, DEFAULT_PRUNE_INTERVAL } from "./retention";
 
 export const DEFAULT_DISPATCHER_CONCURRENCY = 10;
 
@@ -57,9 +57,10 @@ export interface DispatcherOptions {
    */
   filter?: ExecutionClaimFilter;
   /**
-   * Milliseconds between pruning passes (`Runtime.prune`) when the runtime
-   * has a `retain` policy. The first pass runs when the dispatcher starts.
-   * Without `retain`, the dispatcher does not prune.
+   * Milliseconds between pruning runs when the runtime has a `retain`
+   * policy. Each run repeats `Runtime.prune` while passes find a full batch.
+   * The first run starts with the dispatcher. Without `retain`, the
+   * dispatcher does not prune.
    * @default 60_000
    */
   pruneInterval?: number;
@@ -146,7 +147,7 @@ export class ExecutionDispatcher {
     if (this.running) return;
     this.running = true;
     void this.loop();
-    if (this.runtime.retain) this.schedulePrune(0);
+    if (this.runtime.retain && !this.pruneTimer && !this.pruning) this.schedulePrune(0);
   }
 
   /** Stops claiming and pruning, and waits for in-flight work to settle. */
@@ -163,20 +164,24 @@ export class ExecutionDispatcher {
   private schedulePrune(delay: number) {
     this.pruneTimer = setTimeout(() => {
       this.pruneTimer = undefined;
-      this.pruning = this.runtime
-        .prune()
-        .then(
-          () => {},
-          (err) => {
-            this.logger.error({ err }, "Failed to prune executions");
-          }
-        )
-        .finally(() => {
-          this.pruning = undefined;
-          if (this.running) this.schedulePrune(this.pruneInterval);
-        });
+      this.pruning = this.prune().finally(() => {
+        this.pruning = undefined;
+        if (this.running && !this.pruneTimer) this.schedulePrune(this.pruneInterval);
+      });
     }, delay);
     if (!this.keepAlive) this.pruneTimer.unref?.();
+  }
+
+  /** Runs pruning passes until one finds less than a full batch of work. */
+  private async prune() {
+    try {
+      while (this.running) {
+        const { pruned, cleaned } = await this.runtime.prune({ limit: DEFAULT_PRUNE_BATCH_SIZE });
+        if (pruned < DEFAULT_PRUNE_BATCH_SIZE && cleaned < DEFAULT_PRUNE_BATCH_SIZE) return;
+      }
+    } catch (err) {
+      this.logger.error({ err }, "Failed to prune executions");
+    }
   }
 
   get activeDeliveries() {
