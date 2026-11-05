@@ -999,8 +999,8 @@ type StepSchemaInput<S extends StandardSchemaV1> = Durable<
 
 /** `step.delay`, reading its wake time from the runtime clock. */
 function createDelay(clock: () => number) {
-  function delay(retryInterval: number): any;
-  function delay(key: string, retryInterval: number): any;
+  function delay(retryInterval: number): AsyncGenerator<StepResponse, void, any>;
+  function delay(key: string, retryInterval: number): AsyncGenerator<StepResponse, void, any>;
   function delay(
     arg1: string | number,
     arg2?: number
@@ -1042,8 +1042,12 @@ async function* delayStep(
 type PollOpts = { maxAttempts: number; retryInterval: number };
 type PollPredicate = () => boolean | Promise<boolean>;
 
-function poll(opts: PollOpts, predicate: PollPredicate): any;
-function poll(key: string, opts: PollOpts, predicate: PollPredicate): any;
+function poll(opts: PollOpts, predicate: PollPredicate): AsyncGenerator<StepResponse, void, any>;
+function poll(
+  key: string,
+  opts: PollOpts,
+  predicate: PollPredicate
+): AsyncGenerator<StepResponse, void, any>;
 
 function poll(
   arg1: string | PollOpts,
