@@ -8,7 +8,7 @@ HTTP routes and middleware for triggering workflows and reading their executions
 bun add @yieldstar/http-server
 ```
 
-## `createRoutes({ runtime, invoker?, logger, middleware?, observationMiddleware?, pollInterval?, basePath? })`
+## `createRoutes({ runtime, invoker?, logger, middleware?, observationMiddleware?, pollInterval?, maxWait?, basePath? })`
 
 Returns route handlers for `POST /trigger`, `POST /poll`, `POST /wait`, `POST /list` and the deprecated `POST /events`. The routes object plugs directly into `Bun.serve({ routes })` or any router that accepts `Request` to `Response` handlers.
 
@@ -29,8 +29,9 @@ Bun.serve({
 | `invoker`    | `WorkflowInvoker`      | Optional. When the dispatcher runs in this process, lets `/wait` and `/events` respond as soon as it records an outcome. No response depends on it |
 | `logger`     | `Logger`               | Pino logger                      |
 | `middleware` | `MiddlewareFunction[]` | Optional middleware chain for `/trigger` |
-| `observationMiddleware` | `ObservationMiddlewareFunction[]` | Optional. Allows or denies `/poll`, `/wait`, `/list` and `/events` requests |
-| `pollInterval` | `number`             | Optional. How often `/wait` and `/events` read the record while they wait, in milliseconds. Defaults to `DEFAULT_OBSERVER_POLL_INTERVAL` (25) |
+| `observationMiddleware` | `ObservationMiddlewareFunction[]` | Optional. Allows or denies `/poll`, `/wait`, `/list` and `/events` requests. Without it they accept every request, and `createRoutes` logs a warning if `middleware` is set |
+| `pollInterval` | `number`             | Optional. How often each open `/wait` and `/events` request reads the record, in milliseconds. Defaults to 25. A value that is not a finite number greater than zero throws a `RangeError` |
+| `maxWait`    | `number`               | Optional. The longest the server holds a `/wait` request open, in milliseconds. Defaults to 8000. A value that is not a finite number greater than zero throws a `RangeError` |
 | `basePath`   | `` `/${string}` ``     | Optional prefix for routes       |
 
 Every error response has the body `{ code, message }`. A route that throws, including a middleware function, responds `500` with code `INTERNAL_ERROR` and the fixed message `Internal error`, and logs the thrown error with `logger.error`. `ObservationErrorCode` is the union of the codes the observation routes respond with.
@@ -57,17 +58,19 @@ Accepts `{ executionId }`. Responds `200` with the execution's `ExecutionView`, 
 
 ### `POST /wait`
 
-Accepts `{ executionId, timeout? }`. Reads the record, and then waits until it is terminal or until `timeout` milliseconds pass. Responds `200` with a `WaitResult`, or `404` `EXECUTION_NOT_FOUND` for an unknown ID. The server holds each request open for at most `WAIT_REQUEST_CAP` (8000) milliseconds, below Bun's default 10-second idle timeout, and then responds `{ status: "timed-out", execution }`. The HTTP SDK repeats the request until the execution is terminal or its own timeout passes.
+Accepts `{ executionId, timeout? }`. Reads the record, and then waits until it is terminal or until `timeout` milliseconds pass. Responds `200` with a `WaitResult`, or `404` `EXECUTION_NOT_FOUND` for an unknown ID. The server holds each request open for at most `maxWait` milliseconds (8000 by default, below Bun's default 10-second idle timeout), and then responds `{ status: "timed-out", execution }`. The HTTP SDK repeats the request until the execution is terminal or its own timeout passes. When the client disconnects, the request's abort signal ends the wait, and the server stops reading the record.
+
+Each open `/wait` or `/events` request reads the execution record once every `pollInterval` milliseconds, independently of other requests. Many concurrent waits therefore multiply the reads of the backend: 100 open waits at the default 25 ms are about 4000 reads per second. Raise `pollInterval` to read less often, at the cost of a later response when no `invoker` is passed. Lower `maxWait` to end each request sooner. With `invoker`, a wait also reads the record when the dispatcher in this process records an outcome, so a longer `pollInterval` does not delay those responses.
 
 ### `POST /list`
 
-Accepts `{ workflowId?, status?, cursor?, limit? }`. Responds `200` with `{ executions, cursor? }`, a page of views newest first by admission. `limit` defaults to 50, and a value above 1000 is lowered to 1000. A field set to `null` is treated as absent. An invalid `workflowId`, `limit`, `status` or `cursor` responds `400` `INVALID_LIST_REQUEST`, as the local SDK's `list` throws `ExecutionListRequestError`.
+Accepts `{ workflowId?, status?, cursor?, limit? }`. Responds `200` with `{ executions, cursor? }`, a page of views newest first by admission. `limit` defaults to 50, and a value above 1000 is lowered to 1000. An invalid `workflowId`, `limit`, `status` or `cursor` responds `400` `INVALID_LIST_REQUEST`, as the local SDK's `list` throws `ExecutionListRequestError`.
 
 A `/poll`, `/wait`, `/list` or `/events` body that is not a JSON object, has no `executionId` where one is needed, or has a negative `timeout` responds `400` `INVALID_OBSERVATION_REQUEST`. The views and pages are described in [Execution views](../manual/sdk-local.md#execution-views).
 
 ### `POST /events`
 
-Deprecated: use `/wait`. Accepts `{ executionId }`. Blocks until the execution record is terminal, with no cap, polling the record and re-reading early when `invoker.workflowEndEmitter` fires. Returns the result encoded with the durable value codec, the recorded error encoded the same way with status `500`, or `404` `EXECUTION_NOT_FOUND`. The request's abort signal ends the wait. Observation middleware runs for `/events` with `operation: "events"`.
+Deprecated: use `/wait`. Accepts `{ executionId }`. Blocks until the execution record is terminal, with no cap, polling the record every `pollInterval` and re-reading early when `invoker.workflowEndEmitter` fires. Returns the result encoded with the durable value codec, the recorded error encoded the same way with status `500`, or `404` `EXECUTION_NOT_FOUND`. The request's abort signal ends the wait. Observation middleware runs for `/events` with `operation: "events"`.
 
 ## Observation middleware
 

@@ -66,7 +66,7 @@ These behave as they do in the [local SDK](./sdk-local.md#sdkpoll), and return t
 const execution = await sdk.wait("order-abc123", { timeout: 30_000 });
 ```
 
-The server holds each `/wait` request open for at most 8 seconds, and then responds `timed-out`. `sdk.wait` repeats the request until the execution is terminal or your own `timeout` passes, so a `timeout` longer than 8 seconds, or no `timeout`, works as it does locally.
+The server holds each `/wait` request open for at most 8 seconds by default (its `maxWait`), and then responds `timed-out`. `sdk.wait` repeats the request until the execution is terminal or your own `timeout` passes, so a `timeout` longer than 8 seconds, or no `timeout`, works as it does locally.
 
 Errors map to the same results as in the local SDK where they can:
 
@@ -78,7 +78,9 @@ Errors map to the same results as in the local SDK where they can:
 
 A `404` without the code `EXECUTION_NOT_FOUND`, for example from a wrong `url` or a server without the observation routes, throws an `HttpRouteError`, so `waitForResult` does not report an existing execution as unknown.
 
-A negative `timeout` throws a `RangeError` before any request.
+A negative `timeout` throws a `RangeError` before any request. When `signal` aborts, `sdk.wait` aborts its current request, sends no more, and rejects with the signal's reason.
+
+`sdk.trigger` reads the ack, `{ executionId, status }`, from the response body. `status` is `"accepted"` for a `202` and `"existing"` for a `200`.
 
 ## `HttpRouteError`
 

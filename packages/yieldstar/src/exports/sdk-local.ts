@@ -25,7 +25,8 @@ export function createLocalSdk<W extends WorkflowRouter>(
      */
     invoker?: Pick<WorkflowInvoker, "workflowEndEmitter">;
     /**
-     * Milliseconds between reads of the execution record in `wait`.
+     * Milliseconds between reads of the execution record in `wait`. It must
+     * be greater than zero.
      * @default 25
      */
     pollInterval?: number;

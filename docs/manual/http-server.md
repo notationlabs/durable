@@ -61,7 +61,9 @@ const result = await exec.waitForResult();
 
 The views, wait results and pages are the same as the [local SDK](./sdk-local.md#execution-views) returns. A failed execution is a `200` response from `/poll` and `/wait`, with the error in the view.
 
-`/wait` holds the request open for at most 8 seconds, below Bun's default 10-second idle timeout. When the execution is not terminal by then, or by `timeout` if that is shorter, it responds `200` with `{ status: "timed-out", execution }`. The [HTTP SDK](./sdk-http.md) repeats the request until the execution is terminal. `/events` has no cap; use `/wait` instead.
+`/wait` holds the request open for at most 8 seconds by default, below Bun's default 10-second idle timeout; the `maxWait` option of `createRoutes` changes it. `maxWait` and `pollInterval` must be a finite number greater than zero, because the HTTP SDK repeats a capped request at once and a wait re-reads the record after each `pollInterval`; `createRoutes` throws a `RangeError` otherwise. When the execution is not terminal by then, or by `timeout` if that is shorter, it responds `200` with `{ status: "timed-out", execution }`. The [HTTP SDK](./sdk-http.md) repeats the request until the execution is terminal. `/events` has no cap; use `/wait` instead. When a client disconnects, its `/wait` or `/events` request stops reading the record.
+
+Each open `/wait` or `/events` request reads the execution record every `pollInterval` milliseconds (25 by default). The requests do not share reads, so many concurrent waits multiply the load on the backend. Raise `pollInterval` or lower `maxWait` in `createRoutes` if many clients wait at once. Passing `invoker` lets a wait respond as soon as the dispatcher in the same process records an outcome, so a longer `pollInterval` costs less latency.
 
 Every route reads its body with the durable value codec, and writes views, results and recorded errors with it. Plain JSON is a valid encoding, so any HTTP client can call the routes, while the HTTP SDK can also send `undefined` values, `Date`s, `Map`s, `Set`s, `bigint`s and errors, which the codec writes as objects tagged with a `$type` key. A plain object with its own `$type` key must be sent wrapped as `{ "$type": "object", "value": ... }`.
 
@@ -74,7 +76,7 @@ Error responses carry `{ code, message }`. Besides the codes in the table above,
 | Condition                                                    | Response                                |
 | ------------------------------------------------------------ | --------------------------------------- |
 | A `/poll`, `/wait`, `/list` or `/events` body that is not a JSON object, a missing or empty `executionId`, or a `timeout` that is negative or not a number | `400` `INVALID_OBSERVATION_REQUEST` |
-| A `/list` `workflowId` that is not a string, a `limit` that is not a positive integer, an unknown `status`, or a `cursor` that `/list` did not return | `400` `INVALID_LIST_REQUEST` |
+| A `/list` `workflowId` that is not a string, a `limit` that is not a positive integer, an unknown `status`, or a malformed `cursor` | `400` `INVALID_LIST_REQUEST` |
 | Observation middleware denies the request                    | `401` `UNAUTHORIZED` or `403` `FORBIDDEN` |
 | Middleware throws, or the runtime fails                      | `500` `INTERNAL_ERROR`                  |
 
@@ -118,7 +120,7 @@ Trigger middleware does not run for the observation routes.
 
 ## Observation middleware
 
-`/poll`, `/wait`, `/list` and `/events` return results and errors, which are often derived from `params`, to anyone who can call them. Without observation middleware, any caller that can reach the server can read every execution. Configure observation middleware to decide who may read them:
+`/poll`, `/wait`, `/list` and `/events` return results and errors, which are often derived from `params`, to anyone who can call them. Without observation middleware, any caller that can reach the server can read every execution, and `/list` returns every execution's ID with its result or error. When `createRoutes` has trigger `middleware` but no `observationMiddleware`, it logs a warning, because a deployment that guards `/trigger` would otherwise gain open observation routes on upgrade. Pass `observationMiddleware: []` to allow every request on purpose and silence the warning. Configure observation middleware to decide who may read them:
 
 ```ts
 import type { ObservationMiddlewareFunction } from "@yieldstar/http-server";
