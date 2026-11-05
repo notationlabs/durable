@@ -71,15 +71,16 @@ export function createExecutionObserver(
 }
 
 /**
- * Reads the record until it is terminal or `deadline` (a `Date.now()` time)
- * passes, and returns the last read. Returns undefined if no record exists.
- * Rejects with the signal's reason once `signal` aborts.
+ * Reads the record until it is terminal or `deadline` passes, and returns the
+ * last read. Returns undefined if no record exists. Rejects with the signal's
+ * reason once `signal` aborts.
  */
 export async function waitForExecutionRecord(
   executions: Pick<ExecutionClient, "get">,
   executionId: string,
   options: {
     pollInterval: number;
+    /** A `Date.now()` time. */
     deadline: number;
     notifier?: ExecutionNotifier;
     signal?: AbortSignal;
@@ -127,10 +128,9 @@ type Subscription = { listener: () => void; waiters: Set<() => void> };
 const subscriptions = new WeakMap<ExecutionNotifier, Map<string, Subscription>>();
 
 /**
- * Adds `waiter` to the waiters for `executionId` on `notifier`, and returns a
- * function that removes it. Every wait on one notifier and ID shares one
- * listener, so many waits on one ID stay under an `EventEmitter`'s listener
- * limit. The last waiter to leave removes the listener.
+ * Returns a function that removes `waiter`. All waits on one notifier and ID
+ * share one listener, so many waits on one ID stay under an `EventEmitter`'s
+ * listener limit. The listener is removed when the last waiter leaves.
  */
 function subscribe(
   notifier: ExecutionNotifier,

@@ -83,14 +83,17 @@ const admissionStatus: Record<ExecutionAdmissionErrorCode, number> = {
 };
 
 /**
- * Admits an execution. The body is read with the durable value codec, so plain
- * JSON is accepted and the HTTP SDK's tagged values (such as `undefined` and
- * errors) keep their shape. Responds `202` with `{ executionId, status:
- * "accepted" }`, or `200` with `status: "existing"` when an idempotent repeat
- * matched an existing execution. Responds `409` when the ID is in use, or in
- * use by a different request in idempotent mode, and `400` when the event
- * cannot be stored without loss or an idempotent trigger has no ID. A
- * dispatcher delivers the execution afterwards.
+ * Admits an execution. The body is decoded with the durable value codec, so
+ * plain JSON is accepted and the HTTP SDK's tagged values (such as `undefined`
+ * and errors) keep their shape. A dispatcher delivers the execution later.
+ *
+ * Responses:
+ * - `202` with `{ executionId, status: "accepted" }`.
+ * - `200` with `status: "existing"` when an idempotent repeat matches.
+ * - `409` when the ID is in use, or in idempotent mode is in use by a
+ *   different request.
+ * - `400` when the event cannot be stored without loss, or an idempotent
+ *   trigger has no ID.
  */
 export const createTriggerHandler =
   (params: {
@@ -376,9 +379,9 @@ export function createRoutes(params: {
   basePath?: `/${string}`;
   runtime: { executions: ExecutionClient };
   /**
-   * Optional. When the dispatcher runs in this process, its
-   * `workflowEndEmitter` lets waits respond as soon as an outcome is
-   * recorded. No result depends on it.
+   * Optional. When the dispatcher runs in this process, waits listen to its
+   * `workflowEndEmitter` and respond as soon as an outcome is recorded.
+   * Results do not depend on it.
    */
   invoker?: Pick<WorkflowInvoker, "workflowEndEmitter">;
   logger: Logger;
@@ -386,7 +389,7 @@ export function createRoutes(params: {
   middleware?: MiddlewareFunction[];
   /**
    * Runs, in array order, before `/poll`, `/wait`, `/list` and `/events`
-   * read any record. The first denial wins.
+   * read any record. The first denial ends the request.
    */
   observationMiddleware?: ObservationMiddlewareFunction[];
   /**
@@ -395,9 +398,7 @@ export function createRoutes(params: {
    * @default DEFAULT_OBSERVER_POLL_INTERVAL
    */
   pollInterval?: number;
-  /**
-   * @internal For tests. Overrides `WAIT_REQUEST_CAP`.
-   */
+  /** @internal For tests. Overrides `WAIT_REQUEST_CAP`. */
   waitCap?: number;
 }): Routes {
   const { logger, runtime, invoker, middleware = [], basePath = "" } = params;
