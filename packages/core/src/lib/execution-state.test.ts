@@ -4,6 +4,7 @@ import { WorkflowStartError } from "../base/execution";
 import { ReadOnlyMap } from "../utils/map";
 import {
   acknowledgeExecution,
+  cancellationForStartedChild,
   claimExecution,
   createExecutionState,
   createStartedExecution,
@@ -11,15 +12,21 @@ import {
   decodeExecutionOutcome,
   encodeExecutionEvent,
   encodeExecutionOutcome,
+  isLeaseCurrent,
+  markCancellationDelivered,
   matchStartRequest,
   prepareExecutionAdmission,
+  prepareExecutionCancel,
   prepareExecutionStart,
+  propagatedCancellation,
+  requestExecutionCancellation,
   toExecutionRecord,
+  type ExecutionState,
 } from "./execution-state";
 
 const requestId = { executionId: "caller", stepKey: "start:job" };
 
-function prepare(request: { workflowId: string; params?: unknown }) {
+function prepare(request: { workflowId: string; params?: unknown; detached?: boolean }) {
   const prepared = prepareExecutionStart({ requestId, ...request } as never);
   if (!prepared.ok) throw new Error(prepared.result.message);
   return prepared.start;
@@ -245,5 +252,297 @@ test("acknowledging a non-durable result records a failed outcome with INVALID_S
       code: "INVALID_STEP_VALUE",
       stepKey: "$$workflow-result$$",
     });
+  }
+});
+
+function admitted(executionId = "e", now = 0): ExecutionState {
+  return createExecutionState({
+    executionId,
+    workflowId: "w",
+    encoded: encodeExecutionEvent({ params: undefined, context: undefined }),
+    now,
+  });
+}
+
+/** An execution whose admission delivery was acknowledged as suspended. */
+function suspended(executionId = "e"): ExecutionState {
+  const { state, lease } = claimExecution(admitted(executionId), { now: 0, duration: 1_000 });
+  return acknowledgeExecution(state, { lease, outcome: { status: "suspended" }, now: 1 }).state;
+}
+
+test("prepareExecutionCancel defaults force to false and leaves out an absent reason", () => {
+  expect(prepareExecutionCancel({ executionId: "e" })).toEqual({
+    ok: true,
+    executionId: "e",
+    request: { force: false },
+  });
+  expect(prepareExecutionCancel({ executionId: "e", reason: "", force: true })).toEqual({
+    ok: true,
+    executionId: "e",
+    request: { reason: "", force: true },
+  });
+});
+
+test.each([
+  ["a missing request", undefined],
+  ["an empty execution ID", { executionId: "" }],
+  ["a non-string execution ID", { executionId: 7 }],
+  ["a non-string reason", { executionId: "e", reason: null }],
+  ["a non-boolean force", { executionId: "e", force: 1 }],
+])("prepareExecutionCancel rejects %s", (_label, request) => {
+  expect(prepareExecutionCancel(request as never)).toMatchObject({ ok: false });
+});
+
+test("a first graceful request is recorded, makes the execution due and propagates", () => {
+  const state = suspended();
+  expect(state.dueAt).toBeNull();
+  const applied = requestExecutionCancellation(state, { reason: "abandoned", force: false }, 10);
+  expect(applied).toMatchObject({
+    result: { status: "requested" },
+    propagate: true,
+    terminal: false,
+  });
+  expect(applied.state).toMatchObject({ status: "suspended", dueAt: 10, updatedAt: 10 });
+  expect(applied.state.cancellation).toEqual({
+    reason: "abandoned",
+    source: null,
+    forced: false,
+    requestedAt: 10,
+    deliveredAt: null,
+  });
+  expect(toExecutionRecord(applied.state, 10).cancellation).toEqual({
+    reason: "abandoned",
+    forced: false,
+    requestedAt: 10,
+  });
+});
+
+test("a repeated graceful request changes nothing and does not propagate", () => {
+  const first = requestExecutionCancellation(suspended(), { reason: "a", force: false }, 10);
+  const repeat = requestExecutionCancellation(first.state, { reason: "b", force: false }, 20);
+  expect(repeat).toEqual({
+    state: first.state,
+    result: { status: "requested" },
+    propagate: false,
+    terminal: false,
+  });
+});
+
+test("a forced request after a graceful one keeps the first reason and ends the lease", () => {
+  const graceful = requestExecutionCancellation(suspended(), { reason: "a", force: false }, 10);
+  const { state: running, lease } = claimExecution(graceful.state, { now: 10, duration: 1_000 });
+  const forced = requestExecutionCancellation(running, { reason: "b", force: true }, 20);
+
+  expect(forced).toMatchObject({
+    result: { status: "cancelled", reason: "a" },
+    propagate: true,
+    terminal: true,
+  });
+  expect(forced.state).toMatchObject({
+    status: "cancelled",
+    dueAt: null,
+    claimedDueAt: null,
+    leaseExpiresAt: null,
+    redeliverAt: null,
+    leaseToken: lease.token + 1,
+    updatedAt: 20,
+  });
+  expect(forced.state.cancellation).toEqual({
+    reason: "a",
+    source: null,
+    forced: true,
+    requestedAt: 10,
+    deliveredAt: null,
+  });
+  expect(decodeExecutionOutcome(forced.state.outcome!)).toEqual({
+    status: "cancelled",
+    reason: "a",
+  });
+  expect(isLeaseCurrent(forced.state, lease)).toBe(false);
+});
+
+test("a request on a terminal execution returns its outcome and changes nothing", () => {
+  const { state, lease } = claimExecution(admitted(), { now: 0, duration: 1_000 });
+  const completed = acknowledgeExecution(state, {
+    lease,
+    outcome: { status: "completed", result: 42 },
+    now: 1,
+  }).state;
+  for (const force of [false, true]) {
+    expect(requestExecutionCancellation(completed, { force }, 5)).toEqual({
+      state: completed,
+      result: { status: "completed", result: 42 },
+      propagate: false,
+      terminal: false,
+    });
+  }
+
+  const cancelled = requestExecutionCancellation(suspended(), { force: true }, 5).state;
+  expect(requestExecutionCancellation(cancelled, { reason: "again", force: true }, 6)).toEqual({
+    state: cancelled,
+    result: { status: "cancelled" },
+    propagate: false,
+    terminal: false,
+  });
+});
+
+test("propagatedCancellation names the root as source, keeps a descendant's source, and passes force", () => {
+  const root = requestExecutionCancellation(suspended("root"), { reason: "r", force: false }, 1);
+  expect(propagatedCancellation(root.state)).toEqual({
+    reason: "r",
+    source: "root",
+    force: false,
+  });
+
+  const child = requestExecutionCancellation(
+    suspended("child"),
+    propagatedCancellation(root.state),
+    1
+  );
+  expect(child.state.cancellation).toMatchObject({ reason: "r", source: "root" });
+  expect(propagatedCancellation(child.state)).toEqual({
+    reason: "r",
+    source: "root",
+    force: false,
+  });
+
+  const forced = requestExecutionCancellation(suspended("bare"), { force: true }, 1);
+  expect(propagatedCancellation(forced.state)).toEqual({ source: "bare", force: true });
+  expect(() => propagatedCancellation(suspended())).toThrow();
+});
+
+test("cancellationForStartedChild gives a request only to an attached child before delivery", () => {
+  const caller = requestExecutionCancellation(suspended("caller"), { reason: "r", force: false }, 1)
+    .state;
+  expect(cancellationForStartedChild(caller, false)).toEqual({
+    reason: "r",
+    source: "caller",
+    force: false,
+  });
+  expect(cancellationForStartedChild(caller, true)).toBeUndefined();
+  expect(cancellationForStartedChild(suspended("caller"), false)).toBeUndefined();
+  expect(cancellationForStartedChild(markCancellationDelivered(caller, 2), false)).toBeUndefined();
+});
+
+test("createStartedExecution records detached on the parent link and the start request", () => {
+  const caller = suspended("caller");
+  for (const detached of [false, true]) {
+    const { target, startRequest } = createStartedExecution({
+      start: prepare({ workflowId: "w", detached }),
+      caller,
+      now: 5,
+    });
+    expect(target.parent).toEqual({ executionId: "caller", stepKey: "start:job", detached });
+    expect(startRequest.detached).toBe(detached);
+    expect(target.cancellation).toBeNull();
+  }
+  expect(prepare({ workflowId: "w" }).detached).toBe(false);
+  expect(prepareExecutionStart({ requestId, workflowId: "w", detached: "yes" } as never)).toMatchObject({
+    ok: false,
+  });
+});
+
+test("matchStartRequest rejects a repeat that changes detached", () => {
+  const { startRequest } = createStartedExecution({
+    start: prepare({ workflowId: "w", detached: true }),
+    caller: suspended("caller"),
+    now: 0,
+  });
+  expect(matchStartRequest(startRequest, prepare({ workflowId: "w", detached: true }))).toEqual({
+    status: "accepted",
+    executionId: startRequest.executionId,
+  });
+  expect(matchStartRequest(startRequest, prepare({ workflowId: "w" }))).toMatchObject({
+    status: "rejected",
+    code: "START_REQUEST_MISMATCH",
+  });
+});
+
+test("createStartedExecution passes an undelivered request to an attached target", () => {
+  const graceful = requestExecutionCancellation(suspended("caller"), { reason: "r", force: false }, 1)
+    .state;
+  const attached = createStartedExecution({
+    start: prepare({ workflowId: "w" }),
+    caller: graceful,
+    now: 5,
+  }).target;
+  expect(attached).toMatchObject({ status: "admitted", dueAt: 5 });
+  expect(attached.cancellation).toEqual({
+    reason: "r",
+    source: "caller",
+    forced: false,
+    requestedAt: 5,
+    deliveredAt: null,
+  });
+
+  const detached = createStartedExecution({
+    start: prepare({ workflowId: "w", detached: true }),
+    caller: graceful,
+    now: 5,
+  }).target;
+  expect(detached.cancellation).toBeNull();
+
+  const forced = requestExecutionCancellation(graceful, { force: true }, 2).state;
+  const underForced = createStartedExecution({
+    start: prepare({ workflowId: "w" }),
+    caller: forced,
+    now: 5,
+  }).target;
+  expect(underForced).toMatchObject({ status: "cancelled", dueAt: null });
+  expect(decodeExecutionOutcome(underForced.outcome!)).toEqual({
+    status: "cancelled",
+    reason: "r",
+    source: "caller",
+  });
+});
+
+test("markCancellationDelivered sets deliveredAt once and throws without a request", () => {
+  const requested = requestExecutionCancellation(suspended(), { force: false }, 1).state;
+  const delivered = markCancellationDelivered(requested, 7);
+  expect(delivered).toMatchObject({ updatedAt: 7, cancellation: { deliveredAt: 7 } });
+  expect(toExecutionRecord(delivered, 7).cancellation).toEqual({
+    forced: false,
+    requestedAt: 1,
+    deliveredAt: 7,
+  });
+  expect(markCancellationDelivered(delivered, 9)).toBe(delivered);
+  expect(() => markCancellationDelivered(suspended(), 1)).toThrow();
+});
+
+test("acknowledging cancelled records the request's reason and source, or fails without a request", () => {
+  const requested = requestExecutionCancellation(
+    suspended(),
+    { reason: "r", source: "root", force: false },
+    1
+  ).state;
+  const claimed = claimExecution(requested, { now: 1, duration: 1_000 });
+  const acknowledged = acknowledgeExecution(claimed.state, {
+    lease: claimed.lease,
+    outcome: { status: "cancelled" },
+    now: 2,
+  });
+  expect(acknowledged.result).toEqual({ status: "cancelled", reason: "r", source: "root" });
+  expect(acknowledged.state.status).toBe("cancelled");
+  expect(acknowledged.state.cancellation).toMatchObject({ reason: "r", source: "root" });
+
+  const unrequested = claimExecution(suspended(), { now: 1, duration: 1_000 });
+  const failed = acknowledgeExecution(unrequested.state, {
+    lease: unrequested.lease,
+    outcome: { status: "cancelled" },
+    now: 2,
+  });
+  expect(failed.state.status).toBe("failed");
+  expect(failed.result).toMatchObject({ status: "failed" });
+});
+
+test("cancelled outcomes round trip without absent fields", () => {
+  for (const outcome of [
+    { status: "cancelled" as const },
+    { status: "cancelled" as const, reason: "r" },
+    { status: "cancelled" as const, reason: "r", source: "root" },
+  ]) {
+    const decoded = decodeExecutionOutcome(encodeExecutionOutcome(outcome));
+    expect(decoded).toEqual(outcome);
+    expect(Object.keys(decoded).sort()).toEqual(Object.keys(outcome).sort());
   }
 });
