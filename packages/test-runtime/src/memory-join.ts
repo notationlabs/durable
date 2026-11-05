@@ -61,6 +61,26 @@ export class MemoryJoinClient implements JoinClient {
       if (waiters.size === 0) this.waiters.delete(targetExecutionId);
     }
   }
+
+  /**
+   * Deletes every waiter an execution registered. Called synchronously by a
+   * forced cancel, so the waiters go with that write.
+   */
+  deleteWaitersForExecution(executionId: string) {
+    deleteExecutionWaiters(this.waiters, executionId);
+  }
+}
+
+function deleteExecutionWaiters(
+  waitersByTarget: Map<string, Map<string, { executionId: string }>>,
+  executionId: string
+) {
+  for (const [target, waiters] of waitersByTarget) {
+    for (const [key, waiter] of waiters) {
+      if (waiter.executionId === executionId) waiters.delete(key);
+    }
+    if (waiters.size === 0) waitersByTarget.delete(target);
+  }
 }
 
 function waiterKey(step: { executionId: string; stepKey: string }) {

@@ -276,10 +276,6 @@ export interface ExecutionClient {
   start(request: ExecutionStartRequest): Promise<ExecutionStartResult>;
 
   /**
-   * Requests a wake from outside a delivery, such as a store commit. Wakes not
-   * covered by a claimed delivery merge into one due time: the earliest.
-   */
-  /**
    * Records a cancellation request and propagates it to every non-terminal,
    * non-detached descendant, all-or-nothing. Not fenced: it needs no lease.
    *
@@ -291,10 +287,15 @@ export interface ExecutionClient {
    *
    * A repeated request keeps the first `reason` and `source`; a forced
    * request after a graceful one makes it forced. A terminal execution is
-   * not changed, and its outcome is returned.
+   * not changed, and its outcome is returned. An invalid request throws a
+   * `TypeError` and changes nothing.
    */
   cancel(request: ExecutionCancelRequest): Promise<ExecutionCancelResult>;
 
+  /**
+   * Requests a wake from outside a delivery, such as a store commit. Wakes not
+   * covered by a claimed delivery merge into one due time: the earliest.
+   */
   requestWake(request: {
     executionId: string;
     wakeAt: number;
