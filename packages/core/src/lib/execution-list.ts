@@ -5,7 +5,11 @@ import type {
 } from "../base/execution";
 import { ExecutionListRequestError } from "../base/execution";
 import { isPlainObject } from "../base/durable-value";
-import { executionStatusAt, toExecutionRecord, type ExecutionState } from "./execution-state";
+import {
+  executionStatusAt,
+  toExecutionRecordOrTombstone,
+  type ExecutionState,
+} from "./execution-state";
 
 export const DEFAULT_EXECUTION_LIST_LIMIT = 50;
 export const MAX_EXECUTION_LIST_LIMIT = 1_000;
@@ -21,7 +25,8 @@ export const EXECUTION_STATUSES: readonly ExecutionStatus[] = [
 
 export type PreparedExecutionListRequest = {
   workflowId?: string;
-  status?: ExecutionStatus;
+  /** Without it, pruned executions are left out. */
+  status?: ExecutionStatus | "pruned";
   diverged?: boolean;
   /** Only executions whose admission sequence is below this one. */
   beforeSequence?: number;
@@ -60,9 +65,13 @@ export function prepareExecutionListRequest(
   if (workflowId !== undefined && typeof workflowId !== "string") {
     throw new ExecutionListRequestError("workflowId must be a string");
   }
-  if (status !== undefined && !EXECUTION_STATUSES.includes(status as ExecutionStatus)) {
+  if (
+    status !== undefined &&
+    status !== "pruned" &&
+    !EXECUTION_STATUSES.includes(status as ExecutionStatus)
+  ) {
     throw new ExecutionListRequestError(
-      `status must be one of ${EXECUTION_STATUSES.join(", ")}`
+      `status must be one of ${EXECUTION_STATUSES.join(", ")}, pruned`
     );
   }
   if (diverged !== undefined && typeof diverged !== "boolean") {
@@ -81,21 +90,28 @@ export function prepareExecutionListRequest(
     ),
   };
   if (workflowId !== undefined) prepared.workflowId = workflowId;
-  if (status !== undefined) prepared.status = status as ExecutionStatus;
+  if (status !== undefined) prepared.status = status as ExecutionStatus | "pruned";
   if (diverged !== undefined) prepared.diverged = diverged;
   if (cursor !== undefined) prepared.beforeSequence = decodeExecutionListCursor(cursor);
   return prepared;
 }
 
-/** Whether a state matches the request's filters at `now`. */
+/**
+ * Whether a state matches the request's filters at `now`. A pruned execution
+ * matches only `status: "pruned"`.
+ */
 export function matchesExecutionListRequest(
   state: ExecutionState,
   request: PreparedExecutionListRequest,
   now: number
 ): boolean {
+  const pruned = state.pruned !== null;
   return (
     (request.workflowId === undefined || state.workflowId === request.workflowId) &&
-    (request.status === undefined || executionStatusAt(state, now) === request.status) &&
+    (request.status === "pruned"
+      ? pruned
+      : !pruned &&
+        (request.status === undefined || executionStatusAt(state, now) === request.status)) &&
     (request.diverged === undefined || (state.divergence !== null) === request.diverged)
   );
 }
@@ -111,7 +127,7 @@ export function toExecutionListPage(
 ): ExecutionListPage {
   const page = matches.slice(0, request.limit);
   const result: ExecutionListPage = {
-    executions: page.map(({ state }) => toExecutionRecord(state, now)),
+    executions: page.map(({ state }) => toExecutionRecordOrTombstone(state, now)),
   };
   if (matches.length > request.limit) {
     result.cursor = encodeExecutionListCursor(page[page.length - 1].admissionSequence);

@@ -350,6 +350,17 @@ export abstract class StoreClient {
     snapshot: StoreSnapshot<unknown>;
     stepId?: StoreStepId;
   }): Promise<StoreDeleteFromResult>;
+
+  /**
+   * Deletes a pruned execution's applied-step receipts and the waiters it
+   * holds. With `deleteExecutionStore`, also deletes every store whose `id`
+   * equals the execution ID, under any definition name, with its waiters.
+   * Safe to repeat and to run concurrently.
+   */
+  abstract deleteExecutionData(params: {
+    executionId: string;
+    deleteExecutionStore: boolean;
+  }): Promise<void>;
 }
 
 /**

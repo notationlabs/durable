@@ -1,5 +1,6 @@
 import type { DurableObject } from "./durable-value";
 import type { EventContext, EventParams } from "./event";
+import type { PrunedExecutionRecord, RetentionOptions } from "./retention";
 
 export type ExecutionStatus =
   | "admitted"
@@ -102,6 +103,8 @@ export interface ExecutionRecord {
 
 export type ExecutionAdmissionErrorCode =
   | "EXECUTION_ID_CONFLICT"
+  /** An idempotent admission found the ID pruned, so it cannot compare params. */
+  | "EXECUTION_PRUNED"
   | "INVALID_EXECUTION_EVENT"
   | "EXECUTION_REQUEST_MISMATCH"
   | "IDEMPOTENT_TRIGGER_REQUIRES_ID";
@@ -181,7 +184,7 @@ export type ExecutionAdmissionRequest = {
    * Makes a repeat of the request safe. When the ID is already in use, the
    * admission returns `existing` if the recorded workflow ID and canonical
    * params match, and `EXECUTION_REQUEST_MISMATCH` otherwise. Context is not
-   * compared. Requires `executionId`.
+   * compared. Requires `executionId`. A pruned ID returns `EXECUTION_PRUNED`.
    */
   idempotent?: boolean;
 };
@@ -198,8 +201,11 @@ export type ExecutionAdmissionResult =
 
 export type ExecutionListRequest = {
   workflowId?: string;
-  /** Matched against the status at the runtime clock's current time. */
-  status?: ExecutionStatus;
+  /**
+   * Matched against the status at the runtime clock's current time. Without
+   * it, pruned executions are left out; `pruned` returns only them.
+   */
+  status?: ExecutionStatus | "pruned";
   /** `true` returns only diverged executions, and `false` only the others. */
   diverged?: boolean;
   /** Returned by the previous page. */
@@ -209,7 +215,7 @@ export type ExecutionListRequest = {
 };
 
 export type ExecutionListPage = {
-  executions: ExecutionRecord[];
+  executions: (ExecutionRecord | PrunedExecutionRecord)[];
   /** Present when more executions may follow. */
   cursor?: string;
 };
@@ -260,6 +266,8 @@ export type ExecutionCancelResult =
   | { status: "requested" }
   /** The execution is terminal: a forced cancel's outcome, or the outcome it already had. */
   | ExecutionOutcome
+  /** The execution was pruned. Nothing changed. */
+  | PrunedExecutionRecord
   | {
       status: "rejected";
       code: "EXECUTION_NOT_FOUND";
@@ -296,7 +304,8 @@ export interface ExecutionClient {
    */
   admit(request: ExecutionAdmissionRequest): Promise<ExecutionAdmissionResult>;
 
-  get(executionId: string): Promise<ExecutionRecord | undefined>;
+  /** The record, the tombstone of a pruned execution, or undefined for an unknown ID. */
+  get(executionId: string): Promise<ExecutionRecord | PrunedExecutionRecord | undefined>;
 
   /**
    * Pages through execution records, newest first by the admission sequence
@@ -332,7 +341,8 @@ export interface ExecutionClient {
    *
    * A repeated request keeps the first `reason` and `source`; a forced
    * request after a graceful one makes it forced. A terminal execution is
-   * not changed, and its outcome is returned. An invalid request throws a
+   * not changed, and its outcome is returned; a pruned one returns its
+   * tombstone. An invalid request throws a
    * `TypeError` and changes nothing.
    */
   cancel(request: ExecutionCancelRequest): Promise<ExecutionCancelResult>;
@@ -340,13 +350,15 @@ export interface ExecutionClient {
   /**
    * Removes the execution's `divergence` and makes it due now, so the next
    * delivery replays it again on the code deployed by then. Not fenced. An
-   * execution without a divergence, including a terminal one, is unchanged.
+   * execution without a divergence, including a terminal or pruned one, is
+   * unchanged.
    */
   clearDivergence(executionId: string): Promise<ExecutionClearDivergenceResult>;
 
   /**
    * Requests a wake from outside a delivery, such as a store commit. Wakes not
-   * covered by a claimed delivery merge into one due time: the earliest.
+   * covered by a claimed delivery merge into one due time: the earliest. A
+   * terminal or pruned execution ignores it.
    */
   requestWake(request: {
     executionId: string;
@@ -396,6 +408,40 @@ export interface ExecutionClient {
     lease: ExecutionLease;
     outcome: WorkflowRunOutcome;
   }): Promise<ExecutionAcknowledgeResult>;
+
+  /**
+   * Replaces up to `limit` expired terminal executions with their tombstones,
+   * oldest outcome first, and returns the tombstones. An execution is expired
+   * when the period of its workflow's policy for its status has passed since
+   * the outcome was recorded, by the runtime clock. A target with a join
+   * waiter whose joiner is not terminal is skipped.
+   *
+   * Each tombstone is one atomic write with the join-waiter check. It clears
+   * the record's params, context, outcome, cancellation, parent link,
+   * divergence, version and wake and lease state, deletes the join waiters
+   * registered on the execution, and marks the tombstone as pending cleanup.
+   * Safe to run concurrently: an execution is pruned once.
+   */
+  prune(request: {
+    retain: RetentionOptions;
+    limit: number;
+  }): Promise<PrunedExecutionRecord[]>;
+
+  /**
+   * Up to `limit` tombstones still pending cleanup, with whether the
+   * execution's stores are to be deleted.
+   */
+  listPendingPrunes(request: {
+    limit: number;
+  }): Promise<{ executionId: string; deleteExecutionStore: boolean }[]>;
+
+  /**
+   * Deletes the start-request records the pruned execution owns as caller and
+   * clears its cleanup mark. Callers delete the execution's step records,
+   * store data and waiters first. Safe to repeat; does nothing for an
+   * execution that is not pruned.
+   */
+  finishPrune(executionId: string): Promise<void>;
 }
 
 /**
@@ -518,7 +564,7 @@ export class ReplayDivergenceError extends Error {
 }
 
 export function isTerminalExecutionStatus(
-  status: ExecutionStatus
+  status: ExecutionStatus | "pruned"
 ): status is "completed" | "failed" | "cancelled" {
   return status === "completed" || status === "failed" || status === "cancelled";
 }

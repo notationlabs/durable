@@ -1,8 +1,10 @@
 import type { ExecutionClient } from "../base/execution";
 import {
+  isPrunedExecutionView,
   isTerminalExecutionView,
   toExecutionView,
   type ExecutionControl,
+  type PrunedExecutionView,
 } from "../base/observation";
 import { prepareExecutionCancel } from "./execution-state";
 
@@ -21,7 +23,8 @@ export class ExecutionCancelRequestError extends TypeError {
  * Cancels executions through `executions`. After the request is recorded,
  * `cancel` reads the record once to build its result, so a `requested`
  * result carries the view at that read. An execution that reached a
- * terminal status between the two calls resolves with its terminal view.
+ * terminal status between the two calls resolves with its terminal view, and
+ * one pruned between them with its pruned view.
  */
 export function createExecutionControl(
   executions: Pick<ExecutionClient, "cancel" | "clearDivergence" | "get">
@@ -35,10 +38,11 @@ export function createExecutionControl(
         ...prepared.request,
       });
       if (result.status === "rejected") return undefined;
+      if (result.status === "pruned") return toExecutionView(result) as PrunedExecutionView;
       const record = await executions.get(prepared.executionId);
       if (!record) return undefined;
       const view = toExecutionView(record);
-      if (isTerminalExecutionView(view)) return view;
+      if (isTerminalExecutionView(view) || isPrunedExecutionView(view)) return view;
       return { status: "requested", execution: view };
     },
 

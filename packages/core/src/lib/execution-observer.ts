@@ -1,6 +1,8 @@
 import type { ExecutionClient, ExecutionRecord } from "../base/execution";
 import { isTerminalExecutionStatus } from "../base/execution";
+import { isPrunedExecution, type PrunedExecutionRecord } from "../base/retention";
 import {
+  isPrunedExecutionView,
   isTerminalExecutionView,
   toExecutionView,
   type ExecutionObserver,
@@ -56,7 +58,7 @@ export function createExecutionObserver(
       });
       if (!record) return undefined;
       const view = toExecutionView(record);
-      if (isTerminalExecutionView(view)) return view;
+      if (isTerminalExecutionView(view) || isPrunedExecutionView(view)) return view;
       return { status: "timed-out", execution: view };
     },
 
@@ -71,8 +73,9 @@ export function createExecutionObserver(
 }
 
 /**
- * Reads the record until it is terminal or `deadline` (a `Date.now()` time)
- * passes, and returns the last read. Returns undefined if no record exists.
+ * Reads the record until it is terminal or pruned, or `deadline` (a
+ * `Date.now()` time) passes, and returns the last read. Returns undefined if
+ * no record exists.
  * Rejects with the signal's reason once `signal` aborts.
  */
 export async function waitForExecutionRecord(
@@ -84,7 +87,7 @@ export async function waitForExecutionRecord(
     notifier?: ExecutionNotifier;
     signal?: AbortSignal;
   }
-): Promise<ExecutionRecord | undefined> {
+): Promise<ExecutionRecord | PrunedExecutionRecord | undefined> {
   const { notifier, signal } = options;
   // A notification that arrives while the record is being read must still
   // cut the next sleep short, so it is remembered until then.
@@ -102,7 +105,9 @@ export async function waitForExecutionRecord(
       signal?.throwIfAborted();
       notified = false;
       const record = await executions.get(executionId);
-      if (!record || isTerminalExecutionStatus(record.status)) return record;
+      if (!record || isPrunedExecution(record) || isTerminalExecutionStatus(record.status)) {
+        return record;
+      }
       const remaining = options.deadline - Date.now();
       if (remaining <= 0) return record;
       if (notified || signal?.aborted) continue;
