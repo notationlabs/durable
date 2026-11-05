@@ -8,6 +8,7 @@ import type {
   ExecutionRecord,
   ExecutionStatus,
   PreparedExecutionListRequest,
+  PrunedExecutionRecord,
   WorkflowInvoker,
 } from "@yieldstar/core";
 import {
@@ -56,13 +57,14 @@ export type ObservationRequest =
       executionId: string;
       /**
        * Reads the record. It resolves `undefined` for an unknown ID, so a
-       * policy that calls it can reveal whether the execution exists.
+       * policy that calls it can reveal whether the execution exists. A
+       * pruned execution resolves with its tombstone.
        */
-      load(): Promise<ExecutionRecord | undefined>;
+      load(): Promise<ExecutionRecord | PrunedExecutionRecord | undefined>;
     }
   | {
       operation: "list";
-      filter: { workflowId?: string; status?: ExecutionStatus; diverged?: boolean };
+      filter: { workflowId?: string; status?: ExecutionStatus | "pruned"; diverged?: boolean };
     }
   | {
       operation: "cancel";
@@ -70,18 +72,20 @@ export type ObservationRequest =
       force: boolean;
       /**
        * Reads the record. It resolves `undefined` for an unknown ID, so a
-       * policy that calls it can reveal whether the execution exists.
+       * policy that calls it can reveal whether the execution exists. A
+       * pruned execution resolves with its tombstone.
        */
-      load(): Promise<ExecutionRecord | undefined>;
+      load(): Promise<ExecutionRecord | PrunedExecutionRecord | undefined>;
     }
   | {
       operation: "clear-divergence";
       executionId: string;
       /**
        * Reads the record. It resolves `undefined` for an unknown ID, so a
-       * policy that calls it can reveal whether the execution exists.
+       * policy that calls it can reveal whether the execution exists. A
+       * pruned execution resolves with its tombstone.
        */
-      load(): Promise<ExecutionRecord | undefined>;
+      load(): Promise<ExecutionRecord | PrunedExecutionRecord | undefined>;
     };
 
 /**
@@ -104,6 +108,7 @@ type TriggerBody = {
 
 const admissionStatus: Record<ExecutionAdmissionErrorCode, number> = {
   EXECUTION_ID_CONFLICT: 409,
+  EXECUTION_PRUNED: 409,
   EXECUTION_REQUEST_MISMATCH: 409,
   INVALID_EXECUTION_EVENT: 400,
   IDEMPOTENT_TRIGGER_REQUIRES_ID: 400,
@@ -301,7 +306,7 @@ export const createListHandler = (params: ObservationParams): RouteHandler =>
         if (!(err instanceof ExecutionListRequestError)) throw err;
         return errorResponse(400, "INVALID_LIST_REQUEST", err.message);
       }
-      const filter: { workflowId?: string; status?: ExecutionStatus; diverged?: boolean } = {};
+      const filter: { workflowId?: string; status?: ExecutionStatus | "pruned"; diverged?: boolean } = {};
       if (prepared.workflowId !== undefined) filter.workflowId = prepared.workflowId;
       if (prepared.status !== undefined) filter.status = prepared.status;
       if (prepared.diverged !== undefined) filter.diverged = prepared.diverged;
