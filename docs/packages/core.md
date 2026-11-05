@@ -10,7 +10,7 @@ bun add @yieldstar/core
 
 ## `Runtime` (abstract class)
 
-A runtime bundles the four clients that hold durable state, and the clock they all read. `SqliteRuntime` and `MemoryRuntime` extend it.
+A runtime bundles the five clients that hold durable state, and the clock they all read. `SqliteRuntime` and `MemoryRuntime` extend it.
 
 ```ts
 abstract class Runtime {
@@ -18,6 +18,7 @@ abstract class Runtime {
   abstract readonly executions: ExecutionClient;
   abstract readonly effects: EffectClient; // step.effect's effect records (RFC 005)
   abstract readonly heap: HeapClient;
+  abstract readonly joins: JoinClient; // step.join's waiters (RFC 009)
   abstract readonly stores: StoreClient;
 }
 
@@ -40,7 +41,7 @@ const runner = new WorkflowRunner(runtime, { router, logger });
 
 | Param            | Type             | Description                       |
 | ---------------- | ---------------- | --------------------------------- |
-| `runtime`        | `Runtime`        | Supplies `heap`, `stores`, `executions` and `effects` |
+| `runtime`        | `Runtime`        | Supplies `heap`, `stores`, `executions`, `effects` and `joins` |
 | `options.router` | `WorkflowRouter` | Map of workflow IDs to generators |
 | `options.logger` | `Logger`         | Pino logger                       |
 
@@ -181,7 +182,7 @@ A lease ends without an acknowledgement when it is released, or when it expires 
 
 `ExecutionAdmissionError` (`code: ExecutionAdmissionErrorCode`) is what the SDKs throw for a rejected admission. `WorkflowStartError` (`code: "INVALID_START_PARAMETERS" | "START_REQUEST_MISMATCH"`) is what `step.start` throws to workflow code for a rejected start; the rejection is recorded as the step's result, so replay throws the same class and code. `InfrastructureError` wraps a runtime failure; `InfrastructureError.is(err)` recognises one even when several copies of `@yieldstar/core` are loaded. `isLeaseLost(value)` recognises a `LeaseLost` result.
 
-Runtime adapter authors can import the storage-neutral state machine that `SqliteRuntime` and `MemoryRuntime` share: `prepareExecutionAdmission`, `createExecutionState`, `prepareExecutionStart`, `matchStartRequest`, `createStartedExecution`, `requestExecutionWake`, `claimExecution`, `renewExecutionLease`, `releaseExecutionLease`, `acknowledgeExecution`, `isLeaseCurrent`, `nextClaimAt`, `isExecutionClaimable`, `toExecutionRecord`, and the event and outcome codecs. An adapter persists `ExecutionState` however it likes and applies each transition inside one atomic write. A fenced heap write checks `isLeaseCurrent` in the same write. For `admit`, an adapter validates the request with `prepareExecutionAdmission`, and when the ID is in use answers with `matchExecutionAdmission` in the same atomic step as its insert. For `list`, an adapter assigns each new execution an admission sequence greater than every earlier one, including executions since deleted, in the same atomic write as its insert, validates the request and decodes its cursor with `prepareExecutionListRequest` (which treats a `null` field as absent), fetches up to `limit + 1` matching executions below the cursor's sequence (`matchesExecutionListRequest` applies the filters to an `ExecutionState`), and builds the page with `toExecutionListPage`. For `start`, an adapter validates the request with `prepareExecutionStart`, looks up the request ID, answers a recorded request with `matchStartRequest`, and otherwise inserts the target and the `StartRequestState` from `createStartedExecution` in one atomic write, choosing another ID if the target's is in use. `DEFAULT_LEASE_DURATION` (30 seconds), `REDELIVERY_DELAY_BASE`, `REDELIVERY_DELAY_MAX`, `DEFAULT_EXECUTION_LIST_LIMIT` (50) and `MAX_EXECUTION_LIST_LIMIT` (1000) are the defaults.
+Runtime adapter authors can import the storage-neutral state machine that `SqliteRuntime` and `MemoryRuntime` share: `prepareExecutionAdmission`, `createExecutionState`, `prepareExecutionStart`, `matchStartRequest`, `createStartedExecution`, `requestExecutionWake`, `claimExecution`, `renewExecutionLease`, `releaseExecutionLease`, `acknowledgeExecution`, `isLeaseCurrent`, `nextClaimAt`, `isExecutionClaimable`, `toExecutionRecord`, and the event and outcome codecs. An adapter persists `ExecutionState` however it likes and applies each transition inside one atomic write. A fenced heap write checks `isLeaseCurrent` in the same write. For `admit`, an adapter validates the request with `prepareExecutionAdmission`, and when the ID is in use answers with `matchExecutionAdmission` in the same atomic step as its insert. For `list`, an adapter assigns each new execution an admission sequence greater than every earlier one, including executions since deleted, in the same atomic write as its insert, validates the request and decodes its cursor with `prepareExecutionListRequest` (which treats a `null` field as absent), fetches up to `limit + 1` matching executions below the cursor's sequence (`matchesExecutionListRequest` applies the filters to an `ExecutionState`), and builds the page with `toExecutionListPage`. For `start`, an adapter validates the request with `prepareExecutionStart`, looks up the request ID, answers a recorded request with `matchStartRequest`, and otherwise inserts the target and the `StartRequestState` from `createStartedExecution` in one atomic write, choosing another ID if the target's is in use. For `JoinClient.join`, an adapter validates the waiter with `prepareJoinWaiter`, reads the target's state and answers with `readJoinTarget` in one atomic step, and registers the waiter only when the answer is `waiting`. In the atomic write of an acknowledgement for which `becameTerminal(before, after)` holds, it requests a wake for the joiner of every join waiter on the execution and keeps the waiters. `DEFAULT_LEASE_DURATION` (30 seconds), `REDELIVERY_DELAY_BASE`, `REDELIVERY_DELAY_MAX`, `DEFAULT_EXECUTION_LIST_LIMIT` (50) and `MAX_EXECUTION_LIST_LIMIT` (1000) are the defaults.
 
 ## `durableValueCodec`
 
@@ -313,7 +314,7 @@ abstract writeStep(params: {
 }): Promise<HeapRecord | LeaseLost>;
 ```
 
-`readStep` returns the latest attempt. `writeStep` is fenced by `lease`: if the lease is not current, nothing changes and it returns `lost`. A `done` record deletes the step's store and effect waiters in the same write. Records are keyed by execution, step key and attempt, and never change once written. Rewriting an existing record succeeds without changing it and resolves with the record as stored, so the caller can compare it with the value it wrote.
+`readStep` returns the latest attempt. `writeStep` is fenced by `lease`: if the lease is not current, nothing changes and it returns `lost`. A `done` record deletes the step's store, effect and join waiters in the same write. Records are keyed by execution, step key and attempt, and never change once written. Rewriting an existing record succeeds without changing it and resolves with the record as stored, so the caller can compare it with the value it wrote.
 
 ## `HeapRecord`
 

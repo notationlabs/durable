@@ -42,6 +42,7 @@ For Node, change the import to `@yieldstar/sqlite-runtime/node`. No other runtim
 | A paused worker resumes after another claim          | Its step writes and acknowledgement carry a stale token and are rejected                     |
 | The app restarts                                     | `admitted` and `suspended` records and their pending wakes are still in the file, and the next dispatcher delivers them |
 | A store commit lands                                 | The wakes for the waiters it satisfies commit in the same transaction                        |
+| A joined execution finishes                          | The wakes for its join waiters commit in the same transaction as its outcome, so a crash cannot lose them |
 
 **Leases decide when another dispatcher may take over; tokens decide whose writes count.** Each delivery runs under a lease that the dispatcher renews while the delivery runs. If the dispatcher stops renewing, because its process died or froze, the lease expires and another dispatcher can claim the execution with a higher token. Every step write and acknowledgement checks the token in the same SQLite transaction, so a worker that falls behind can no longer record anything. If a renewal finds that another claim has taken over, the dispatcher aborts the delivery's `signal`, and the worker invoker kills the worker, so even a step function that never returns stops at once. Several app processes can therefore share one database file, each running a dispatcher. A dispatcher runs up to `concurrency` deliveries at once (10 by default).
 
