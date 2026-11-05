@@ -10,6 +10,7 @@ import {
   InfrastructureError,
   StepDelay,
   StepEffectWait,
+  StepJoinWait,
   StepStoreWait,
   WorkflowResult,
 } from "..";
@@ -53,7 +54,8 @@ export class WorkflowRunner<
       | WorkflowResult<unknown>
       | StepDelay
       | StepEffectWait
-      | StepStoreWait;
+      | StepStoreWait
+      | StepJoinWait;
     try {
       response = await this.runWorkflows({
         workflow,
@@ -73,6 +75,7 @@ export class WorkflowRunner<
       case "step-delay":
       case "effect-wait":
       case "store-wait":
+      case "join-wait":
         return { status: "suspended", wakeAt: response.wakeAt };
     }
   };
@@ -88,7 +91,7 @@ export class WorkflowRunner<
     signal: AbortSignal;
     logger: Logger;
   }): Promise<
-    WorkflowResult<Result> | StepDelay | StepEffectWait | StepStoreWait
+    WorkflowResult<Result> | StepDelay | StepEffectWait | StepStoreWait | StepJoinWait
   > {
     const { workflow, event, lease, signal, logger } = params;
 
@@ -120,7 +123,8 @@ export class WorkflowRunner<
 
     if (
       stageResponse instanceof StepEffectWait ||
-      stageResponse instanceof StepStoreWait
+      stageResponse instanceof StepStoreWait ||
+      stageResponse instanceof StepJoinWait
     ) {
       return stageResponse;
     }

@@ -34,6 +34,7 @@ import {
   StepCacheCheck,
   StepEffectWait,
   StepInvalid,
+  StepJoinWait,
   StepStoreWait,
   WorkflowResult,
   InfrastructureError,
@@ -305,6 +306,7 @@ export function workflow<
       const needsWake =
         !cached?.meta.done &&
         (stepResponse instanceof StepStoreWait ||
+          stepResponse instanceof StepJoinWait ||
           stepResponse instanceof StepEffectWait);
 
       if (!cached && stepResponseJson !== undefined && !suspendedOnStore) {

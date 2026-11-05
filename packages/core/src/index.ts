@@ -247,6 +247,7 @@ export {
   StepEffectWait,
   StepError,
   StepInvalid,
+  StepJoinWait,
   StepKey,
   StepResponse,
   StepResult,

@@ -36,6 +36,7 @@ import {
   type StepSchemaVerdict,
   durableValueCodec,
   StepEffectWait,
+  StepJoinWait,
   validateEffectRequest,
   WorkflowEffectError,
   WorkflowJoinError,
@@ -356,7 +357,7 @@ async function* joinStep(params: {
   // from Date.now() does not move on replay.
   let recordedDeadline: number | undefined;
   if (cached instanceof StepUnfinished) {
-    if (cached.response instanceof StepStoreWait) {
+    if (cached.response instanceof StepJoinWait) {
       recordedDeadline = cached.response.wakeAt;
     }
   } else if (cached) {
@@ -380,7 +381,7 @@ async function* joinStep(params: {
   // The deadline must be durable before the waiter can wake a redelivery,
   // which would otherwise compute it again.
   if (deadline !== undefined && recordedDeadline === undefined) {
-    yield new StepUnfinishedRecord(new StepStoreWait(deadline));
+    yield new StepUnfinishedRecord(new StepJoinWait(deadline));
   }
 
   const joined: RuntimeCallResult<JoinResult> = yield new StepRuntimeCall(
@@ -433,7 +434,7 @@ async function* joinStep(params: {
       if (deadline !== undefined && clock() >= deadline) {
         return yield* record<TimedJoinResult<unknown>>({ status: "timed-out" });
       }
-      yield new StepStoreWait(deadline);
+      yield new StepJoinWait(deadline);
       throw new Error("Join wait yielded control unexpectedly");
   }
 }

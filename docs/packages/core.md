@@ -451,6 +451,7 @@ type WorkflowInvoker = {
 | `StepDelay`       | `"step-delay"`       | Carries a `wakeAt` timestamp                        |
 | `StepEffectWait`  | `"effect-wait"`      | An uncertain `step.effect`, recorded unfinished, with its `wakeAt` |
 | `StepStoreWait`   | `"store-wait"`       | A store wait, recorded unfinished. A timed `when` sets `wakeAt` to its deadline |
+| `StepJoinWait`    | `"join-wait"`        | An unresolved `step.join` or `step.call`, recorded unfinished. A timed join sets `wakeAt` to its deadline |
 | `StepInvalid`     | `"step-invalid"`     | Protocol violation (e.g., missing `yield*`)         |
 | `WorkflowResult`  | `"workflow-result"`  | Wraps the workflow's return value                   |
 | `WorkflowDelay`   | `"workflow-delay"`   | No longer emitted by `WorkflowRunner`               |

@@ -71,6 +71,18 @@ export class StepStoreWait extends StepResponse {
 }
 
 /**
+ * An unresolved `step.join` or `step.call`, recorded as an unfinished step.
+ * @param wakeAt the deadline of a timed join. The execution is also due then.
+ */
+export class StepJoinWait extends StepResponse {
+  static type = "join-wait";
+  readonly type = "join-wait";
+  constructor(readonly wakeAt?: number) {
+    super();
+  }
+}
+
+/**
  * An effect step whose outcome is uncertain. The driver records it as an
  * unfinished step after watching the effect, so the next delivery begins the
  * effect again; `wakeAt` is when that delivery is due.

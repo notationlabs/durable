@@ -285,7 +285,7 @@ describe.each(runtimes)("step.join and step.call on $name", ({ create }) => {
       await admitJoiner("join-ship");
 
       expect(await deliver()).toEqual({ status: "suspended", wakeAt: undefined });
-      expect(await readStep()).toEqual({ type: "store-wait", done: false });
+      expect(await readStep()).toEqual({ type: "join-wait", done: false });
       expect(await waiters()).toEqual([
         { targetExecutionId: TARGET, executionId: JOINER, stepKey: "join" },
       ]);
@@ -439,7 +439,7 @@ describe.each(runtimes)("step.join and step.call on $name", ({ create }) => {
       await admitJoiner("timed-join-ship");
 
       expect(await deliver()).toEqual({ status: "suspended", wakeAt: DEADLINE });
-      expect(await readStep()).toEqual({ type: "store-wait", wakeAt: DEADLINE, done: false });
+      expect(await readStep()).toEqual({ type: "join-wait", wakeAt: DEADLINE, done: false });
       expect(await waiters()).toHaveLength(1);
     });
 
@@ -492,14 +492,14 @@ describe.each(runtimes)("step.join and step.call on $name", ({ create }) => {
 
       const lease = (await claim(JOINER))!;
       await expect(run(lease)).rejects.toBeInstanceOf(InfrastructureError);
-      expect(await readStep()).toEqual({ type: "store-wait", wakeAt: DEADLINE, done: false });
+      expect(await readStep()).toEqual({ type: "join-wait", wakeAt: DEADLINE, done: false });
       expect(await waiters()).toEqual([]);
 
       advance(60 * MINUTE);
       expect(await run(lease)).toEqual({ status: "suspended", wakeAt: DEADLINE });
       advance(60 * MINUTE);
       expect(await run(lease)).toEqual({ status: "suspended", wakeAt: DEADLINE });
-      expect(await readStep()).toEqual({ type: "store-wait", wakeAt: DEADLINE, done: false });
+      expect(await readStep()).toEqual({ type: "join-wait", wakeAt: DEADLINE, done: false });
     });
 
     test("a terminal target wins after the deadline has passed", async () => {
