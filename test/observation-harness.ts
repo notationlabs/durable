@@ -98,7 +98,7 @@ export type SdkOptions = {
   middleware?: MiddlewareFunction[];
   observationMiddleware?: ObservationMiddlewareFunction[];
   pollInterval?: number;
-  waitCap?: number;
+  maxWait?: number;
 };
 
 const hosts = new Map<string, ReturnType<typeof createRoutes>>();
@@ -127,7 +127,7 @@ export function serveRoutes(runtime: Runtime, options: SdkOptions = {}) {
     middleware: options.middleware,
     observationMiddleware: options.observationMiddleware,
     pollInterval: options.pollInterval,
-    waitCap: options.waitCap,
+    maxWait: options.maxWait,
   });
   hosts.set(host, routes);
   return { url: `http://${host}`, routes };

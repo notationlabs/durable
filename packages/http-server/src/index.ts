@@ -1,5 +1,4 @@
 export {
-  WAIT_REQUEST_CAP,
   createRoutes,
   type ObservationErrorCode,
   type ObservationMiddlewareFunction,

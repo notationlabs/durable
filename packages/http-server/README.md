@@ -165,14 +165,15 @@ Options:
 - `logger`: A Pino logger instance
 - `middleware`: Optional array of middleware functions for `/trigger`
 - `observationMiddleware`: Optional array of functions that allow or deny `/poll`, `/wait`, `/list` and `/events` requests
-- `pollInterval`: Optional. How often `/wait` and `/events` read the record while they wait, in milliseconds. Defaults to 25
+- `pollInterval`: Optional. How often each open `/wait` and `/events` request reads the record, in milliseconds. Defaults to 25. Each open request reads on its own, so many concurrent waits multiply the reads of the backend
+- `maxWait`: Optional. The longest the server holds a `/wait` request open, in milliseconds. Defaults to 8000
 - `basePath`: Optional path to mount the routes on
 
 Responses:
 
 - `POST /trigger`: `202 { executionId, status: "accepted" }` once admission commits, `200 { executionId, status: "existing" }` when an idempotent trigger matches an existing execution, `409` `EXECUTION_ID_CONFLICT` or `EXECUTION_REQUEST_MISMATCH` when the execution ID is in use, `400` `INVALID_EXECUTION_EVENT` when `params` or `context` are not durable values, `400` `IDEMPOTENT_TRIGGER_REQUIRES_ID` when an idempotent trigger has no ID
 - `POST /poll`: `200` with the execution's view, `404` `EXECUTION_NOT_FOUND`
-- `POST /wait`: `200` with the terminal view, or `{ status: "timed-out", execution }` after `timeout` or 8 seconds, whichever is shorter; `404` `EXECUTION_NOT_FOUND`
+- `POST /wait`: `200` with the terminal view, or `{ status: "timed-out", execution }` after `timeout` or `maxWait`, whichever is shorter; `404` `EXECUTION_NOT_FOUND`
 - `POST /list`: `200 { executions, cursor? }`, newest first by admission
 - `POST /events`: deprecated; blocks until the execution record is terminal; `200` with the result, `500` with the recorded error, both encoded with the durable value codec, `404` for an unknown execution ID
 

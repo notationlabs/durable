@@ -1,7 +1,7 @@
 import { EventEmitter } from "node:events";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { MemoryRuntime } from "@yieldstar/test-runtime";
-import { WAIT_REQUEST_CAP, createRoutes } from "@yieldstar/http-server";
+import { createRoutes } from "@yieldstar/http-server";
 import {
   ExecutionListRequestError,
   HttpRouteError,
@@ -314,9 +314,8 @@ for (const sdkKind of sdkKinds) {
   });
 }
 
-describe("HTTP wait cap", () => {
+describe("HTTP maxWait", () => {
   test("the server caps a /wait request at 8 seconds by default and returns timed-out", async () => {
-    expect(WAIT_REQUEST_CAP).toBe(8_000);
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
     const runtime = new MemoryRuntime();
     const routes = createRoutes({ runtime, logger });
@@ -334,7 +333,7 @@ describe("HTTP wait cap", () => {
     ).finally(() => {
       settled = true;
     });
-    await vi.advanceTimersByTimeAsync(WAIT_REQUEST_CAP - 50);
+    await vi.advanceTimersByTimeAsync(8_000 - 50);
     expect(settled).toBe(false);
     await vi.advanceTimersByTimeAsync(100);
     expect(settled).toBe(true);
@@ -348,7 +347,7 @@ describe("HTTP wait cap", () => {
 
   test("a /wait request longer than the cap returns timed-out at the cap", async () => {
     const runtime = new MemoryRuntime();
-    const { url } = serveRoutes(runtime, { waitCap: 100 });
+    const { url } = serveRoutes(runtime, { maxWait: 100 });
     await admit(runtime, "slow");
     const { value: res, ms } = await elapsed(() =>
       fetch(`${url}/wait`, {
@@ -366,7 +365,7 @@ describe("HTTP wait cap", () => {
 
   test("the HTTP SDK's wait without a timeout repeats capped requests until the outcome", async () => {
     const runtime = new MemoryRuntime();
-    const sdk = createTestSdk("http", runtime, { waitCap: 50 });
+    const sdk = createTestSdk("http", runtime, { maxWait: 50 });
     await admit(runtime, "slow");
     const waiting = sdk.wait("slow");
     await sleep(300);
@@ -379,7 +378,7 @@ describe("HTTP wait cap", () => {
 
   test("the HTTP SDK's wait with a timeout longer than the cap waits for the whole timeout", async () => {
     const runtime = new MemoryRuntime();
-    const sdk = createTestSdk("http", runtime, { waitCap: 50 });
+    const sdk = createTestSdk("http", runtime, { maxWait: 50 });
     await admit(runtime, "slow");
     const { value, ms } = await elapsed(() => sdk.wait("slow", { timeout: 250 }));
     expect(value).toMatchObject({ status: "timed-out", execution: { status: "admitted" } });
@@ -389,7 +388,7 @@ describe("HTTP wait cap", () => {
 
   test("waitForResult outlasts the cap and throws the recorded error", async () => {
     const runtime = new MemoryRuntime();
-    const sdk = createTestSdk("http", runtime, { waitCap: 50 });
+    const sdk = createTestSdk("http", runtime, { maxWait: 50 });
     const waiting = sdk.triggerAndWait({ workflowId: "charge-order", executionId: "fresh", params: {} });
     const failing = waiting.catch((err) => err);
     await sleep(150);
@@ -415,6 +414,37 @@ describe("HTTP SDK error responses", () => {
       expect(error).toBeInstanceOf(HttpRouteError);
       expect((error as HttpRouteError).status).toBe(404);
       expect((error as HttpRouteError).code).toBeUndefined();
+    }
+  });
+});
+
+test("aborting the HTTP SDK's wait aborts its request and sends no more", async () => {
+  const runtime = new MemoryRuntime();
+  const sdk = createTestSdk("http", runtime, { maxWait: 20 });
+  await admit(runtime, "slow");
+  const controller = new AbortController();
+  const waiting = sdk.wait("slow", { signal: controller.signal });
+  await sleep(70);
+  const reason = new Error("caller left");
+  controller.abort(reason);
+  await expect(waiting).rejects.toBe(reason);
+  await sleep(10);
+  const requestsAtAbort = sdk.responses.length;
+  await sleep(60);
+  expect(sdk.responses.length).toBe(requestsAtAbort);
+});
+
+describe("HTTP SDK trigger status", () => {
+  test("the ack's status comes from the response code, so a server that sends no status still gives one", async () => {
+    for (const [code, status] of [
+      [202, "accepted"],
+      [200, "existing"],
+    ] as const) {
+      vi.stubGlobal("fetch", async () => Response.json({ executionId: "order-42" }, { status: code }));
+      const sdk = createHttpSdkFactory<any>()({ url: "http://older-server.test" });
+      expect(
+        await sdk.trigger({ workflowId: "charge-order", executionId: "order-42", params: {} })
+      ).toMatchObject({ executionId: "order-42", status });
     }
   });
 });

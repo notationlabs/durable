@@ -1,6 +1,5 @@
 import {
   DEFAULT_LEASE_DURATION,
-  EXECUTION_STATUSES,
   ExecutionListRequestError,
   defineStore,
   durableValueCodec,
@@ -10,11 +9,20 @@ import {
   type ExecutionLease,
   type ExecutionListRequest,
   type ExecutionStartResult,
+  type ExecutionStatus,
   type Runtime,
   type StandardSchemaV1,
   type StoreWaiter,
 } from "@yieldstar/core";
 import { describe, expect, test } from "vitest";
+
+const EXECUTION_STATUSES: readonly ExecutionStatus[] = [
+  "admitted",
+  "running",
+  "suspended",
+  "completed",
+  "failed",
+];
 
 export type ExecutionConformanceHarnessOptions = {
   /**

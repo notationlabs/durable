@@ -10,7 +10,7 @@ import { executionStatusAt, toExecutionRecord, type ExecutionState } from "./exe
 export const DEFAULT_EXECUTION_LIST_LIMIT = 50;
 export const MAX_EXECUTION_LIST_LIMIT = 1_000;
 
-export const EXECUTION_STATUSES: readonly ExecutionStatus[] = [
+const EXECUTION_STATUSES: readonly ExecutionStatus[] = [
   "admitted",
   "running",
   "suspended",

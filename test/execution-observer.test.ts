@@ -203,3 +203,33 @@ test("a notifier makes wait read the record early", async () => {
   expect(ms).toBeLessThan(1_000);
   expect(notifier.listenerCount("nudged")).toBe(0);
 });
+
+test("aborting a wait's signal stops its reads and rejects with the signal's reason", async () => {
+  const runtime = new MemoryRuntime();
+  let reads = 0;
+  const observer = createExecutionObserver(
+    {
+      get(executionId) {
+        reads++;
+        return runtime.executions.get(executionId);
+      },
+      list: (request) => runtime.executions.list(request),
+    },
+    { pollInterval: 5 }
+  );
+  await admit(runtime, "slow");
+  const controller = new AbortController();
+  const waiting = observer.wait("slow", { signal: controller.signal });
+  await sleep(30);
+  const reason = new Error("caller left");
+  controller.abort(reason);
+  await expect(waiting).rejects.toBe(reason);
+  const readsAtAbort = reads;
+  expect(readsAtAbort).toBeGreaterThan(1);
+  await sleep(30);
+  expect(reads).toBe(readsAtAbort);
+
+  reads = 0;
+  await expect(observer.wait("slow", { signal: controller.signal })).rejects.toBe(reason);
+  expect(reads).toBe(0);
+});

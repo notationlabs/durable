@@ -167,9 +167,9 @@ for (const backendKind of backendKinds) {
       );
     });
 
-    test("/events waits for an outcome recorded later, past the /wait cap", async () => {
+    test("/events waits for an outcome recorded later, past maxWait", async () => {
       const { runtime, peer } = openBackend(backendKind);
-      const { url } = serveRoutes(runtime, { waitCap: 20 });
+      const { url } = serveRoutes(runtime, { maxWait: 20 });
       await admit(runtime, "later");
       let settled = false;
       const response = post(url, "events", { executionId: "later" }).finally(() => {
@@ -423,6 +423,43 @@ for (const backendKind of backendKinds) {
     });
   });
 }
+
+test("a /wait or /events request stops reading the record when the client disconnects", async () => {
+  const runtime = new MemoryRuntime();
+  let reads = 0;
+  const executions = new Proxy(runtime.executions, {
+    get(target, property) {
+      if (property === "get") {
+        return (executionId: string) => {
+          reads++;
+          return target.get(executionId);
+        };
+      }
+      const value = Reflect.get(target, property);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+  const routes = createRoutes({ runtime: { executions }, logger, pollInterval: 5 });
+  await admit(runtime, "slow");
+  for (const route of ["/wait", "/events"] as const) {
+    reads = 0;
+    const controller = new AbortController();
+    const response = routes[route].POST(
+      new Request(`http://yieldstar.test${route}`, {
+        method: "POST",
+        body: JSON.stringify({ executionId: "slow" }),
+        signal: controller.signal,
+      })
+    );
+    await sleep(30);
+    controller.abort();
+    await response;
+    const readsAtAbort = reads;
+    expect(readsAtAbort).toBeGreaterThan(1);
+    await sleep(30);
+    expect(reads).toBe(readsAtAbort);
+  }
+});
 
 test("pollInterval sets how often /wait reads the record", async () => {
   const runtime = new MemoryRuntime();

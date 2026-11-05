@@ -21,7 +21,10 @@ export type ExecutionNotifier = {
 };
 
 export type ExecutionObserverOptions = {
-  /** @default DEFAULT_OBSERVER_POLL_INTERVAL */
+  /**
+   * How often `wait` reads the record, in milliseconds.
+   * @default 25
+   */
   pollInterval?: number;
   /** An optional fast path. No result depends on it. */
   notifier?: ExecutionNotifier;
@@ -53,6 +56,7 @@ export function createExecutionObserver(
         pollInterval,
         notifier: options.notifier,
         deadline: Date.now() + timeout,
+        signal: waitOptions?.signal,
       });
       if (!record) return undefined;
       const view = toExecutionView(record);
@@ -123,8 +127,13 @@ export async function waitForExecutionRecord(
   }
 }
 
+/** Whether `value` is a non-negative number of milliseconds, as a wait `timeout` must be. */
+export function isDuration(value: unknown): value is number {
+  return typeof value === "number" && !Number.isNaN(value) && value >= 0;
+}
+
 function assertDuration(name: string, value: unknown) {
-  if (typeof value !== "number" || Number.isNaN(value) || value < 0) {
+  if (!isDuration(value)) {
     throw new RangeError(`${name} must be a non-negative number of milliseconds`);
   }
 }
