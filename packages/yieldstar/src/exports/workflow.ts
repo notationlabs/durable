@@ -131,10 +131,8 @@ export function workflow<
     }
 
     /**
-     * Records the delivery of `request` at one step, with its waiters deleted
-     * and `deliveredAt` set in the same write, and returns the error to throw
-     * into workflow code there. A lost lease or a conflicting record ends the
-     * delivery, as in `writeStep`.
+     * Records the cancellation at `stepKey` and returns the error to throw into
+     * workflow code. A lost lease or a conflicting record ends the delivery.
      */
     async function deliverCancellation(
       request: ExecutionCancellation,

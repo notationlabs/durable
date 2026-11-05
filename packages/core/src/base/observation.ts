@@ -68,10 +68,8 @@ export type CancelResult =
 
 export interface ExecutionControl {
   /**
-   * Records a cancellation request and returns without waiting for the
-   * workflow to stop. Resolves with the terminal view when the execution is
-   * terminal, including after a forced cancel, and with `undefined` for an
-   * unknown ID.
+   * Requests cancellation without waiting for the workflow to stop. Resolves
+   * `undefined` for an unknown ID.
    */
   cancel(executionId: string, options?: CancelOptions): Promise<CancelResult | undefined>;
 }

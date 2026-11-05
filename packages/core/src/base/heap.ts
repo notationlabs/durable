@@ -31,16 +31,9 @@ export abstract class HeapClient {
   }): Promise<HeapRecord | LeaseLost>;
 
   /**
-   * Records the delivery of the execution's cancellation request, fenced by
-   * `lease`, all-or-nothing: writes each step's `done` record, deletes those
-   * steps' store, effect and join waiters, and sets the request's
-   * `deliveredAt`. Throws if the execution has no request recorded.
-   *
-   * The results list the records as stored, in the order of `steps`. An
-   * existing record with the same JSON, done, counts as written, as in
-   * `writeStep`. When an existing record differs, nothing changes, and the
-   * results hold each step's existing record or `null`. Callers compare them
-   * to detect the conflict.
+   * Records a cancellation's delivery in one fenced write: each step's `done`
+   * record, the deletion of those steps' waiters, and `deliveredAt`. If an
+   * existing record conflicts, it writes nothing and returns the existing records.
    */
   abstract recordCancellation(params: {
     lease: ExecutionLease;

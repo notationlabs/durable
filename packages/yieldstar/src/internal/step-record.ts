@@ -31,10 +31,9 @@ export class StepUnfinished extends StepResponse {
 }
 
 /**
- * A cancellation delivered at this step. It is recorded as the step's result
- * and is a different record type from a `StepError`, so a
- * `WorkflowCancelledError` that a step function throws stays a step error.
- * The driver throws `err` into workflow code at the step.
+ * A cancellation delivered at this step. It is a separate type from
+ * `StepError` so that a `WorkflowCancelledError` thrown by a step function
+ * stays a step error.
  */
 export class StepCancelled extends StepResponse {
   static type = "step-cancelled";

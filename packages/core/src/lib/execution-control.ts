@@ -18,10 +18,8 @@ export class ExecutionCancelRequestError extends TypeError {
 }
 
 /**
- * Cancels executions through `executions`. After the request is recorded,
- * `cancel` reads the record once to build its result, so a `requested`
- * result carries the view at that read. An execution that reached a
- * terminal status between the two calls resolves with its terminal view.
+ * Cancels executions through `executions`. If an execution ends between the
+ * cancel and the read that follows, the result is its terminal view.
  */
 export function createExecutionControl(
   executions: Pick<ExecutionClient, "cancel" | "get">

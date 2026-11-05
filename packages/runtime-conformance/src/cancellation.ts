@@ -26,10 +26,8 @@ export type CancellationConformanceHarness = {
   /** Opens the same durable backend in a new runtime, as after a restart. */
   restart?(): Runtime | Promise<Runtime>;
   /**
-   * Makes every write to `executionId`'s record on `runtime` fail after the
-   * surrounding write begins but before it commits, until the returned
-   * function is called. Without it, the case for a failure while a request
-   * propagates is skipped.
+   * Makes writes to `executionId`'s record fail before they commit, until the
+   * returned function is called. Without it, the propagation-failure case is skipped.
    */
   failExecutionWrites?(
     executionId: string

@@ -40,10 +40,7 @@ export type ExecutionCancellation = {
   source?: string;
   forced: boolean;
   requestedAt: number;
-  /**
-   * Set when the throw into workflow code is recorded. Until then the request
-   * is pending; after it, the workflow is in cleanup.
-   */
+  /** Set when the cancellation is delivered to workflow code. */
   deliveredAt?: number;
 };
 
@@ -275,19 +272,10 @@ export interface ExecutionClient {
   start(request: ExecutionStartRequest): Promise<ExecutionStartResult>;
 
   /**
-   * Records a cancellation request and propagates it to every non-terminal,
-   * non-detached descendant, all-or-nothing. Not fenced: it needs no lease.
-   *
-   * A graceful request makes the execution due; its next delivery throws
-   * `WorkflowCancelledError` at the first unfinished step. A forced request
-   * records `cancelled` at once, clears the pending wake, deletes the waiters
-   * the execution holds, wakes its join waiters and ends any live lease by
-   * issuing a higher token.
-   *
-   * A repeated request keeps the first `reason` and `source`; a forced
-   * request after a graceful one makes it forced. A terminal execution is
-   * not changed, and its outcome is returned. An invalid request throws a
-   * `TypeError` and changes nothing.
+   * Records a cancellation request on the execution and its non-detached
+   * descendants, all-or-nothing. A graceful request makes the execution due;
+   * a forced one records `cancelled` at once. A terminal execution is not
+   * changed, and its outcome is returned.
    */
   cancel(request: ExecutionCancelRequest): Promise<ExecutionCancelResult>;
 
@@ -441,10 +429,8 @@ export function isTerminalExecutionStatus(
 }
 
 /**
- * Thrown into workflow code at the first unfinished step once a cancellation
- * request is delivered. The throw is recorded as that step's result, so
- * replay throws it again at the same step. A workflow that lets it escape
- * ends `cancelled`; one that catches it and returns ends `completed`.
+ * Thrown into workflow code at the first unfinished step when a cancellation
+ * is delivered. If it escapes, the execution ends `cancelled`.
  */
 export class WorkflowCancelledError extends Error {
   readonly reason?: string;
