@@ -239,12 +239,14 @@ type TimedJoinResult<R> =
 
 The deadline follows the rules of a [timed `when`](./store-waiting.md#waiting-with-a-deadline):
 
-- The first evaluation records the deadline in the unfinished step, before it registers the join waiter. Later evaluations use the recorded deadline and ignore the argument, so a deadline computed from `Date.now()` does not move on replay.
+- The first evaluation that suspends records the deadline in the unfinished step. Later evaluations use the recorded deadline and ignore the argument, so a deadline computed from `Date.now()` does not move on replay. A delivery that stops before the step is first recorded computes the deadline again on the next delivery.
 - Each evaluation reads the target before it compares the deadline with the clock. A terminal target wins, even when the deadline has passed.
 - An unresolved evaluation ends the delivery as `suspended` with `wakeAt` set to the deadline.
 - The first recorded result is the only one returned. A target that completes after `timed-out` is recorded does not change the step.
 
 A failed target still throws `WorkflowJoinError`. Only `completed` and `timed-out` are returned as values.
+
+Replay returns the value as it was recorded. If a deploy adds or removes the `deadline` of a join that has already recorded its result, the replayed value has the old shape and does not match the new type. A join that gained a deadline returns the bare result instead of a `TimedJoinResult`. A join that lost its deadline returns `{ status: "completed", result }` or `{ status: "timed-out" }` instead of the result. A timed `when` behaves the same way. Use a new step key when you change whether a join has a deadline.
 
 ## `step.call`
 
@@ -257,7 +259,7 @@ const shipment = yield* step.call<typeof shipOrder>("ship", {
 });
 ```
 
-The type parameter is the child workflow. It checks `params` and types the result. It does not check that `workflowId` names that workflow, because a workflow cannot refer to the type of a router that contains it.
+The type parameter is the child workflow. It checks `params`, makes `params` required when the child requires them, and types the result. It does not check that `workflowId` names that workflow, because a workflow cannot refer to the type of a router that contains it. TypeScript cannot infer the type parameter. Without it, the call accepts no `params` and its result is a `DurableValue`, as for an untyped `step.join`.
 
 The step records one result, under its key, when the child is terminal. Until then, each evaluation sends the same start request, identified by the calling execution's ID and the step key as for `step.start`, and joins the child that the request names. So a delivery that stops between the start and the join does not start a second child: the next delivery receives the same child and joins it. Once the step is recorded, replay returns the result, or throws the error, without starting or joining.
 
@@ -265,7 +267,12 @@ The child's execution record has `parent` set to the caller's execution ID and t
 
 `step.call` throws the same errors as `step.join`. It also throws a `WorkflowStartError` if the runtime rejects the start, for example with `START_REQUEST_MISMATCH` when a deploy changed the step's `workflowId` or `params` before the child finished.
 
-With a `deadline`, `step.call` returns a `TimedJoinResult<R>` and follows the rules in [Joining with a deadline](#joining-with-a-deadline). The deadline does not stop the child: a `timed-out` call leaves the child running.
+With a `deadline`, `step.call` returns a `TimedJoinResult<R>` and follows the rules in [Joining with a deadline](#joining-with-a-deadline). The deadline does not stop the child: a `timed-out` call leaves the child running. A `timed-out` result does not include the child's execution ID, so the workflow cannot join the child later. If it needs to, use `step.start` and then a timed `step.join`:
+
+```ts
+const { executionId } = yield* step.start("ship", { workflowId: "ship-order", params: { orderId } });
+const shipped = yield* step.join<{ tracking: string }>("ship:join", executionId, { deadline });
+```
 
 ## `step.effect`
 

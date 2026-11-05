@@ -1,12 +1,12 @@
 import {
   acknowledgeExecution,
-  becameTerminal,
   claimExecution,
   createExecutionState,
   createStartedExecution,
   executionNotFound,
   isExecutionClaimable,
   isLeaseCurrent,
+  isTerminalExecutionStatus,
   matchExecutionAdmission,
   matchesExecutionListRequest,
   matchStartRequest,
@@ -254,7 +254,11 @@ export class MemoryExecutionClient implements ExecutionClient {
       now: this.clock(),
     });
     this.executions.set(state.executionId, next);
-    if (becameTerminal(state, next)) this.onTerminal?.(state.executionId);
+    // The same state comes back when the lease is lost or the record was
+    // already terminal.
+    if (next !== state && isTerminalExecutionStatus(next.status)) {
+      this.onTerminal?.(state.executionId);
+    }
     return result;
   }
 }

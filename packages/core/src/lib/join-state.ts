@@ -31,23 +31,3 @@ export function readJoinTarget(target: ExecutionState | undefined): JoinResult {
   }
   return { status: "waiting" };
 }
-
-/**
- * Whether a transition made the execution terminal. Adapters request a wake
- * for every join waiter on the execution in the same atomic write when it
- * did.
- */
-export function becameTerminal(before: ExecutionState, after: ExecutionState) {
-  return (
-    !isTerminalExecutionStatus(before.status) &&
-    isTerminalExecutionStatus(after.status)
-  );
-}
-
-export function compareJoinWaiters(a: JoinWaiter, b: JoinWaiter) {
-  return compare(a.executionId, b.executionId) || compare(a.stepKey, b.stepKey);
-}
-
-function compare(a: string, b: string) {
-  return a < b ? -1 : a > b ? 1 : 0;
-}

@@ -136,8 +136,6 @@ export {
   unacknowledgedDeliveryCountAt,
 } from "./lib/execution-state";
 export {
-  becameTerminal,
-  compareJoinWaiters,
   prepareJoinWaiter,
   readJoinTarget,
 } from "./lib/join-state";

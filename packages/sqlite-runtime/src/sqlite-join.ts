@@ -38,7 +38,11 @@ export class SqliteJoinClient implements JoinClient {
     });
   }
 
-  async getWaiters(targetExecutionId: string): Promise<JoinWaiter[]> {
+  /**
+   * The waiters registered on the target, ordered by joining execution and
+   * then step key. Not part of `JoinClient`; for operators and tests.
+   */
+  getWaiters(targetExecutionId: string): JoinWaiter[] {
     return this.joinWaitersDao.getWaiters(targetExecutionId);
   }
 }
