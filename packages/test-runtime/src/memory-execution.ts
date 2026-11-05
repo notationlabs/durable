@@ -176,8 +176,9 @@ export class MemoryExecutionClient implements ExecutionClient {
   }
 
   /**
-   * Synchronously reads an execution's stored state, for reads that must be
-   * atomic with the caller's own write (join registration).
+   * @internal Synchronously reads an execution's stored state, for reads that
+   * must be atomic with the caller's own write (join registration). Returns
+   * the stored object itself; callers must not change it.
    */
   getState(executionId: string): ExecutionState | undefined {
     return this.executions.get(executionId);
