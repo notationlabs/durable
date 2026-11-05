@@ -74,6 +74,17 @@ describe("validateRetentionOptions", () => {
     expect(validated).toEqual({ default: { completed: DAY } });
   });
 
+  test("copies a workflow ID of __proto__ as an own entry", () => {
+    const retain = JSON.parse(
+      '{"default":{"completed":0},"workflows":{"__proto__":{"completed":7}}}'
+    );
+    const validated = validateRetentionOptions(retain)!;
+    expect(Object.getPrototypeOf(validated.workflows)).toBeNull();
+    expect(Object.hasOwn(validated.workflows!, "__proto__")).toBe(true);
+    expect(retentionPolicyFor(validated, "__proto__")).toEqual({ completed: 7 });
+    expect(retentionPolicyFor(validated, "place-order")).toEqual({ completed: 0 });
+  });
+
   test("accepts zero and leaves undefined as undefined", () => {
     expect(validateRetentionOptions({ default: { completed: 0 } })).toEqual({
       default: { completed: 0 },

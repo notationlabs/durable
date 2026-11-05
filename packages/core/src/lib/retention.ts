@@ -30,13 +30,16 @@ export function validateRetentionOptions(
     if (!isPlainObject(retain.workflows)) {
       throw new TypeError("retain.workflows must be an object");
     }
-    copy.workflows = {};
+    // A null-prototype copy, so a workflow ID such as "__proto__" is an own
+    // key rather than the copy's prototype.
+    const workflows: Record<string, RetentionPolicy> = Object.create(null);
     for (const [workflowId, policy] of Object.entries(retain.workflows)) {
-      copy.workflows[workflowId] = validateRetentionPolicy(
+      workflows[workflowId] = validateRetentionPolicy(
         policy,
         `retain.workflows[${JSON.stringify(workflowId)}]`
       );
     }
+    copy.workflows = workflows;
   }
   return copy;
 }
