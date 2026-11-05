@@ -170,14 +170,15 @@ function createWorkflowGenerator<
     };
     const { workflowVersion } = event;
     // The keys this delivery requested, shared by every branch, so a key
-    // repeated across branches is rejected. A recorded step is consumed once
-    // its key is in here.
+    // repeated across branches is rejected. A recorded step counts as
+    // consumed once its key is in this set.
     const stepKeys = new Set<string>();
     // The kind each requested key was requested as, stored with its records.
     const stepKinds = new Map<string, string>();
     const lock = new DecisionLock();
-    // Every step the history recorded before this delivery. Records this
-    // delivery writes are for keys it requested.
+    // Every step the history recorded before this delivery. It is not
+    // updated, since the records this delivery writes are for keys in
+    // `stepKeys`.
     const recordedSteps = new Set(
       (await infrastructure(() => heapClient.listSteps({ executionId }))).map(
         ({ stepKey }) => stepKey
@@ -457,18 +458,18 @@ function createWorkflowGenerator<
 
         const recorded = cached ? decodeStepRecord(cached.stepResponseJson) : null;
 
-        // Outside every combinator, steps run one at a time, so a step about
-        // to do new work must find the whole history consumed. Inside a
-        // combinator, branches interleave differently on each delivery, and
-        // the check waits for the end of the delivery.
-        // A recorded delay followed by records the original run made after it
-        // was passed, even if this host's clock reads earlier than its wakeAt.
+        // A recorded delay with records after it was passed by the original
+        // run, even if this host's clock reads earlier than its wakeAt.
         const passed =
           !branch.parent &&
           cached?.meta.done === true &&
           recorded instanceof StepDelay &&
           firstUnconsumed() !== undefined;
         const unfinishedStep = !passed && isUnfinishedStep(cached, recorded, clock());
+        // Outside every combinator, steps run one at a time, so a step about
+        // to do new work must find the whole history consumed. Inside a
+        // combinator, branches interleave differently on each delivery, and
+        // the check waits for the end of the delivery.
         if (!branch.parent && !isCombinator && unfinishedStep) {
           assertConsumed(stepKey);
         }

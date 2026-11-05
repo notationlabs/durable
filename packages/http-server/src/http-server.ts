@@ -85,8 +85,9 @@ export type ObservationRequest =
     };
 
 /**
- * Allows or denies an observation, cancel or clear-divergence request. It runs before the
- * route reads any record. A denial responds `401` or `403`, never `404`.
+ * Allows or denies an observation, cancel or clear-divergence request. It
+ * runs before the route reads any record. A denial responds `401` or `403`,
+ * never `404`.
  */
 export type ObservationMiddlewareFunction = (
   req: Request,

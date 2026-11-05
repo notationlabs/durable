@@ -67,9 +67,9 @@ export function createHttpSdkFactory<W extends WorkflowRouter>() {
     };
 
     /**
-     * Decodes a `/poll`, `/wait`, `/cancel` or `/clear-divergence` response. Only a `404` with code
-     * `EXECUTION_NOT_FOUND` means the execution does not exist; any other
-     * `404`, such as one from a wrong base path, throws.
+     * Decodes a `/poll`, `/wait`, `/cancel` or `/clear-divergence` response.
+     * Only a `404` with code `EXECUTION_NOT_FOUND` means the execution does
+     * not exist; any other `404`, such as one from a wrong base path, throws.
      */
     const decodeObservation = async <T>(res: Response): Promise<T | undefined> => {
       if (res.ok) return (await decode(res)) as T;
