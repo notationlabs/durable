@@ -426,7 +426,7 @@ yield* step.delay("key", ms);
 yield* step.poll("key", opts, predicate);
 ```
 
-`step.start` and `step.call` always take a key, because the key identifies the start request as well as the cached step. Keep it stable across deploys: a different key starts a different target. `step.join` always takes a key too. `step.effect` always takes a key too; the effect itself is identified by its `effectId`.
+`step.start` and `step.call` always take a key, because the key identifies the start request as well as the cached step. Keep it stable across deploys: a different key starts a different target. `step.join` and `step.effect` always take a key too; an effect itself is identified by its `effectId`.
 
 If two steps in the same execution resolve to the same cache key, the runtime throws: `"Each step in a loop must have a unique cache key."`
 
@@ -440,7 +440,7 @@ Errors fall into two groups, and only the first reaches workflow code.
 | Errors thrown by your store updaters, selectors, claims and initial states    | A worker crashes or exits before reporting an outcome          |
 | `StoreValidationError` (a state failed its schema)                            | The execution client throws during `step.start` or `step.call` |
 | `WorkflowStartError` (`step.start` or `step.call` was rejected)               | `step.effect` cannot reach or trust its effect records, or a callback returns a malformed answer (`EffectDeliveryError`) |
-| `WorkflowJoinError` (a joined execution failed or does not exist)             | The join client throws during `step.join` or `step.call`       |
+| `WorkflowJoinError` (a joined execution failed or does not exist, or a workflow joined itself) | The join client throws during `step.join` or `step.call`       |
 | `WorkflowValueError` (a value is not durable, or failed its step's schema)    |                                                                |
 | `WorkflowEffectError` (`step.effect` was invalid or mismatched)               |                                                                |
 
