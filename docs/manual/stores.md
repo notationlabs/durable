@@ -64,6 +64,8 @@ const store = step.store(ScratchStore);
 
 Pass an explicit `id` to share one store across executions – a conversation id, an agent id, a project id. Store state is never scoped to an execution, but each step an operation records belongs to the execution that runs it.
 
+When an execution is [pruned](./retention.md), its execution-local stores are kept unless its retention policy sets `pruneExecutionStores`. Stores with an explicit `id` are never pruned.
+
 ### Reopening a handle
 
 Since a handle records no step, any code may ask for the same store again. A loop can reopen it on every turn, and a helper can open it from its `id` instead of receiving the handle from its caller:
