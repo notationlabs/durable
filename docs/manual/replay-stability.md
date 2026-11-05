@@ -213,9 +213,7 @@ Order 42 started under version 2, so it keeps the `charge` step and replays with
 
 ### Executions from before this release
 
-**An execution that was in flight before the upgrade has no recorded version.** Its next delivery exposes the version the code declares at that time, and records it. If you upgrade and declare `version: 2` in the same deploy, order 42 reads `event.workflowVersion` as 2 and takes the new path.
-
-To keep in-flight executions on the old path, upgrade Yieldstar first without declaring a version. Each in-flight execution records version 1 at its next delivery. Check with `list` that the views of in-flight executions carry `workflowVersion` before you declare a higher version.
+An execution that was in flight before the upgrade has no recorded version. If it already has step records, its next delivery exposes version 1, whatever the code declares, and records it. Code from before this release declared no version, so version 1 is the version it ran under. An execution with no step records is treated as a first delivery and records the declared version.
 
 ## Patches
 

@@ -31,9 +31,9 @@ import { workflow, createWorkflowRouter } from "yieldstar";
 import { SqliteRuntime, createSqliteDb } from "@yieldstar/sqlite-runtime/bun";
 
 export const simple = workflow(async function* (step, event, logger) {
-  const n = yield* step.run(() => 1);
-  yield* step.delay(1000);
-  return yield* step.run(() => n * 2);
+  const n = yield* step.run("one", () => 1);
+  yield* step.delay("pause", 1000);
+  return yield* step.run("double", () => n * 2);
 });
 
 export const router = createWorkflowRouter({ "simple-workflow": simple });
@@ -93,9 +93,9 @@ import { workflow, createWorkflowRouter } from "yieldstar";
 import { SqliteRuntime, createSqliteDb } from "@yieldstar/sqlite-runtime/bun";
 
 export const dynamic = workflow<{ msg: string }, void>(async function* (step, event, logger) {
-  const n = yield* step.run(() => Math.random());
-  yield* step.delay(1000);
-  yield* step.run(() => logger.info(`Hello ${event.params.msg}: ${n}`));
+  const n = yield* step.run("pick", () => Math.random());
+  yield* step.delay("pause", 1000);
+  yield* step.run("greet", () => logger.info(`Hello ${event.params.msg}: ${n}`));
 });
 
 export const router = createWorkflowRouter({ "dynamic-workflow": dynamic });
@@ -199,7 +199,7 @@ const result = await sdk.triggerAndWait({ workflowId: "w", params: { userId: "12
 
 export const w = workflow(async function* (step, event, logger) {
   logger.info("user:", event.params?.userId);
-  return yield* step.run(() => event.params);
+  return yield* step.run("params", () => event.params);
 });
 ```
 
@@ -212,7 +212,7 @@ Throw `RetryableError` inside `step.run` to retry the step with the configured p
 ```ts
 import { RetryableError } from "yieldstar";
 
-yield* step.run(async () => {
+yield* step.run("fetch", async () => {
   // e.g. flaky fetch
   throw new RetryableError("temporary", { maxAttempts: 4, retryInterval: 1000 });
 });
@@ -225,7 +225,7 @@ See: `test/retries.test.ts`.
 Pause until a time in the future and automatically resume.
 
 ```ts
-yield* step.delay(5000);
+yield* step.delay("pause", 5000);
 ```
 
 See: `test/async.test.ts`.
@@ -235,14 +235,16 @@ See: `test/async.test.ts`.
 Keep checking a predicate until it passes or times out using structured retries.
 
 ```ts
-yield* step.poll({ retryInterval: 1000, maxAttempts: 10 }, () => isReady());
+yield* step.poll("ready", { retryInterval: 1000, maxAttempts: 10 }, () => isReady());
 ```
 
 See: `test/polling.test.ts`.
 
-### Cache Keys and Loops
+### Step Keys and Loops
 
-In loops, add explicit cache keys so each iteration is distinct.
+Give every step a key. Replay finds a step's record by its key. A step without a key takes its key from its call site (file, line and column), so editing the file above it changes the key. Keyless steps are deprecated: the first record of one logs a warning, and the runtime option `requireStepKeys` rejects them with `WorkflowReplayError` (`STEP_KEY_REQUIRED`).
+
+In loops, include the iteration in the key so each iteration is distinct.
 
 ```ts
 for (let i = 0; i < 2; i++) {
@@ -250,7 +252,7 @@ for (let i = 0; i < 2; i++) {
 }
 ```
 
-If omitted, loop detection will raise: “Each step in a loop must have a unique cache key.” See: `test/loop-detection.test.ts`, `test/cache-keys.test.ts`.
+A repeated key raises: “Each step in a loop must have a unique cache key.” When deployed code no longer requests a recorded key, the next delivery parks the execution with a `divergence` instead of running new steps. See `docs/manual/replay-stability.md`, `test/loop-detection.test.ts` and `test/cache-keys.test.ts`.
 
 ### Custom Step‑Like Helpers
 
@@ -262,9 +264,9 @@ const waitForState = (step: any, logger: any) => async function* (state: string)
 };
 
 export const coordinator = workflow(async function* (step) {
-  const a = yield* step.run(() => 2);
+  const a = yield* step.run("a", () => 2);
   yield* (waitForState(step, console) as any)("enabled");
-  return yield* step.run(() => a * 3);
+  return yield* step.run("triple", () => a * 3);
 });
 ```
 
@@ -304,16 +306,19 @@ Available on the first argument of a workflow:
 
 ```ts
 // run
-yield* step.run(fn);
 yield* step.run("key", fn);
+yield* step.run(fn); // deprecated: keyless
 
 // delay
-yield* step.delay(ms);
 yield* step.delay("key", ms);
+yield* step.delay(ms); // deprecated: keyless
 
 // poll
-yield* step.poll({ retryInterval, maxAttempts }, predicate);
 yield* step.poll("key", { retryInterval, maxAttempts }, predicate);
+yield* step.poll({ retryInterval, maxAttempts }, predicate); // deprecated: keyless
+
+// patches: true for executions that reach this point after the patch
+if (yield* step.patched("send-receipt")) { /* ... */ }
 ```
 
 `RetryableError` inside `fn` signals structured retries:
@@ -380,8 +385,8 @@ import { createWorkflow } from "yieldstar";
 
 test("data flow between steps", async () => {
   const w = createWorkflow(async function* (step) {
-    let n = yield* step.run(() => 1);
-    n = yield* step.run(() => n * 2);
+    let n = yield* step.run("one", () => 1);
+    n = yield* step.run("double", () => n * 2);
     return n;
   });
   const createSdk = createTestSdkFactory();
@@ -394,7 +399,7 @@ See more examples in `test/*.test.ts`.
 
 ## Notes
 
-- In loops, always add cache keys. Missing keys trigger loop detection.
+- Give every step a key. In loops, include the iteration in it.
 - `logger` is a Pino logger passed into workflows for observability.
 - HTTP middleware can read/set `event.context` before the execution is admitted.
 - Execution IDs are never reused. Triggering with an ID that was already admitted throws `ExecutionAdmissionError`, unless the trigger is idempotent and repeats the same request.
