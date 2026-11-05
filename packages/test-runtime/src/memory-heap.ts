@@ -51,13 +51,19 @@ export class MemoryHeapClient implements HeapClient {
     stepAttempt: number;
     done: boolean;
     stepResponseJson: string;
+    deleteWaitersOf?: readonly string[];
   }): Promise<HeapRecord | LeaseLost> {
     const { lease, stepKey, stepAttempt, done, stepResponseJson } = params;
     if (!this.isLeaseCurrent(lease)) return { status: "lost" };
 
     const step = { executionId: lease.executionId, stepKey };
     const { record, inserted } = this.insert(step, stepAttempt, done, stepResponseJson);
-    if (inserted && done) this.onStepDone?.(step);
+    if (inserted && done) {
+      this.onStepDone?.(step);
+      for (const other of params.deleteWaitersOf ?? []) {
+        this.onStepDone?.({ executionId: lease.executionId, stepKey: other });
+      }
+    }
     return clone(record);
   }
 

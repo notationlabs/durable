@@ -180,7 +180,12 @@ async function expectNotWoken(runtime: Runtime) {
  * fenced, so this wakes and leases the execution first. Call it only when
  * nothing else is due.
  */
-async function recordStep(runtime: Runtime, executionId: string, stepKey = STEP_KEY) {
+async function recordStep(
+  runtime: Runtime,
+  executionId: string,
+  stepKey = STEP_KEY,
+  deleteWaitersOf?: string[]
+) {
   await runtime.executions.requestWake({ executionId, wakeAt: runtime.clock() });
   const leases = await claimAll(runtime);
   const lease = leases.find((lease) => lease.executionId === executionId);
@@ -191,6 +196,7 @@ async function recordStep(runtime: Runtime, executionId: string, stepKey = STEP_
     stepAttempt: 1,
     done: true,
     stepResponseJson: JSON.stringify({ done: true }),
+    ...(deleteWaitersOf ? { deleteWaitersOf } : {}),
   });
   expect(written).toMatchObject({ meta: { done: true } });
   for (const claimed of leases) {
@@ -1274,6 +1280,33 @@ export function registerStoreClientConformance({
           definition: Store,
           id: "selective-wake",
           updater(draft) { draft.messages.push({ id: "after-step" }); },
+        });
+        await expectNotWoken(runtime);
+      } finally {
+        await harness.dispose?.();
+      }
+    });
+
+    test("a done record deletes the waiters of the steps in deleteWaitersOf", async () => {
+      const harness = await create();
+      const { runtime } = harness;
+      try {
+        await admitWaiting(runtime, "execution");
+        const initial = await runtime.stores.getStore({
+          definition: Store,
+          id: "abandoned-wake",
+        });
+        await runtime.stores.registerWaiter(
+          waiter(Store.name, "abandoned-wake", initial.instanceId, initial.version)
+        );
+
+        // A race records its decision under its own key and names the step
+        // of the branch it abandons.
+        await recordStep(runtime, "execution", "race", [STEP_KEY]);
+        await runtime.stores.updateStore({
+          definition: Store,
+          id: "abandoned-wake",
+          updater(draft) { draft.messages.push({ id: "late" }); },
         });
         await expectNotWoken(runtime);
       } finally {

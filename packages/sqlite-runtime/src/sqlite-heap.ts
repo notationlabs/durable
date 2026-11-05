@@ -71,6 +71,7 @@ export class SqliteHeapClient implements HeapClient {
     stepAttempt: number;
     done: boolean;
     stepResponseJson: string;
+    deleteWaitersOf?: readonly string[];
   }): Promise<HeapRecord | LeaseLost> {
     const { lease, stepKey, stepAttempt, done, stepResponseJson } = params;
     const { executionId } = lease;
@@ -90,7 +91,12 @@ export class SqliteHeapClient implements HeapClient {
       // A waiter is deleted with the write that records its step's result.
       // Unfinished attempts (e.g. a store wait, a suspended effect or a join)
       // keep the waiter they registered.
-      if (inserted && done) this.deleteStepWaiters(executionId, stepKey);
+      if (inserted && done) {
+        this.deleteStepWaiters(executionId, stepKey);
+        for (const other of params.deleteWaitersOf ?? []) {
+          this.deleteStepWaiters(executionId, other);
+        }
+      }
       return record;
     });
   }
