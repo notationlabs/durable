@@ -1,9 +1,7 @@
 import {
   DEFAULT_LEASE_DURATION,
   defineStore,
-  isPrunedExecution,
   type ExecutionLease,
-  type ExecutionRecord,
   type JoinWaiter,
   type PrunedExecutionRecord,
   type RetentionOptions,
@@ -12,6 +10,7 @@ import {
   type WorkflowRunOutcome,
 } from "@yieldstar/core";
 import { describe, expect, test } from "vitest";
+import { liveRecord } from "./records";
 
 export type RetentionConformanceHarnessOptions = {
   /** The suite's clock. Construct the runtime with it. */
@@ -328,14 +327,6 @@ export function registerRetentionClientConformance({
     return { status: "pruned", executionId, workflowId, terminalStatus, prunedAt };
   }
 
-  async function record(runtime: Runtime, executionId: string): Promise<ExecutionRecord> {
-    const found = await runtime.executions.get(executionId);
-    if (found === undefined || isPrunedExecution(found)) {
-      throw new Error(`expected "${executionId}" to have a live record, found ${JSON.stringify(found)}`);
-    }
-    return found;
-  }
-
   async function expectPruned(runtime: Runtime, ...executionIds: string[]) {
     for (const executionId of executionIds) {
       expect(await runtime.executions.get(executionId)).toMatchObject({
@@ -346,7 +337,7 @@ export function registerRetentionClientConformance({
   }
 
   async function expectNotPruned(runtime: Runtime, ...executionIds: string[]) {
-    for (const executionId of executionIds) await record(runtime, executionId);
+    for (const executionId of executionIds) await liveRecord(runtime.executions, executionId);
   }
 
   async function listedIds(runtime: Runtime, status?: "pruned" | "completed") {
@@ -368,7 +359,7 @@ export function registerRetentionClientConformance({
         await runOrder(runtime);
         advance(7 * DAY - 1);
         expect(await runtime.prune()).toEqual({ pruned: 0, cleaned: 0, failed: 0, errors: [] });
-        expect(await record(runtime, ORDER)).toMatchObject({ status: "completed" });
+        expect(await liveRecord(runtime.executions, ORDER)).toMatchObject({ status: "completed" });
 
         advance(1);
         expect(await runtime.prune()).toEqual({ pruned: 1, cleaned: 1, failed: 0, errors: [] });
@@ -472,7 +463,7 @@ export function registerRetentionClientConformance({
         // Cleanup has not run, so the start request is still recorded.
         await expect(startShipment(runtime)).rejects.toThrow(/was pruned/);
         await expect(startShipment(peer)).rejects.toThrow(/was pruned/);
-        await record(runtime, child);
+        await liveRecord(runtime.executions, child);
       });
 
       it("answers every client with the tombstone", RETAIN_NONE, async ({ runtime, peer, clock }) => {
@@ -574,13 +565,13 @@ export function registerRetentionClientConformance({
 
         advance(1_000 * DAY);
         expect(await runtime.prune()).toEqual({ pruned: 0, cleaned: 0, failed: 0, errors: [] });
-        expect(await record(runtime, "admitted-42")).toMatchObject({ status: "admitted" });
-        expect(await record(runtime, "running-42")).toMatchObject({ status: "running" });
-        expect(await record(runtime, "suspended-42")).toMatchObject({ status: "suspended" });
-        expect(await record(runtime, "cancelling-42")).toMatchObject({
+        expect(await liveRecord(runtime.executions, "admitted-42")).toMatchObject({ status: "admitted" });
+        expect(await liveRecord(runtime.executions, "running-42")).toMatchObject({ status: "running" });
+        expect(await liveRecord(runtime.executions, "suspended-42")).toMatchObject({ status: "suspended" });
+        expect(await liveRecord(runtime.executions, "cancelling-42")).toMatchObject({
           cancellation: { reason: "late" },
         });
-        expect(await record(runtime, "diverged-42")).toMatchObject({
+        expect(await liveRecord(runtime.executions, "diverged-42")).toMatchObject({
           status: "suspended",
           divergence: { code: "NONDETERMINISTIC_REPLAY" },
         });
@@ -671,11 +662,11 @@ export function registerRetentionClientConformance({
         workflows: { "ship-order": {} },
       }, async ({ runtime, clock }) => {
         const { child } = await runOrder(runtime);
-        const before = await record(runtime, child);
+        const before = await liveRecord(runtime.executions, child);
         await runtime.prune();
 
         expect(await runtime.executions.get(ORDER)).toEqual(tombstone(ORDER, clock.now));
-        expect(await record(runtime, child)).toEqual(before);
+        expect(await liveRecord(runtime.executions, child)).toEqual(before);
         expect(before.parent).toEqual({
           executionId: ORDER,
           stepKey: "start:ship",
@@ -688,7 +679,7 @@ export function registerRetentionClientConformance({
           result: null,
         });
         expect(await runtime.prune()).toEqual({ pruned: 0, cleaned: 0, failed: 0, errors: [] });
-        expect(await record(runtime, child)).toMatchObject({ status: "completed" });
+        expect(await liveRecord(runtime.executions, child)).toMatchObject({ status: "completed" });
       });
 
       it("leaves the cancellation a pruned parent propagated to its children", RETAIN_NONE, async ({
@@ -706,7 +697,7 @@ export function registerRetentionClientConformance({
         expect(await runtime.prune()).toMatchObject({ pruned: 2 });
 
         await expectPruned(runtime, "parent-42", ORDER);
-        expect(await record(runtime, started.executionId)).toMatchObject({
+        expect(await liveRecord(runtime.executions, started.executionId)).toMatchObject({
           parent: { executionId: "parent-42" },
           cancellation: { reason: "customer", source: "parent-42", forced: false },
         });
@@ -890,10 +881,10 @@ export function registerRetentionClientConformance({
         runtime,
       }) => {
         const { child } = await runOrder(runtime);
-        const before = await record(runtime, ORDER);
+        const before = await liveRecord(runtime.executions, ORDER);
         await runtime.executions.finishPrune(ORDER);
         await runtime.executions.finishPrune("never-admitted");
-        expect(await record(runtime, ORDER)).toEqual(before);
+        expect(await liveRecord(runtime.executions, ORDER)).toEqual(before);
         expect(await startShipment(runtime)).toEqual({ status: "accepted", executionId: child });
       });
 
@@ -903,7 +894,7 @@ export function registerRetentionClientConformance({
         clock,
       }) => {
         await runOrder(runtime);
-        const before = await record(runtime, ORDER);
+        const before = await liveRecord(runtime.executions, ORDER);
         const pruned = tombstone(ORDER, clock.now);
         const [, ...reads] = await Promise.all([
           runtime.prune(),
@@ -973,7 +964,7 @@ export function registerRetentionClientConformance({
 
         advance(30 * DAY);
         expect(await peer.prune()).toEqual({ pruned: 0, cleaned: 0, failed: 0, errors: [] });
-        expect(await record(runtime, "ship-42")).toMatchObject({ status: "completed" });
+        expect(await liveRecord(runtime.executions, "ship-42")).toMatchObject({ status: "completed" });
 
         // The joiner reads the outcome on its delivery, and records it.
         const delivery = await claim(runtime, "charge-42");
@@ -1056,7 +1047,7 @@ export function registerRetentionClientConformance({
         });
 
         expect(await runtime.prune()).toEqual({ pruned: 0, cleaned: 0, failed: 0, errors: [] });
-        expect(await record(runtime, "ship-42")).toMatchObject({ status: "completed" });
+        expect(await liveRecord(runtime.executions, "ship-42")).toMatchObject({ status: "completed" });
 
         // Once the divergence is cleared, the joiner reads the outcome and records it.
         await runtime.executions.clearDivergence("charge-42");

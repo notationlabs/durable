@@ -18,13 +18,13 @@ import {
   type DeliveryEvent,
   type WorkflowInvoker,
   type WorkflowRunOutcome,
-  type ExecutionRecord,
 } from "@yieldstar/core";
 import { createWorkflowInvoker as createTestInvoker } from "@yieldstar/test-invoker";
 import { createWorkflowInvoker as createWorkerInvoker } from "@yieldstar/worker-invoker";
 import { MemoryRuntime } from "@yieldstar/test-runtime";
 import { SqliteRuntime } from "@yieldstar/sqlite-runtime";
 import { workflow } from "yieldstar";
+import { findLiveRecord } from "@yieldstar/runtime-conformance";
 
 const isBun = "Bun" in globalThis;
 const { createSqliteDb } = isBun
@@ -328,7 +328,7 @@ test("stops renewing and does not acknowledge once a renewal returns lost", asyn
   await dispatcher.drain();
   expect(runtime.executions.renew).toHaveBeenCalledTimes(1);
   expect(acknowledge).not.toHaveBeenCalled();
-  expect(((await runtime.executions.get("lost-renewal") as ExecutionRecord | undefined))?.outcome).toBeUndefined();
+  expect((await findLiveRecord(runtime.executions, "lost-renewal"))?.outcome).toBeUndefined();
 });
 
 // Rejections
@@ -387,7 +387,7 @@ test("waits a non-zero delay, never shorter than the last, before each redeliver
   for (let i = 1; i < delays.length; i++) {
     expect(delays[i]).toBeGreaterThanOrEqual(delays[i - 1]);
   }
-  expect(((await runtime.executions.get("backoff") as ExecutionRecord | undefined))?.unacknowledgedDeliveryCount).toBe(5);
+  expect((await findLiveRecord(runtime.executions, "backoff"))?.unacknowledgedDeliveryCount).toBe(5);
 });
 
 test("counts both a retry reply and a later lease expiry", async () => {
@@ -468,7 +468,7 @@ test("leaves the lease to expire when the worker exits without replying, then de
   await dispatcher.drain();
   expect(deliver).toHaveBeenCalledTimes(2);
   // The expired lease counts as one unacknowledged delivery.
-  expect(((await runtime.executions.get("exits") as ExecutionRecord | undefined))?.unacknowledgedDeliveryCount).toBe(1);
+  expect((await findLiveRecord(runtime.executions, "exits"))?.unacknowledgedDeliveryCount).toBe(1);
 });
 
 // Driver

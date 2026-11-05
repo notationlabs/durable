@@ -45,6 +45,7 @@ export {
   type RetentionConformanceHarnessOptions,
   type RetentionConformanceOptions,
 } from "./retention";
+export { findLiveRecord, liveRecord } from "./records";
 
 /**
  * A clean runtime under test. Store wakes are observed through its

@@ -1,4 +1,4 @@
-import type { ExecutionRecord, ExecutionViewBase } from "@yieldstar/core";
+import { isPrunedExecutionView } from "@yieldstar/core";
 import { EventEmitter } from "node:events";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { MemoryRuntime } from "@yieldstar/test-runtime";
@@ -29,6 +29,7 @@ import {
   startDispatcher,
   suspend,
 } from "./observation-harness";
+import { liveRecord } from "@yieldstar/runtime-conformance";
 
 afterEach(cleanup);
 
@@ -91,7 +92,7 @@ for (const sdkKind of sdkKinds) {
         await fail(runtime, "failed", new CardDeclinedError("card declined"));
 
         for (const status of ["admitted", "running", "suspended"] as const) {
-          const record = ((await runtime.executions.get(status) as ExecutionRecord | undefined))!;
+          const record = await liveRecord(runtime.executions, status);
           expect(await sdk.poll(status)).toEqual({
             executionId: status,
             workflowId: "charge-order",
@@ -334,9 +335,13 @@ for (const sdkKind of sdkKinds) {
         order.push(executionId);
       }
       for (const sdk of sdks) {
-        const executions = (await sdk.list()).executions as ExecutionViewBase[];
+        const executions = (await sdk.list()).executions;
         expect(executions.map((view) => view.executionId)).toEqual([...order].reverse());
-        expect(executions[0].admittedAt).toBeLessThan(executions[1].admittedAt);
+        const [newest, next] = executions;
+        if (isPrunedExecutionView(newest) || isPrunedExecutionView(next)) {
+          throw new Error("expected live views");
+        }
+        expect(newest.admittedAt).toBeLessThan(next.admittedAt);
       }
     });
   });

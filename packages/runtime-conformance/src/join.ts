@@ -7,10 +7,9 @@ import {
   type ExecutionLease,
   type JoinWaiter,
   type Runtime,
-  type ExecutionRecord,
-  type ExecutionViewBase,
 } from "@yieldstar/core";
 import { describe, expect, test } from "vitest";
+import { liveRecord } from "./records";
 
 export type JoinConformanceHarnessOptions = {
   /** The suite's clock. Construct the runtime with it. */
@@ -550,18 +549,18 @@ export function registerJoinClientConformance({
         if (started.status !== "accepted") throw new Error(started.message);
         const parent = { executionId: "charge-42", stepKey: "call:ship", detached: false };
 
-        const record = (await peer.executions.get(started.executionId) as ExecutionRecord | undefined);
-        expect(record!.parent).toEqual(parent);
-        expect((toExecutionView(record!) as ExecutionViewBase).parent).toEqual(parent);
+        const record = await liveRecord(peer.executions, started.executionId);
+        expect(record.parent).toEqual(parent);
+        expect(toExecutionView(record)).toMatchObject({ parent });
         const observer = createExecutionObserver(peer.executions);
-        expect(((await observer.poll(started.executionId)) as ExecutionViewBase | undefined)!.parent).toEqual(parent);
+        expect(await observer.poll(started.executionId)).toMatchObject({ parent });
         expect(await observer.poll("charge-42")).not.toHaveProperty("parent");
 
         // A joiner waiting on its child is woken when the child finishes.
         await join(runtime, "charge-42", "call:ship", started.executionId);
         await complete(peer, started.executionId, "booked");
         expect(await claimedIds(runtime)).toEqual(["charge-42"]);
-        expect(((await observer.poll(started.executionId)) as ExecutionViewBase | undefined)!.parent).toEqual(parent);
+        expect(await observer.poll(started.executionId)).toMatchObject({ parent });
       });
     });
 

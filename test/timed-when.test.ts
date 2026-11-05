@@ -9,13 +9,13 @@ import {
   type ExecutionLease,
   type Runtime,
   type StoreWaiter,
-  type ExecutionRecord,
 } from "@yieldstar/core";
 import { MemoryRuntime } from "@yieldstar/test-runtime";
 import { SqliteRuntime } from "@yieldstar/sqlite-runtime";
 import { testSchema } from "@yieldstar/test-utils";
 import { defineStore, workflow, type TimedWhenResult } from "yieldstar";
 import { withoutVersion } from "./outcome";
+import { findLiveRecord } from "@yieldstar/runtime-conformance";
 
 const isBun = "Bun" in globalThis;
 const { createSqliteDb } = isBun
@@ -173,7 +173,7 @@ describe.each(runtimes)("timed store.when on $name", ({ create }) => {
 
   /** Runs one delivery under `lease` without acknowledging it. */
   async function run(lease: ExecutionLease) {
-    const record = (await runtime.executions.get(lease.executionId) as ExecutionRecord | undefined);
+    const record = await findLiveRecord(runtime.executions, lease.executionId);
     return withoutVersion(
       await runner.run(
         {

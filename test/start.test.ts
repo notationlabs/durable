@@ -10,12 +10,12 @@ import {
   type ExecutionStartRequest,
   type ExecutionStartResult,
   type WorkflowRouter,
-  type ExecutionRecord,
 } from "@yieldstar/core";
 import { createWorkflowInvoker } from "@yieldstar/test-invoker";
 import { MemoryRuntime } from "@yieldstar/test-runtime";
 import { WorkflowStartError, createLocalSdk, workflow } from "yieldstar";
 import { withoutVersion } from "./outcome";
+import { findLiveRecord } from "@yieldstar/runtime-conformance";
 
 const logger = { info() {}, error() {}, warn() {} } as unknown as Logger;
 
@@ -334,7 +334,7 @@ test("a throwing ExecutionClient.start rejects the delivery, and the dispatcher 
 
   expect(caught).toBe(false);
   expect(await readStep(executionId, "ship")).toBeNull();
-  const record = (await runtime.executions.get(executionId) as ExecutionRecord | undefined);
+  const record = await findLiveRecord(runtime.executions, executionId);
   expect(record).toMatchObject({
     status: "admitted",
     unacknowledgedDeliveryCount: 1,
@@ -344,7 +344,7 @@ test("a throwing ExecutionClient.start rejects the delivery, and the dispatcher 
   advance(redeliveryDelay(1));
   await dispatcher.tick();
   await dispatcher.drain();
-  expect(((await runtime.executions.get(executionId) as ExecutionRecord | undefined))?.outcome).toEqual({
+  expect((await findLiveRecord(runtime.executions, executionId))?.outcome).toEqual({
     status: "completed",
     result: { executionId: "target-1" },
   });

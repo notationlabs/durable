@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { durableValueCodec, type Runtime, type ExecutionRecord } from "@yieldstar/core";
+import { durableValueCodec, type Runtime } from "@yieldstar/core";
 import type { ObservationMiddlewareFunction, ObservationRequest } from "@yieldstar/http-server";
 import {
   admit,
@@ -11,6 +11,7 @@ import {
   sdkKinds,
   serveRoutes,
 } from "./observation-harness";
+import { findLiveRecord } from "@yieldstar/runtime-conformance";
 
 afterEach(cleanup);
 
@@ -119,7 +120,7 @@ for (const backendKind of backendKinds) {
         expect(clear).not.toHaveBeenCalled();
         expect(get).not.toHaveBeenCalled();
         get.mockRestore();
-        expect(((await runtime.executions.get("known") as ExecutionRecord | undefined))?.divergence).toEqual(divergence);
+        expect((await findLiveRecord(runtime.executions, "known"))?.divergence).toEqual(divergence);
       });
     }
 

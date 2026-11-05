@@ -5,7 +5,6 @@ import {
   InfrastructureError,
   WorkflowRunner,
   type ExecutionLease,
-  type ExecutionRecord,
   type RetentionOptions,
   type Runtime,
   type WorkflowEvent,
@@ -14,6 +13,7 @@ import { MemoryRuntime } from "@yieldstar/test-runtime";
 import { SqliteRuntime } from "@yieldstar/sqlite-runtime";
 import { WorkflowJoinError, workflow } from "yieldstar";
 import { withoutVersion } from "./outcome";
+import { liveRecord } from "@yieldstar/runtime-conformance";
 
 const { createSqliteDb } =
   "Bun" in globalThis
@@ -111,7 +111,7 @@ describe.each(runtimes)("joins of a pruned target on $name", ({ create }) => {
   }
 
   async function run(lease: ExecutionLease) {
-    const record = (await runtime.executions.get(lease.executionId)) as ExecutionRecord;
+    const record = await liveRecord(runtime.executions, lease.executionId);
     return withoutVersion(
       await runner.run(
         {

@@ -1,6 +1,6 @@
 import { EventEmitter } from "node:events";
 import { afterEach, describe, expect, test } from "vitest";
-import { ExecutionListRequestError, createExecutionObserver, type ExecutionRecord } from "@yieldstar/core";
+import { ExecutionListRequestError, createExecutionObserver } from "@yieldstar/core";
 import { MemoryRuntime } from "@yieldstar/test-runtime";
 import {
   LEASE,
@@ -15,6 +15,7 @@ import {
   sleep,
   suspend,
 } from "./observation-harness";
+import { liveRecord } from "@yieldstar/runtime-conformance";
 
 afterEach(cleanup);
 
@@ -37,7 +38,7 @@ for (const backendKind of backendKinds) {
       await fail(runtime, "failed", new Error("card declined"));
 
       for (const status of ["admitted", "running", "suspended"] as const) {
-        const record = ((await runtime.executions.get(status) as ExecutionRecord | undefined))!;
+        const record = await liveRecord(runtime.executions, status);
         expect(await observer.poll(status)).toEqual({
           executionId: status,
           workflowId: "charge-order",
