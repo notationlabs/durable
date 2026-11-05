@@ -331,6 +331,32 @@ describe.each(runtimes)("replay stability on $name", ({ create }) => {
       expect(await record()).toMatchObject({ status: "failed", workflowVersion: 4 });
     });
 
+    test("an execution with step records but no recorded version, from before versions, is version 1", async () => {
+      await admit();
+      const lease = (await claim())!;
+      await runtime.heap.writeStep({
+        lease,
+        stepKey: "reserve-stock",
+        stepAttempt: 0,
+        done: true,
+        stepResponseJson: `{"result":"reserved","type":"step-result"}`,
+      });
+      await runtime.executions.release({ lease });
+      expect((await record()).workflowVersion).toBeUndefined();
+
+      deploy({
+        [WORKFLOW]: workflow({ version: 3 }, async function* (step, event) {
+          observed.push(event.workflowVersion);
+          yield* step.run("reserve-stock", work("reserve-stock", "reserved"));
+          yield* step.delay("courier", DAY);
+        }),
+      });
+      advance(MINUTE);
+      expect(await deliver()).toMatchObject({ status: "suspended", workflowVersion: 1 });
+      expect(observed).toEqual([1]);
+      expect((await record()).workflowVersion).toBe(1);
+    });
+
     test("a version that is not a non-negative integer is rejected", () => {
       for (const version of [-1, 1.5, Number.NaN, "2" as unknown as number]) {
         expect(() => workflow({ version }, async function* () {})).toThrow(TypeError);
@@ -593,6 +619,72 @@ describe.each(runtimes)("replay stability on $name", ({ create }) => {
         status: "suspended",
         divergence: { code: "NONDETERMINISTIC_REPLAY" },
       });
+    });
+
+    test("a losing race branch that caught a recorded error replays its catch path without divergence", async () => {
+      deploy({
+        [WORKFLOW]: workflow(async function* (step) {
+          const winner = yield* step.race("quote", [
+            (async function* () {
+              yield* step.delay("a-wait", MINUTE);
+              return "a";
+            })(),
+            (async function* () {
+              try {
+                yield* step.run("flaky", () => {
+                  throw new Error("courier down");
+                });
+              } catch {
+                observed.push("caught");
+              }
+              yield* step.delay("b-wait", DAY);
+              return "b";
+            })(),
+          ]);
+          yield* step.delay("after", MINUTE);
+          return winner;
+        }),
+      });
+      await admit();
+      expect(await deliver()).toMatchObject({ status: "suspended" });
+      advance(MINUTE);
+      expect(await deliver()).toMatchObject({ status: "suspended" });
+      advance(MINUTE);
+      expect(await deliver()).toMatchObject({
+        status: "completed",
+        result: { index: 0, value: "a" },
+      });
+      expect((await record()).divergence).toBeUndefined();
+    });
+
+    test("a recorded delay followed by later records counts as passed when this host's clock reads earlier", async () => {
+      deploy({
+        [WORKFLOW]: workflow(async function* (step) {
+          yield* step.run("reserve-stock", work("reserve-stock", "reserved"));
+          yield* step.delay("cool-off", MINUTE);
+          yield* step.run("charge", work("charge", "charged"));
+          yield* step.delay("courier", DAY);
+        }),
+      });
+      await admit();
+      await deliver();
+      advance(MINUTE);
+      await deliver();
+      expect(ran).toEqual(["reserve-stock", "charge"]);
+
+      advance(-30_000);
+      await runtime.executions.requestWake({ executionId: ORDER, wakeAt: Date.now() });
+      expect(await deliver()).toMatchObject({ status: "suspended" });
+      expect((await record()).divergence).toBeUndefined();
+      expect(ran).toEqual(["reserve-stock", "charge"]);
+    });
+
+    test("steps of an execution whose ID extends another's are not listed under the other", async () => {
+      deploy({ [WORKFLOW]: placeOrderV1 });
+      await admit("order:42");
+      await deliver("order:42");
+      expect(await stepKeys("order")).toEqual([]);
+      expect(await stepKeys("order:42")).toEqual(["charge", "courier", "reserve-stock"]);
     });
 
     test("a diverged delivery makes no fenced write after the divergence", async () => {
