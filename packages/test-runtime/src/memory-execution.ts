@@ -193,9 +193,8 @@ export class MemoryExecutionClient implements ExecutionClient {
     limit: number;
   }): Promise<{ executionId: string; deleteExecutionStore: boolean }[]> {
     const pending: { executionId: string; deleteExecutionStore: boolean }[] = [];
-    for (const executionId of this.admissionOrder) {
+    for (const { executionId, pruned } of this.executions.values()) {
       if (pending.length >= request.limit) break;
-      const pruned = this.executions.get(executionId)!.pruned;
       if (pruned?.cleanupPending) {
         pending.push({ executionId, deleteExecutionStore: pruned.deleteExecutionStore });
       }

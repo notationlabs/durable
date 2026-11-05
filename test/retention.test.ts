@@ -395,7 +395,6 @@ describe("retention on SQLite", () => {
         next_claim_at INTEGER,
         parent_execution_id TEXT,
         parent_step_key TEXT,
-        admission_sequence INTEGER,
         parent_detached INTEGER NOT NULL DEFAULT 0,
         cancellation_reason TEXT,
         cancellation_source TEXT,
@@ -410,10 +409,10 @@ describe("retention on SQLite", () => {
       );
       INSERT INTO executions (
         execution_id, workflow_id, params, context, status, outcome,
-        admitted_at, updated_at, admission_sequence
+        admitted_at, updated_at
       ) VALUES (
         'order-42', 'place-order', '{}', '[]', 'completed',
-        '{"result":"shipped","status":"completed"}', 10, 10, 1
+        '{"result":"shipped","status":"completed"}', 10, 10
       );
     `);
     const clock = { now: 10 };
