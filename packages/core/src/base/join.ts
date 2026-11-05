@@ -24,6 +24,11 @@ export type JoinResult =
  * waiter on its execution in the same atomic write as the outcome, and leaves
  * the waiters in place. A heap write that records a step's result deletes that
  * step's join waiters in the same write. No other method deletes a waiter.
+ *
+ * So a waiter can stay registered for good when no step result follows it:
+ * a stale holder registers after the step was recorded, or a deploy removes a
+ * join step that was still waiting. The only effect is one extra delivery of
+ * the joiner when the target finishes, and `getWaiters` may list the waiter.
  */
 export interface JoinClient {
   /**

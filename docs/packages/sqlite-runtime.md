@@ -64,6 +64,10 @@ Keeping them in one database lets every guarantee that spans clients hold in a s
 
 A database created before `list` has no `admission_sequence` column. `SqliteRuntime` adds it when it opens the file, fills it from each row's `rowid`, which follows insertion order as long as no row was deleted, and starts the counter above the largest value. The column allows `NULL` and has no default. A process still on an earlier version inserts rows without the column, and the trigger gives each of them the next number, so old and new processes can share the file during a rolling upgrade.
 
+A row in `join_waiters` can stay for good when no step result follows it: a stale holder registers after the step was recorded, or a deploy removes a join step that was still waiting. Its only effect is one extra delivery of the joiner when the target finishes, and `getWaiters` may list it. The runtime does not remove such rows.
+
+Every process that shares one database must run a version with join support before any workflow uses `step.join` or `step.call`. A process on an earlier version acknowledges a terminal outcome without waking the join waiters on that execution, so their joiners wait until their deadline, or for good when they have none.
+
 Every write runs as one synchronous `IMMEDIATE` transaction. Separate processes that open the same file, such as the app and its worker subprocesses, therefore serialize on SQLite's lock and see the same execution records.
 
 Updaters must be synchronous, deterministic, and side-effect-free. They run

@@ -325,6 +325,40 @@ type HeapRecord = {
 };
 ```
 
+## `JoinClient` (interface)
+
+Holds the join waiters of [`step.join`](../manual/steps.md#stepjoin) and [`step.call`](../manual/steps.md#stepcall). A waiter is keyed by target, joining execution and step key.
+
+```ts
+interface JoinClient {
+  join(waiter: JoinWaiter): Promise<JoinResult>;
+  getWaiters(targetExecutionId: string): Promise<JoinWaiter[]>;
+}
+
+type JoinWaiter = {
+  targetExecutionId: string; // the execution being joined
+  executionId: string; // the joining execution
+  stepKey: string;
+};
+
+type JoinResult =
+  | { status: "terminal"; outcome: ExecutionOutcome } // no waiter was registered
+  | { status: "waiting" } // the waiter is registered
+  | { status: "not-found" }; // no execution has the target ID; no waiter was registered
+```
+
+`join` reads the target's record and, if the target is not terminal, registers the waiter, in one atomic step. Repeating it keeps one registration. `getWaiters` returns the waiters on a target, ordered by joining execution and then step key, for operators and tests.
+
+The client and the other clients keep this contract together:
+
+- A terminal `ExecutionClient.acknowledge` requests a wake for the joiner of every waiter on its execution, in the same atomic write as the outcome. It does not delete the waiters.
+- Because `join` reads and registers atomically, every waiter on a terminal target has a pending or delivered wake for its joiner. A waiter registered as the target becomes terminal is still woken.
+- A `done` heap write deletes the step's join waiters in the same write. No other method deletes a waiter.
+
+Registration is not fenced. A stale holder's registration causes at most one extra delivery of the joiner and does not change any outcome.
+
+A waiter can stay registered for good when no step result follows it: a stale holder registers after the step was recorded, or a deploy removes a join step that was still waiting. Its only effect is one extra delivery of the joiner when the target finishes, and `getWaiters` may list it. Nothing removes such waiters.
+
 ## `StoreClient` (abstract class)
 
 Persistence layer for [durable stores](../manual/stores.md). An implementation
