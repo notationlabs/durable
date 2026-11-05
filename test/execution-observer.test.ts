@@ -283,3 +283,34 @@ test("a notifier makes wait read the record early", async () => {
   expect(ms).toBeLessThan(1_000);
   expect(notifier.listenerCount("nudged")).toBe(0);
 });
+
+test("many concurrent waits on one ID share one notifier listener", async () => {
+  const runtime = new MemoryRuntime();
+  const notifier = new EventEmitter();
+  const warnings: Error[] = [];
+  const onWarning = (warning: Error) => warnings.push(warning);
+  process.on("warning", onWarning);
+  try {
+    const observer = createExecutionObserver(runtime.executions, {
+      pollInterval: 60_000,
+      notifier,
+    });
+    await admit(runtime, "popular");
+    const waits = Array.from({ length: 25 }, () => observer.wait("popular"));
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(notifier.listenerCount("popular")).toBe(1);
+
+    await complete(runtime, "popular", "receipt");
+    notifier.emit("popular");
+    for (const result of await Promise.all(waits)) {
+      expect(result).toMatchObject({ status: "completed", result: "receipt" });
+    }
+    expect(notifier.listenerCount("popular")).toBe(0);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(warnings.filter((warning) => warning.name === "MaxListenersExceededWarning")).toEqual(
+      []
+    );
+  } finally {
+    process.off("warning", onWarning);
+  }
+});

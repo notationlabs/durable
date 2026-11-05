@@ -286,7 +286,7 @@ interface ExecutionObserver {
 - `poll` returns the record's view, or `undefined` when no record exists.
 - `wait` reads the record, and then reads it again every `pollInterval` ms (default `25`, `DEFAULT_OBSERVER_POLL_INTERVAL`) until it is terminal or `timeout` passes. It resolves with the terminal view, with `{ status: "timed-out", execution }`, or with `undefined` at once for an unknown ID. A negative `timeout` or `pollInterval` throws a `RangeError`.
 - `list` returns `executions.list`'s page with each record turned into a view.
-- `notifier` is an optional fast path, such as the invoker's `workflowEndEmitter`: an event for the execution ID makes `wait` read the record early. No result depends on it.
+- `notifier` is an optional fast path, such as the invoker's `workflowEndEmitter`: an event for the execution ID makes `wait` read the record early. No result depends on it. All open waits on one notifier and execution ID share one listener, so many waits on one ID do not exceed an `EventEmitter`'s listener limit. `waitForExecutionOutcome` shares the same listener.
 
 The views leave out `params`, `context`, lease and wake state and `unacknowledgedDeliveryCount`. `toExecutionView(record)` builds one, and `isTerminalExecutionView(view)` recognises a completed or failed view. See [Execution views](../manual/sdk-local.md#execution-views) for the types.
 

@@ -1,3 +1,4 @@
+import { EventEmitter } from "node:events";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { durableValueCodec, type ExecutionRecord } from "@yieldstar/core";
 import {
@@ -418,6 +419,40 @@ for (const backendKind of backendKinds) {
     });
   });
 }
+
+test("many open /wait and /events requests on one ID share one workflowEndEmitter listener", async () => {
+  const runtime = new MemoryRuntime();
+  const workflowEndEmitter = new EventEmitter();
+  const warnings: Error[] = [];
+  const onWarning = (warning: Error) => warnings.push(warning);
+  process.on("warning", onWarning);
+  try {
+    const { url } = serveRoutes(runtime, {
+      invoker: { workflowEndEmitter },
+      pollInterval: 60_000,
+    });
+    await admit(runtime, "popular");
+    const responses = [
+      ...Array.from({ length: 12 }, () => post(url, "wait", { executionId: "popular" })),
+      ...Array.from({ length: 12 }, () => post(url, "events", { executionId: "popular" })),
+    ];
+    await sleep(20);
+    expect(workflowEndEmitter.listenerCount("popular")).toBe(1);
+
+    await complete(runtime, "popular", "receipt");
+    workflowEndEmitter.emit("popular", "receipt");
+    for (const response of await Promise.all(responses)) {
+      expect(response.status).toBe(200);
+    }
+    expect(workflowEndEmitter.listenerCount("popular")).toBe(0);
+    await sleep(10);
+    expect(warnings.filter((warning) => warning.name === "MaxListenersExceededWarning")).toEqual(
+      []
+    );
+  } finally {
+    process.off("warning", onWarning);
+  }
+});
 
 test("pollInterval sets how often /wait reads the record", async () => {
   const runtime = new MemoryRuntime();
