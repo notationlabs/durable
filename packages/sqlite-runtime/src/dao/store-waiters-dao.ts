@@ -74,12 +74,25 @@ export class StoreWaitersDao {
       .all({ $storeName: storeName, $storeId: storeId });
   }
 
+  getStoreIdWaiters(storeId: string) {
+    return this.db
+      .query<StoreWaiterRow>(`SELECT * FROM store_waiters WHERE store_id = $storeId`)
+      .all({ $storeId: storeId });
+  }
+
   deleteStoreWaiters(storeName: string, storeId: string) {
     this.db
       .query(
         `DELETE FROM store_waiters WHERE store_name = $storeName AND store_id = $storeId`
       )
       .run({ $storeName: storeName, $storeId: storeId });
+  }
+
+  /** Deletes the waiters on every store with this ID, whatever its name. */
+  deleteStoreIdWaiters(storeId: string) {
+    this.db
+      .query(`DELETE FROM store_waiters WHERE store_id = $storeId`)
+      .run({ $storeId: storeId });
   }
 
   deleteStepWaiters(executionId: string, stepKey: string) {

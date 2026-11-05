@@ -12,6 +12,7 @@ import {
 import { MemoryRuntime } from "@yieldstar/test-runtime";
 import { SqliteRuntime } from "@yieldstar/sqlite-runtime";
 import { WorkflowReplayError, workflow } from "yieldstar";
+import { liveRecord } from "@yieldstar/runtime-conformance";
 
 const isBun = "Bun" in globalThis;
 const { createSqliteDb } = isBun
@@ -143,7 +144,7 @@ describe.each(runtimes)("replay stability on $name", ({ create }) => {
 
   /** Runs one delivery under `lease` as the dispatcher would, without acknowledging it. */
   async function run(lease: ExecutionLease, signal = new AbortController().signal) {
-    const record = (await runtime.executions.get(lease.executionId))!;
+    const record = await liveRecord(runtime.executions, lease.executionId);
     return runner.run(
       {
         workflowId: record.workflowId,
@@ -169,7 +170,8 @@ describe.each(runtimes)("replay stability on $name", ({ create }) => {
     return outcome;
   }
 
-  const record = async (executionId = ORDER) => (await runtime.executions.get(executionId))!;
+  const record = async (executionId = ORDER) =>
+    await liveRecord(runtime.executions, executionId);
 
   const stepKeys = async (executionId = ORDER) =>
     (await runtime.heap.listSteps({ executionId })).map(({ stepKey }) => stepKey).sort();

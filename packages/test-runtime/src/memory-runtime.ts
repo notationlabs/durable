@@ -1,4 +1,9 @@
-import { Runtime, type RuntimeOptions } from "@yieldstar/core";
+import {
+  Runtime,
+  validateRetentionOptions,
+  type RetentionOptions,
+  type RuntimeOptions,
+} from "@yieldstar/core";
 import { MemoryEffectClient } from "./memory-effect";
 import { MemoryExecutionClient } from "./memory-execution";
 import { MemoryHeapClient } from "./memory-heap";
@@ -8,6 +13,7 @@ import { MemoryStoreClient } from "./memory-store";
 export class MemoryRuntime extends Runtime {
   readonly clock: () => number;
   readonly requireStepKeys: boolean;
+  readonly retain?: RetentionOptions;
   readonly executions: MemoryExecutionClient;
   readonly effects: MemoryEffectClient;
   readonly heap: MemoryHeapClient;
@@ -19,6 +25,7 @@ export class MemoryRuntime extends Runtime {
     // Read Date.now lazily so fake timers installed later still apply.
     this.clock = options?.clock ?? (() => Date.now());
     this.requireStepKeys = options?.requireStepKeys ?? false;
+    this.retain = validateRetentionOptions(options?.retain);
     this.executions = new MemoryExecutionClient({
       clock: this.clock,
       onTerminal: (executionId) => this.joins.wakeWaiters(executionId),
@@ -27,6 +34,8 @@ export class MemoryRuntime extends Runtime {
         this.effects.deleteWaitersForExecution(executionId);
         this.joins.deleteWaitersForExecution(executionId);
       },
+      isJoinTargetHeld: (executionId) => this.joins.isTargetHeld(executionId),
+      onPruned: (executionId) => this.joins.deleteTargetWaiters(executionId),
     });
     this.joins = new MemoryJoinClient({ executions: this.executions });
     this.stores = new MemoryStoreClient({ executions: this.executions });

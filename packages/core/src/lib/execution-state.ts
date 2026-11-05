@@ -20,6 +20,7 @@ import type {
   WorkflowRunOutcome,
 } from "../base/execution";
 import { isTerminalExecutionStatus } from "../base/execution";
+import type { PrunedExecutionRecord } from "../base/retention";
 import type { DurableValue } from "../base/durable-value";
 import {
   decodeParsedValue,
@@ -36,7 +37,10 @@ import { ReadOnlyMap } from "../utils/map";
  * apply the transitions below inside one atomic write, so every adapter keeps
  * the same lease, wake and acknowledgement semantics.
  *
- * Lease transitions (claim, renew, release) do not change `updatedAt`.
+ * Lease transitions (claim, renew, release) do not change `updatedAt`, and
+ * no transition changes it once the execution is terminal. So a terminal
+ * execution's `updatedAt` is when its outcome was recorded, and the retention
+ * clock starts there.
  */
 export type ExecutionState = {
   executionId: string;
@@ -89,6 +93,23 @@ export type ExecutionState = {
    * pending wakes do not deliver the execution.
    */
   divergence: ExecutionDivergenceState | null;
+  /**
+   * Set by the tombstone write. The record then keeps only its ID, workflow
+   * ID and terminal `status`; every other field is cleared.
+   */
+  pruned: ExecutionPruneState | null;
+};
+
+export type ExecutionPruneState = {
+  prunedAt: number;
+  /**
+   * True until the execution's step records, store data, waiters and start
+   * requests are deleted. A pruner that stops part way leaves it set, and the
+   * next one finishes the cleanup.
+   */
+  cleanupPending: boolean;
+  /** Whether the cleanup deletes the stores whose `id` is the execution ID. */
+  deleteExecutionStore: boolean;
 };
 
 export type ExecutionDivergenceState = {
@@ -284,6 +305,7 @@ export function createExecutionState(params: {
     cancellation: params.cancellation ?? null,
     workflowVersion: null,
     divergence: null,
+    pruned: null,
   };
 }
 
@@ -311,10 +333,22 @@ export function unacknowledgedDeliveryCountAt(state: ExecutionState, now: number
   return state.unacknowledgedDeliveryCount + (hasExpiredLease(state, now) ? 1 : 0);
 }
 
+/** What `ExecutionClient.get` returns: the record, or the tombstone of a pruned execution. */
+export function toExecutionRecordOrTombstone(
+  state: ExecutionState,
+  now: number
+): ExecutionRecord | PrunedExecutionRecord {
+  return state.pruned !== null ? toPrunedExecutionRecord(state) : toExecutionRecord(state, now);
+}
+
+/** The record of an execution that is not pruned. Throws for a tombstone. */
 export function toExecutionRecord(
   state: ExecutionState,
   now: number
 ): ExecutionRecord {
+  if (state.pruned !== null) {
+    throw new Error(`Execution "${state.executionId}" was pruned and has no record`);
+  }
   const event = decodeExecutionEvent(state);
   return {
     executionId: state.executionId,
@@ -337,6 +371,67 @@ export function toExecutionRecord(
       ? { divergence: toExecutionDivergence(state.divergence) }
       : {}),
   };
+}
+
+export function toPrunedExecutionRecord(state: ExecutionState): PrunedExecutionRecord {
+  if (state.pruned === null || !isTerminalExecutionStatus(state.status)) {
+    throw new Error(`Execution "${state.executionId}" is not pruned`);
+  }
+  return {
+    status: "pruned",
+    executionId: state.executionId,
+    workflowId: state.workflowId,
+    terminalStatus: state.status,
+    prunedAt: state.pruned.prunedAt,
+  };
+}
+
+/**
+ * Replaces a terminal execution's state with its tombstone, marked as pending
+ * cleanup. The tombstone keeps the ID, workflow ID, terminal status and
+ * admission time, and clears the event, outcome, cancellation, parent link,
+ * version, divergence and every wake and lease field. The lease token is
+ * kept, so no earlier holder's token becomes current again. Adapters check
+ * eligibility first, in the same atomic write.
+ */
+export function pruneExecution(
+  state: ExecutionState,
+  params: { now: number; deleteExecutionStore: boolean }
+): ExecutionState {
+  if (!isTerminalExecutionStatus(state.status) || state.pruned !== null) {
+    throw new Error(`Execution "${state.executionId}" is not an unpruned terminal execution`);
+  }
+  return {
+    executionId: state.executionId,
+    workflowId: state.workflowId,
+    params: "",
+    context: "",
+    status: state.status,
+    outcome: null,
+    admittedAt: state.admittedAt,
+    updatedAt: state.updatedAt,
+    dueAt: null,
+    claimedDueAt: null,
+    leaseToken: state.leaseToken,
+    leaseExpiresAt: null,
+    unacknowledgedDeliveryCount: 0,
+    redeliverAt: null,
+    parent: null,
+    cancellation: null,
+    workflowVersion: null,
+    divergence: null,
+    pruned: {
+      prunedAt: params.now,
+      cleanupPending: true,
+      deleteExecutionStore: params.deleteExecutionStore,
+    },
+  };
+}
+
+/** Clears a tombstone's cleanup mark. Other states are unchanged. */
+export function finishExecutionPrune(state: ExecutionState): ExecutionState {
+  if (state.pruned === null || !state.pruned.cleanupPending) return state;
+  return { ...state, pruned: { ...state.pruned, cleanupPending: false } };
 }
 
 export function toExecutionDivergence(state: ExecutionDivergenceState): ExecutionDivergence {
@@ -636,7 +731,8 @@ export function prepareExecutionCancel(request: {
 /**
  * Applies one cancellation request to an execution's state.
  *
- * - A terminal execution is unchanged, and the result is its outcome.
+ * - A terminal execution is unchanged, and the result is its outcome. A
+ *   pruned one is unchanged, and the result is its tombstone.
  * - A first request is recorded with its `reason` and `source`. A repeat
  *   keeps the first ones.
  * - A graceful request makes the execution due now. The redelivery delay
@@ -661,6 +757,9 @@ export function requestExecutionCancellation(
   propagate: boolean;
   terminal: boolean;
 } {
+  if (state.pruned !== null) {
+    return { state, result: toPrunedExecutionRecord(state), propagate: false, terminal: false };
+  }
   if (isTerminalExecutionStatus(state.status)) {
     return {
       state,
@@ -887,9 +986,10 @@ export function executionIdConflict(executionId: string) {
 /**
  * Answers an admission whose ID is already in use by `existing`, whatever its
  * status. Without idempotent mode it is `EXECUTION_ID_CONFLICT`. In
- * idempotent mode it is `existing` when the workflow IDs and the canonical
- * params encodings are equal, and `EXECUTION_REQUEST_MISMATCH` otherwise. Context is not compared. The
- * existing record is never changed.
+ * idempotent mode it is `EXECUTION_PRUNED` when the existing record is a
+ * tombstone, `existing` when the workflow IDs and the canonical params
+ * encodings are equal, and `EXECUTION_REQUEST_MISMATCH` otherwise. Context is
+ * not compared. The existing record is never changed.
  */
 export function matchExecutionAdmission(
   existing: ExecutionState,
@@ -901,6 +1001,13 @@ export function matchExecutionAdmission(
   }
 ): Exclude<ExecutionAdmissionResult, { status: "accepted" }> {
   if (!prepared.idempotent) return executionIdConflict(prepared.executionId);
+  if (existing.pruned !== null) {
+    return {
+      status: "rejected",
+      code: "EXECUTION_PRUNED",
+      message: `Execution "${prepared.executionId}" was pruned, so the request cannot be compared with it`,
+    };
+  }
   if (
     existing.workflowId === prepared.workflowId &&
     existing.params === prepared.encoded.params
@@ -1018,6 +1125,28 @@ export function matchStartRequest(
 }
 
 /**
+ * Throws a plain `Error` when the caller of a start does not exist or was
+ * pruned. Adapters call it before they look up a recorded start request, in
+ * the same atomic step, so a start from a pruned caller throws whether or not
+ * its cleanup has deleted the caller's start requests yet.
+ */
+export function assertStartCaller(
+  caller: ExecutionState | undefined,
+  callerExecutionId: string
+): asserts caller is ExecutionState {
+  if (!caller) {
+    throw new Error(
+      `Cannot start a workflow from execution "${callerExecutionId}": it does not exist`
+    );
+  }
+  if (caller.pruned !== null) {
+    throw new Error(
+      `Cannot start a workflow from execution "${callerExecutionId}": it was pruned`
+    );
+  }
+}
+
+/**
  * Builds a new start's target state and start-request record. The target
  * inherits the caller's encoded context and links to the caller as its parent.
  * A non-detached target of a caller whose cancellation is not yet delivered
@@ -1034,6 +1163,7 @@ export function createStartedExecution(params: {
   executionId?: string;
 }): { target: ExecutionState; startRequest: StartRequestState } {
   const { start, caller, now } = params;
+  assertStartCaller(caller, start.callerExecutionId);
   const executionId = params.executionId ?? crypto.randomUUID();
   const target = createExecutionState({
     executionId,

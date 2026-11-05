@@ -7,10 +7,12 @@ import type {
   ExecutionObserver,
   ExecutionRecord,
   ExecutionStatus,
+  PrunedExecutionRecord,
   WorkflowInvoker,
 } from "@yieldstar/core";
 import {
   ExecutionListRequestError,
+  ExecutionPrunedError,
   FreezableMap,
   MiddlewareEvent,
   MiddlewareFunction,
@@ -34,6 +36,7 @@ const DEFAULT_MAX_WAIT = 8_000;
 
 export type ObservationErrorCode =
   | "EXECUTION_NOT_FOUND"
+  | "EXECUTION_PRUNED"
   | "INVALID_OBSERVATION_REQUEST"
   | "INVALID_LIST_REQUEST"
   | "INVALID_CANCEL_REQUEST"
@@ -51,13 +54,14 @@ export type ObservationRequest =
       executionId: string;
       /**
        * Reads the record. It resolves `undefined` for an unknown ID, so a
-       * policy that calls it can reveal whether the execution exists.
+       * policy that calls it can reveal whether the execution exists. A
+       * pruned execution resolves with its tombstone.
        */
-      load(): Promise<ExecutionRecord | undefined>;
+      load(): Promise<ExecutionRecord | PrunedExecutionRecord | undefined>;
     }
   | {
       operation: "list";
-      filter: { workflowId?: string; status?: ExecutionStatus; diverged?: boolean };
+      filter: { workflowId?: string; status?: ExecutionStatus | "pruned"; diverged?: boolean };
     }
   | {
       operation: "cancel";
@@ -65,18 +69,20 @@ export type ObservationRequest =
       force: boolean;
       /**
        * Reads the record. It resolves `undefined` for an unknown ID, so a
-       * policy that calls it can reveal whether the execution exists.
+       * policy that calls it can reveal whether the execution exists. A
+       * pruned execution resolves with its tombstone.
        */
-      load(): Promise<ExecutionRecord | undefined>;
+      load(): Promise<ExecutionRecord | PrunedExecutionRecord | undefined>;
     }
   | {
       operation: "clear-divergence";
       executionId: string;
       /**
        * Reads the record. It resolves `undefined` for an unknown ID, so a
-       * policy that calls it can reveal whether the execution exists.
+       * policy that calls it can reveal whether the execution exists. A
+       * pruned execution resolves with its tombstone.
        */
-      load(): Promise<ExecutionRecord | undefined>;
+      load(): Promise<ExecutionRecord | PrunedExecutionRecord | undefined>;
     };
 
 /**
@@ -100,6 +106,7 @@ type TriggerBody = {
 
 const admissionStatus: Record<ExecutionAdmissionErrorCode, number> = {
   EXECUTION_ID_CONFLICT: 409,
+  EXECUTION_PRUNED: 409,
   EXECUTION_REQUEST_MISMATCH: 409,
   INVALID_EXECUTION_EVENT: 400,
   IDEMPOTENT_TRIGGER_REQUIRES_ID: 400,
@@ -115,6 +122,8 @@ const admissionStatus: Record<ExecutionAdmissionErrorCode, number> = {
  * - `200` with `status: "existing"` when an idempotent repeat matches.
  * - `409` when the ID is in use, or in idempotent mode is in use by a
  *   different request.
+ * - `409` `EXECUTION_PRUNED` when an idempotent trigger names a pruned
+ *   execution.
  * - `400` when the event cannot be stored without loss, or an idempotent
  *   trigger has no ID.
  */
@@ -238,7 +247,10 @@ function parseExecutionRequest(
   return { request, value: executionId };
 }
 
-/** `{ executionId }`: `200` with an `ExecutionView`, or `404`. */
+/**
+ * `{ executionId }`: `200` with an `ExecutionView`, which is the pruned view
+ * for a pruned execution, or `404` for an ID that was never admitted.
+ */
 export const createPollHandler = (params: ObservationParams): RouteHandler =>
   observationRoute(
     params,
@@ -251,8 +263,9 @@ export const createPollHandler = (params: ObservationParams): RouteHandler =>
 
 /**
  * `{ executionId, timeout? }`: `200` with a `WaitResult`, or `404`. The wait
- * is capped at `maxWait`, and a capped wait returns `timed-out`. The
- * request's abort signal ends the wait.
+ * is capped at `maxWait`, and a capped wait returns `timed-out`. A pruned
+ * execution responds at once with its pruned view. The request's abort
+ * signal ends the wait.
  */
 export const createWaitHandler = (params: ObservationParams): RouteHandler =>
   observationRoute(
@@ -283,7 +296,10 @@ export const createWaitHandler = (params: ObservationParams): RouteHandler =>
     }
   );
 
-/** `{ workflowId?, status?, diverged?, cursor?, limit? }`: `200` with a page. */
+/**
+ * `{ workflowId?, status?, diverged?, cursor?, limit? }`: `200` with a page.
+ * Pruned executions are left out unless `status` is `pruned`.
+ */
 export const createListHandler = (params: ObservationParams): RouteHandler =>
   observationRoute(
     params,
@@ -307,7 +323,8 @@ export const createListHandler = (params: ObservationParams): RouteHandler =>
  * Deprecated: use `/wait`. `{ executionId }`: waits, without a timeout, until
  * the record is terminal. Responds `200` with the result, or `500` with the
  * recorded error, each encoded with the durable value codec, or `404` for an
- * unknown ID. The request's abort signal ends the wait.
+ * unknown ID. A pruned execution has no outcome to send, so it responds `410`
+ * `EXECUTION_PRUNED`. The request's abort signal ends the wait.
  */
 export const createEventsHandler = (params: ObservationParams): RouteHandler =>
   observationRoute(
@@ -315,6 +332,9 @@ export const createEventsHandler = (params: ObservationParams): RouteHandler =>
     (body) => parseExecutionRequest(params, "events", body),
     async (req, executionId) => {
       const outcome = await params.observer.wait(executionId, { signal: req.signal });
+      if (outcome?.status === "pruned") {
+        return errorResponse(410, "EXECUTION_PRUNED", new ExecutionPrunedError(outcome).message);
+      }
       if (!outcome) return executionNotFound(executionId);
       if (outcome.status === "failed") {
         return durableJson(encodeThrownValue(outcome.error), 500);
@@ -341,6 +361,7 @@ export const createEventsHandler = (params: ObservationParams): RouteHandler =>
  * `{ executionId, reason?, force? }`: records a cancellation request. Responds
  * `202` with `{ status: "requested", execution }` while the execution is
  * active, `200` with its terminal view (including after a forced cancel),
+ * `200` with the pruned view of a pruned execution, which is not changed,
  * `404` for an unknown ID, and `400` `INVALID_CANCEL_REQUEST` for a malformed
  * body. It does not wait for the workflow to stop.
  */
@@ -374,8 +395,9 @@ export const createCancelHandler = (params: ObservationParams): RouteHandler =>
 /**
  * `{ executionId }`: removes the execution's divergence and makes it due
  * now. Responds `200` with `{ status: "cleared" }` or `{ status:
- * "not-diverged" }`, `404` for an unknown ID, and `400`
- * `INVALID_OBSERVATION_REQUEST` for a missing `executionId`.
+ * "not-diverged" }` (including for a pruned execution), `404` for an
+ * unknown ID, and `400` `INVALID_OBSERVATION_REQUEST` for a missing
+ * `executionId`.
  */
 export const createClearDivergenceHandler = (params: ObservationParams): RouteHandler =>
   observationRoute(

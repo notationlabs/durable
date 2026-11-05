@@ -53,15 +53,17 @@ const result = await exec.waitForResult();
 
 | Endpoint        | Body                                                           | Responses                                                                                                     |
 | --------------- | -------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
-| `POST /trigger` | `{ workflowId, params?, context?, executionId?, idempotent? }` | `202 { executionId, status: "accepted" }` once admission commits; `200 { executionId, status: "existing" }` for an idempotent repeat; `409` `EXECUTION_ID_CONFLICT` or `EXECUTION_REQUEST_MISMATCH`; `400` `INVALID_EXECUTION_EVENT` or `IDEMPOTENT_TRIGGER_REQUIRES_ID` |
-| `POST /poll`    | `{ executionId }`                                              | `200` with the execution's view; `404` `EXECUTION_NOT_FOUND`                                                  |
-| `POST /wait`    | `{ executionId, timeout? }`                                    | `200` with a `WaitResult`; `404` `EXECUTION_NOT_FOUND`                                                        |
-| `POST /list`    | `{ workflowId?, status?, diverged?, cursor?, limit? }`         | `200 { executions, cursor? }`                                                                                 |
-| `POST /cancel`  | `{ executionId, reason?, force? }`                             | `202 { status: "requested", execution }` while the execution is active; `200` with the terminal view when it is terminal, including after a forced cancel; `404` `EXECUTION_NOT_FOUND`; `400` `INVALID_CANCEL_REQUEST` |
-| `POST /clear-divergence` | `{ executionId }`                                     | `200 { status: "cleared" }` or `200 { status: "not-diverged" }`; `404` `EXECUTION_NOT_FOUND` |
-| `POST /events`  | `{ executionId }`                                              | Deprecated. Blocks until the record is terminal. `200` with the encoded result, `500` with the encoded recorded error, `404` `EXECUTION_NOT_FOUND` |
+| `POST /trigger` | `{ workflowId, params?, context?, executionId?, idempotent? }` | `202 { executionId, status: "accepted" }` once admission commits; `200 { executionId, status: "existing" }` for an idempotent repeat; `409` `EXECUTION_ID_CONFLICT`, `EXECUTION_REQUEST_MISMATCH` or `EXECUTION_PRUNED`; `400` `INVALID_EXECUTION_EVENT` or `IDEMPOTENT_TRIGGER_REQUIRES_ID` |
+| `POST /poll`    | `{ executionId }`                                              | `200` with the execution's view, which is the pruned view for a pruned execution; `404` `EXECUTION_NOT_FOUND` |
+| `POST /wait`    | `{ executionId, timeout? }`                                    | `200` with a `WaitResult`, at once with the pruned view for a pruned execution; `404` `EXECUTION_NOT_FOUND` |
+| `POST /list`    | `{ workflowId?, status?, diverged?, cursor?, limit? }`         | `200 { executions, cursor? }`. Pruned executions are left out unless `status` is `"pruned"` |
+| `POST /cancel`  | `{ executionId, reason?, force? }`                             | `202 { status: "requested", execution }` while the execution is active; `200` with the terminal view when it is terminal, including after a forced cancel; `200` with the pruned view for a pruned execution, which is not changed; `404` `EXECUTION_NOT_FOUND`; `400` `INVALID_CANCEL_REQUEST` |
+| `POST /clear-divergence` | `{ executionId }`                                     | `200 { status: "cleared" }` or `200 { status: "not-diverged" }`, including for a pruned execution; `404` `EXECUTION_NOT_FOUND` |
+| `POST /events`  | `{ executionId }`                                              | Deprecated. Blocks until the record is terminal. `200` with the encoded result, `500` with the encoded recorded error, `410` `EXECUTION_PRUNED` for a pruned execution, `404` `EXECUTION_NOT_FOUND` |
 
 The views, wait results and pages are the same as the [local SDK](./sdk-local.md#execution-views) returns. A failed or cancelled execution is a `200` response from `/poll` and `/wait`, with the error or the cancellation's `reason` and `source` in the view. `/events` responds `500` with an encoded `WorkflowCancelledError` for a cancelled execution.
+
+A [pruned](./retention.md) execution has only its tombstone left. `/poll` and `/wait` respond `200` with `{ status: "pruned", executionId, workflowId, terminalStatus, prunedAt }`, and an ID that was never admitted still responds `404`. `/events` has no result or error to send, so it responds `410 Gone` with `EXECUTION_PRUNED`. An idempotent `/trigger` with a pruned ID responds `409` `EXECUTION_PRUNED`, because the params it would compare are gone.
 
 `/cancel` records the [cancellation](./cancellation.md) request and responds. It does not wait for the workflow to stop.
 
@@ -132,6 +134,7 @@ Trigger middleware does not run for the observation routes, `/cancel` or `/clear
 `/poll`, `/wait`, `/list` and `/events` return results and errors, which are often derived from `params`, to anyone who can call them, `/cancel` lets anyone who can call it stop any execution, and `/clear-divergence` lets anyone who can call it make a parked execution run again. Without observation middleware, any caller that can reach the server can read, cancel and clear every execution, and `/list` returns every execution's ID with its result or error. When `createRoutes` has trigger `middleware` but no `observationMiddleware`, it logs a warning, because a deployment that guards `/trigger` would otherwise gain open observation, cancel and clear-divergence routes on upgrade. Pass `observationMiddleware: []` to allow every request on purpose and silence the warning. Configure observation middleware to decide who may do each:
 
 ```ts
+import { isPrunedExecution } from "@yieldstar/core";
 import type { ObservationMiddlewareFunction } from "@yieldstar/http-server";
 
 const tenantOnly: ObservationMiddlewareFunction = async (req, request, logger) => {
@@ -141,7 +144,10 @@ const tenantOnly: ObservationMiddlewareFunction = async (req, request, logger) =
   if (request.operation === "list") return { allow: false, status: 403 };
   const record = await request.load();
   // An unknown ID is denied too, so a caller cannot probe for other tenants' IDs.
-  if (record?.params?.tenant !== tenant) return { allow: false, status: 403 };
+  // A pruned execution's tombstone has no params, so it is denied as well.
+  if (!record || isPrunedExecution(record) || record.params?.tenant !== tenant) {
+    return { allow: false, status: 403 };
+  }
   return { allow: true };
 };
 
@@ -155,22 +161,22 @@ type ObservationRequest =
   | {
       operation: "poll" | "wait" | "events";
       executionId: string;
-      load(): Promise<ExecutionRecord | undefined>;
+      load(): Promise<ExecutionRecord | PrunedExecutionRecord | undefined>;
     }
   | {
       operation: "list";
-      filter: { workflowId?: string; status?: ExecutionStatus; diverged?: boolean };
+      filter: { workflowId?: string; status?: ExecutionStatus | "pruned"; diverged?: boolean };
     }
   | {
       operation: "cancel";
       executionId: string;
       force: boolean;
-      load(): Promise<ExecutionRecord | undefined>;
+      load(): Promise<ExecutionRecord | PrunedExecutionRecord | undefined>;
     }
   | {
       operation: "clear-divergence";
       executionId: string;
-      load(): Promise<ExecutionRecord | undefined>;
+      load(): Promise<ExecutionRecord | PrunedExecutionRecord | undefined>;
     };
 ```
 
@@ -178,7 +184,7 @@ Each function resolves with `{ allow: true }` or `{ allow: false, status: 401 | 
 
 - The functions run in array order, before the route reads any record. The first denial wins, and the later functions do not run.
 - A denial responds `401` `UNAUTHORIZED` or `403` `FORBIDDEN`, never `404`. So a denied caller cannot tell whether an execution exists.
-- `load` reads the full execution record, including `params` and `context`, for a policy that needs them. It resolves `undefined` for an unknown ID. A policy that denies only when the record exists reveals whether it exists. The example above denies an unknown ID as well, so it reveals nothing.
+- `load` reads the full execution record, including `params` and `context`, for a policy that needs them. It resolves `undefined` for an unknown ID, and the tombstone, a `PrunedExecutionRecord` without `params` or `context`, for a pruned execution. A policy that denies only when the record exists reveals whether it exists. The example above denies an unknown ID as well, so it reveals nothing.
 - A `list` request carries its filter and no `load`.
 - A `cancel` request carries the `executionId`, whether the request is forced, and `load`. The same functions authorize reads and cancels, so a policy that should allow reads but not cancels, or not forced cancels, must check `operation` and `force`.
 - A `clear-divergence` request carries the `executionId` and `load`. A policy that allows reads must check `operation` to deny it.

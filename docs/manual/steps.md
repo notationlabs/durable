@@ -118,7 +118,7 @@ if (err instanceof CourierError) {
 
 Revival sets the prototype and fields without calling the constructor, so a constructor with required arguments is fine. Registration is per process: a worker process must register the class too, or it revives the error as a plain `Error` with the same `name`, `message`, `code`, `cause` and fields.
 
-These classes are registered by default: `RetryableError`, `WorkflowStartError`, `WorkflowJoinError`, `WorkflowCancelledError`, `WorkflowRaceError`, `WorkflowReplayError`, `WorkflowValueError`, `WorkflowEffectError`, `EffectDeliveryError`, `EffectClientInvariantError`, `StoreValidationError`, `TypeError`, `RangeError`, `SyntaxError`, `ReferenceError`, `EvalError`, `URIError` and `AggregateError`.
+These classes are registered by default: `RetryableError`, `WorkflowStartError`, `WorkflowJoinError`, `WorkflowCancelledError`, `WorkflowRaceError`, `WorkflowReplayError`, `WorkflowValueError`, `WorkflowEffectError`, `EffectDeliveryError`, `EffectClientInvariantError`, `ExecutionPrunedError`, `StoreValidationError`, `TypeError`, `RangeError`, `SyntaxError`, `ReferenceError`, `EvalError`, `URIError` and `AggregateError`.
 
 A thrown value that is not an error, such as a string or a plain object, is rethrown as it was thrown. A thrown value that is not durable, such as a class instance, is recorded and rethrown as `Error(String(value))`.
 
@@ -244,14 +244,15 @@ try {
 
 The other codes are:
 
-- `JOIN_TARGET_NOT_FOUND` when no execution has the target ID; and
+- `JOIN_TARGET_NOT_FOUND` when no execution has the target ID;
+- `JOIN_TARGET_PRUNED` when the target was [pruned](./retention.md) before the step read it, so its outcome is gone; and
 - `JOIN_SELF` when the target is the calling execution.
 
-Both are recorded, so replay throws them without reading the target.
+All three are recorded, so replay throws them without reading the target.
 
 A workflow can join any execution, not only one it started, and several executions can join one target. The runtime does not detect cycles: if A joins B and B joins A, both wait forever unless they use a deadline or one of them is [cancelled](./cancellation.md).
 
-The runtime records a terminal outcome and the wakes for its join waiters in one atomic write, so a crash between the target's last delivery and the joiner's next delivery does not lose the wake. A join waiter stays registered until the joiner records the step, and the write that records the step deletes it.
+The runtime records a terminal outcome and the wakes for its join waiters in one atomic write, so a crash between the target's last delivery and the joiner's next delivery does not lose the wake. A join waiter stays registered until the joiner records the step, and the write that records the step deletes it. While a joiner that is not terminal has a waiter on the target, a retention policy does not prune the target, so a woken joiner always reads the outcome. See [Joins](./retention.md#joins).
 
 ### Joining with a deadline
 

@@ -24,6 +24,7 @@ import {
   type SettledResult,
 } from "yieldstar";
 import { withoutVersion } from "./outcome";
+import { liveRecord } from "@yieldstar/runtime-conformance";
 
 const isBun = "Bun" in globalThis;
 const { createSqliteDb } = isBun
@@ -562,7 +563,7 @@ describe.each(runtimes)("concurrent steps on $name", ({ create }) => {
 
   /** Runs one delivery under `lease` as the dispatcher would, without acknowledging it. */
   async function run(lease: ExecutionLease, signal = new AbortController().signal) {
-    const record = (await runtime.executions.get(lease.executionId))!;
+    const record = await liveRecord(runtime.executions, lease.executionId);
     return withoutVersion(
       await runner.run(
         {
@@ -601,7 +602,7 @@ describe.each(runtimes)("concurrent steps on $name", ({ create }) => {
   }
 
   const outcome = async (executionId = ORDER) =>
-    (await runtime.executions.get(executionId))!.outcome;
+    (await liveRecord(runtime.executions, executionId)).outcome;
 
   describe("all", () => {
     test("runs three step.run branches concurrently in one delivery and returns their results in order", async () => {
@@ -1084,7 +1085,7 @@ describe.each(runtimes)("concurrent steps on $name", ({ create }) => {
         done: true,
       });
       expect(harness.storeWaiters()).toEqual([]);
-      expect((await runtime.executions.get(ORDER))!.cancellation).toMatchObject({
+      expect((await liveRecord(runtime.executions, ORDER)).cancellation).toMatchObject({
         deliveredAt: START,
       });
     });

@@ -26,6 +26,7 @@ export function prepareJoinWaiter(waiter: JoinWaiter): JoinWaiter {
  */
 export function readJoinTarget(target: ExecutionState | undefined): JoinResult {
   if (!target) return { status: "not-found" };
+  if (target.pruned !== null) return { status: "pruned" };
   if (isTerminalExecutionStatus(target.status)) {
     return { status: "terminal", outcome: decodeExecutionOutcome(target.outcome!) };
   }

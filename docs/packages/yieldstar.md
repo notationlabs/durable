@@ -14,7 +14,7 @@ bun add yieldstar
 import { workflow, createWorkflow } from "yieldstar";
 import { createWorkflowRouter } from "yieldstar";
 import { RetryableError, ExecutionAdmissionError, WorkflowStartError, WorkflowJoinError } from "yieldstar";
-import { ExecutionListRequestError, HttpRouteError } from "yieldstar";
+import { ExecutionListRequestError, ExecutionPrunedError, HttpRouteError } from "yieldstar";
 import { WorkflowCancelledError, ExecutionCancelRequestError } from "yieldstar";
 import { WorkflowRaceError, WorkflowReplayError } from "yieldstar";
 import { WorkflowValueError, registerErrorClass, WORKFLOW_RESULT_STEP_KEY } from "yieldstar";
@@ -49,6 +49,8 @@ import type {
   ExecutionView,
   ActiveExecutionView,
   TerminalExecutionView,
+  PrunedExecutionView,
+  ExecutionTombstone,
   WaitResult,
   ExecutionWaitOptions,
   ExecutionListRequest,
@@ -126,8 +128,9 @@ Thrown by both SDKs' `trigger` when admission is rejected. `err.code` is one of:
 
 | `code`                           | Cause                                                                     |
 | -------------------------------- | ------------------------------------------------------------------------- |
-| `EXECUTION_ID_CONFLICT`          | The `executionId` is already in use                                       |
+| `EXECUTION_ID_CONFLICT`          | The `executionId` is already in use, including by a pruned execution      |
 | `EXECUTION_REQUEST_MISMATCH`     | An idempotent trigger's `executionId` is in use with a different `workflowId` or `params` |
+| `EXECUTION_PRUNED`               | An idempotent trigger's `executionId` belongs to a pruned execution, whose `params` can no longer be compared |
 | `IDEMPOTENT_TRIGGER_REQUIRES_ID` | An idempotent trigger has no `executionId`                                |
 | `INVALID_EXECUTION_EVENT`        | `params` or `context` are not durable values, or `idempotent` is not a boolean |
 
@@ -136,6 +139,10 @@ See [Idempotent trigger](../manual/sdk-local.md#idempotent-trigger).
 ## `ExecutionListRequestError`
 
 Thrown by both SDKs' `list`, and by `ExecutionClient.list`, for a `workflowId` that is not a string, a `limit` that is not a positive integer, an unknown `status`, or a malformed `cursor`. `err.code` is `"INVALID_LIST_REQUEST"`.
+
+## `ExecutionPrunedError`
+
+Thrown by `triggerAndWait` and the HTTP SDK's `waitForResult` when the execution was [pruned](../manual/retention.md) before the wait read its outcome. `err.code` is `"EXECUTION_PRUNED"`, and `err.executionId`, `err.workflowId`, `err.terminalStatus` and `err.prunedAt` are the tombstone's. It is registered by default.
 
 ## `ExecutionCancelRequestError`
 
@@ -151,7 +158,7 @@ Thrown to workflow code by `step.start` when the runtime rejects the start. `err
 
 ## `WorkflowJoinError`
 
-Thrown to workflow code by `step.join` and `step.call`. `err.code` is `"JOINED_EXECUTION_FAILED"` (the target failed, and `err.cause` is its recorded error), `"JOINED_EXECUTION_CANCELLED"` (the target was cancelled, and `err.reason` and `err.source` are its outcome's), `"JOIN_TARGET_NOT_FOUND"` (no execution has the target ID) or `"JOIN_SELF"` (the target is the calling execution). `err.executionId` is the target's ID. It is recorded as the step's error, so replay throws the same class, code and `executionId`. See [`step.join`](../manual/steps.md#stepjoin).
+Thrown to workflow code by `step.join` and `step.call`. `err.code` is `"JOINED_EXECUTION_FAILED"` (the target failed, and `err.cause` is its recorded error), `"JOINED_EXECUTION_CANCELLED"` (the target was cancelled, and `err.reason` and `err.source` are its outcome's), `"JOIN_TARGET_NOT_FOUND"` (no execution has the target ID), `"JOIN_TARGET_PRUNED"` (the target was [pruned](../manual/retention.md), so its outcome is gone) or `"JOIN_SELF"` (the target is the calling execution). `err.executionId` is the target's ID. It is recorded as the step's error, so replay throws the same class, code and `executionId`. See [`step.join`](../manual/steps.md#stepjoin).
 
 ## `WorkflowCancelledError`
 
@@ -185,7 +192,7 @@ Registers the class that recorded errors named `name` are revived as, in this pr
 
 ## `createLocalSdk<Router>(runtime, { invoker?, pollInterval? })`
 
-Creates a local SDK client that admits executions into `runtime` and reads them back with `poll`, `wait` and `list`, cancels them with `cancel`, and clears divergences with `clearDivergence`. It implements `ExecutionObserver` and `ExecutionControl`. See [Local SDK](../manual/sdk-local.md).
+Creates a local SDK client that admits executions into `runtime` and reads them back with `poll`, `wait` and `list`, which return a `PrunedExecutionView` for a [pruned](../manual/retention.md) execution, cancels them with `cancel`, and clears divergences with `clearDivergence`. It implements `ExecutionObserver` and `ExecutionControl`. See [Local SDK](../manual/sdk-local.md).
 
 ## `createHttpSdkFactory<Router>()`
 

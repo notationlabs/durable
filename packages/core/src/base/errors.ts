@@ -5,6 +5,7 @@ import {
 } from "./effect";
 import { WorkflowCancelledError, WorkflowStartError } from "./execution";
 import { WorkflowJoinError } from "./join";
+import { ExecutionPrunedError } from "./retention";
 
 export type WorkflowValueErrorCode = "INVALID_STEP_VALUE" | "STEP_SCHEMA_INVALID";
 
@@ -120,5 +121,6 @@ const defaults: [string, ErrorClass][] = [
   ["WorkflowEffectError", WorkflowEffectError],
   ["EffectClientInvariantError", EffectClientInvariantError],
   ["EffectDeliveryError", EffectDeliveryError],
+  ["ExecutionPrunedError", ExecutionPrunedError],
 ];
 for (const [name, errorClass] of defaults) registerErrorClass(name, errorClass);

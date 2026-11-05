@@ -1,6 +1,6 @@
 import { EventEmitter } from "node:events";
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { durableValueCodec, type ExecutionRecord } from "@yieldstar/core";
+import { durableValueCodec, type ExecutionRecord, type PrunedExecutionRecord } from "@yieldstar/core";
 import {
   createRoutes,
   type ObservationMiddlewareFunction,
@@ -246,7 +246,7 @@ for (const backendKind of backendKinds) {
       test("load returns the record, or undefined for an unknown ID", async () => {
         const { runtime } = openBackend(backendKind);
         await admit(runtime, "known");
-        const loaded: (ExecutionRecord | undefined)[] = [];
+        const loaded: (ExecutionRecord | PrunedExecutionRecord | undefined)[] = [];
         const requests: ObservationRequest[] = [];
         const { url } = serveRoutes(runtime, {
           observationMiddleware: [

@@ -6,6 +6,8 @@ import type {
   ExecutionParent,
   ExecutionRecord,
 } from "./execution";
+import { isPrunedExecution } from "./retention";
+import type { ExecutionTombstone, PrunedExecutionRecord } from "./retention";
 
 type ExecutionViewBase = {
   executionId: string;
@@ -31,15 +33,19 @@ export type TerminalExecutionView =
   | (ExecutionViewBase & { status: "failed"; error: Error })
   | (ExecutionViewBase & { status: "cancelled"; reason?: string; source?: string });
 
+/** What an observer sees of a pruned execution: its tombstone. */
+export type PrunedExecutionView = ExecutionTombstone & { status: "pruned" };
+
 /**
  * What an observer sees of an execution record. It leaves out `params`,
  * `context`, lease and wake state and `unacknowledgedDeliveryCount`;
  * operators read those through `ExecutionClient.get`.
  */
-export type ExecutionView = ActiveExecutionView | TerminalExecutionView;
+export type ExecutionView = ActiveExecutionView | TerminalExecutionView | PrunedExecutionView;
 
 export type WaitResult =
   | TerminalExecutionView
+  | PrunedExecutionView
   | { status: "timed-out"; execution: ActiveExecutionView };
 
 export type ExecutionWaitOptions = {
@@ -69,7 +75,8 @@ export type CancelOptions = {
 
 export type CancelResult =
   | { status: "requested"; execution: ActiveExecutionView }
-  | TerminalExecutionView;
+  | TerminalExecutionView
+  | PrunedExecutionView;
 
 export type ClearDivergenceResult = { status: "cleared" } | { status: "not-diverged" };
 
@@ -77,7 +84,8 @@ export interface ExecutionControl {
   /**
    * Records a cancellation request and returns without waiting for the
    * workflow to stop. Resolves with the terminal view when the execution is
-   * terminal, including after a forced cancel, and with `undefined` for an
+   * terminal, including after a forced cancel, with the pruned view of a
+   * pruned execution, which is not changed, and with `undefined` for an
    * unknown ID.
    */
   cancel(executionId: string, options?: CancelOptions): Promise<CancelResult | undefined>;
@@ -85,21 +93,25 @@ export interface ExecutionControl {
   /**
    * Removes a diverged execution's `divergence` and makes it due now, so the
    * next delivery replays it on the code deployed by then. Resolves with
-   * `not-diverged` when there is nothing to clear, and with `undefined` for
-   * an unknown ID.
+   * `not-diverged` when there is nothing to clear, including for a pruned
+   * execution, and with `undefined` for an unknown ID.
    */
   clearDivergence(executionId: string): Promise<ClearDivergenceResult | undefined>;
 }
 
 /** Reads executions from their durable record, from any process. */
 export interface ExecutionObserver {
-  /** The current view of the record, or `undefined` if none exists. */
+  /**
+   * The current view of the record, the pruned view of a pruned execution,
+   * or `undefined` if none exists.
+   */
   poll(executionId: string): Promise<ExecutionView | undefined>;
 
   /**
    * Reads the record, and then waits for a terminal outcome. Resolves with
    * the outcome, or with `timed-out` and the current view when `timeout`
-   * passes first. Resolves with `undefined` at once for an unknown ID.
+   * passes first. Resolves at once with the pruned view of a pruned
+   * execution, and with `undefined` for an unknown ID.
    * Rejects with the signal's reason once `signal` aborts.
    * @throws {RangeError} for a negative timeout
    */
@@ -109,13 +121,17 @@ export interface ExecutionObserver {
   ): Promise<WaitResult | undefined>;
 
   /**
-   * Pages through executions, newest first by admission sequence.
+   * Pages through executions, newest first by admission sequence. Pruned
+   * executions are left out unless `status` is `pruned`.
    * @throws {ExecutionListRequestError} for an invalid limit, status or cursor
    */
   list(request?: ExecutionListRequest): Promise<ExecutionViewPage>;
 }
 
-export function toExecutionView(record: ExecutionRecord): ExecutionView {
+export function toExecutionView(
+  record: ExecutionRecord | PrunedExecutionRecord
+): ExecutionView {
+  if (isPrunedExecution(record)) return toPrunedExecutionView(record);
   const base: ExecutionViewBase = {
     executionId: record.executionId,
     workflowId: record.workflowId,
@@ -150,8 +166,22 @@ export function toExecutionView(record: ExecutionRecord): ExecutionView {
   return { ...base, status: record.status };
 }
 
+export function toPrunedExecutionView(record: PrunedExecutionRecord): PrunedExecutionView {
+  return {
+    status: "pruned",
+    executionId: record.executionId,
+    workflowId: record.workflowId,
+    terminalStatus: record.terminalStatus,
+    prunedAt: record.prunedAt,
+  };
+}
+
 export function isTerminalExecutionView(
   view: ExecutionView
 ): view is TerminalExecutionView {
-  return isTerminalExecutionStatus(view.status);
+  return view.status !== "pruned" && isTerminalExecutionStatus(view.status);
+}
+
+export function isPrunedExecutionView(view: ExecutionView): view is PrunedExecutionView {
+  return view.status === "pruned";
 }

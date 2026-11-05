@@ -117,6 +117,20 @@ export type StoreMutationCommitResult =
   | { status: "missing" };
 
 /**
+ * The error a connector throws, and commits nothing, when a commit's `stepId`
+ * names a pruned execution. The check must be in the commit's atomic write.
+ * Store commits are not fenced by the lease, so without it a stale holder
+ * could apply a step's update again after cleanup deleted the step's receipt.
+ * The rejection is an infrastructure error, so the stale delivery stops
+ * without acknowledging.
+ */
+export function prunedStoreStepError(stepId: StoreStepId): Error {
+  return new Error(
+    `Store commit for step "${stepId.stepKey}" of execution "${stepId.executionId}" rejected: the execution was pruned`
+  );
+}
+
+/**
  * A snapshot read from a store, or, when `created` is true, the initial state
  * of a store that did not exist when it was read. A created snapshot's
  * `instanceId` is new and its `version` is 0.
@@ -329,7 +343,8 @@ export abstract class StoreClient {
   abstract listStores(definition: StoreDefinition): Promise<string[]>;
 
   /**
-   * Removes a physical store instance and its waiters. Applied-step receipts
+   * Removes a physical store instance and its waiters, and requests a wake
+   * for each waiter's execution in the same write. Applied-step receipts
    * remain authoritative for the logical store key across recreation. A no-op
    * if the store does not exist; it never creates one.
    */
@@ -350,6 +365,18 @@ export abstract class StoreClient {
     snapshot: StoreSnapshot<unknown>;
     stepId?: StoreStepId;
   }): Promise<StoreDeleteFromResult>;
+
+  /**
+   * Deletes a pruned execution's applied-step receipts and the waiters it
+   * holds. With `deleteExecutionStore`, also deletes every store whose `id`
+   * equals the execution ID, under any definition name, with its waiters,
+   * and requests a wake in the same write for each other execution that
+   * waited on those stores. Safe to repeat and to run concurrently.
+   */
+  abstract deleteExecutionData(params: {
+    executionId: string;
+    deleteExecutionStore: boolean;
+  }): Promise<void>;
 }
 
 /**
@@ -396,8 +423,9 @@ export abstract class CasStoreClient extends StoreClient {
   ): Promise<StoreMutationCommitResult>;
 
   /**
-   * Atomically compares `expected`, deletes the store and its waiters, and
-   * records the optional step result. A recorded step result wins over the
+   * Atomically compares `expected`, deletes the store and its waiters,
+   * requests a wake for each waiter's execution, and records the optional
+   * step result. A recorded step result wins over the
    * comparison, and a missing store returns `missing`.
    */
   protected abstract commitStoreDeletion(

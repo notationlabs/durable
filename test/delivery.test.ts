@@ -23,6 +23,7 @@ import {
   workflow,
 } from "yieldstar";
 import { withoutVersion } from "./outcome";
+import { findLiveRecord } from "@yieldstar/runtime-conformance";
 
 const logger = { info() {}, error() {}, warn() {} } as unknown as Logger;
 
@@ -133,7 +134,7 @@ test("deliver rejects when an infrastructure operation fails, and nothing is rec
     InfrastructureError
   );
   // Nothing was acknowledged: the lease is still held, and there is no outcome.
-  const record = await runtime.executions.get(executionId);
+  const record = await findLiveRecord(runtime.executions, executionId);
   expect(record?.status).toBe("running");
   expect(record?.outcome).toBeUndefined();
 });
@@ -222,7 +223,7 @@ test("a runtime call failing inside try/catch does not run the catch and is not 
     "database is locked"
   );
   expect(caught).toBe(false);
-  const record = await runtime.executions.get(executionId);
+  const record = await findLiveRecord(runtime.executions, executionId);
   expect(record?.status).toBe("running");
   expect(record?.outcome).toBeUndefined();
 });
@@ -276,7 +277,7 @@ test("an infrastructure error leaves the status unchanged and the execution is d
   await dispatcher.tick();
   await dispatcher.drain();
   // The rejection is a retry reply: the lease is released, unacknowledged.
-  const record = await runtime.executions.get(executionId);
+  const record = await findLiveRecord(runtime.executions, executionId);
   expect(record).toMatchObject({ status: "admitted", unacknowledgedDeliveryCount: 1 });
   expect(record?.outcome).toBeUndefined();
 
@@ -291,7 +292,7 @@ test("an infrastructure error leaves the status unchanged and the execution is d
   now += 1;
   await dispatcher.tick();
   await dispatcher.drain();
-  expect((await runtime.executions.get(executionId))?.outcome).toEqual({
+  expect((await findLiveRecord(runtime.executions, executionId))?.outcome).toEqual({
     status: "completed",
     result: "ok",
   });
@@ -416,7 +417,7 @@ test("direct trigger resolves once admission commits, and the dispatcher deliver
 
   dispatcher.start();
   await vi.waitFor(async () =>
-    expect((await runtime.executions.get(executionId))?.outcome).toEqual({
+    expect((await findLiveRecord(runtime.executions, executionId))?.outcome).toEqual({
       status: "completed",
       result: "delivered",
     })

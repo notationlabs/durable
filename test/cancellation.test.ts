@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { Logger } from "pino";
 import {
+  isExecutionRecord,
   DEFAULT_LEASE_DURATION,
   InfrastructureError,
   WorkflowRunner,
@@ -20,6 +21,7 @@ import {
   workflow,
 } from "yieldstar";
 import { withoutVersion } from "./outcome";
+import { liveRecord } from "@yieldstar/runtime-conformance";
 
 const isBun = "Bun" in globalThis;
 const { createSqliteDb } = isBun
@@ -356,7 +358,7 @@ describe.each(runtimes)("cancellation on $name", ({ create }) => {
 
   /** Runs one delivery under `lease` as the dispatcher would, without acknowledging it. */
   async function run(lease: ExecutionLease) {
-    const record = (await runtime.executions.get(lease.executionId))!;
+    const record = await liveRecord(runtime.executions, lease.executionId);
     return withoutVersion(
       await runner.run(
         {
@@ -382,7 +384,8 @@ describe.each(runtimes)("cancellation on $name", ({ create }) => {
     return outcome;
   }
 
-  const get = async (executionId = ORDER) => (await runtime.executions.get(executionId))!;
+  const get = async (executionId = ORDER) =>
+    await liveRecord(runtime.executions, executionId);
 
   async function readStep(stepKey = "wait", executionId = ORDER) {
     const record = await runtime.heap.readStep({ executionId, stepKey });
@@ -395,7 +398,9 @@ describe.each(runtimes)("cancellation on $name", ({ create }) => {
 
   async function childrenOf(caller: string): Promise<ExecutionRecord[]> {
     const page = await runtime.executions.list({ limit: 100 });
-    return page.executions.filter((record) => record.parent?.executionId === caller);
+    return page.executions.filter(isExecutionRecord).filter(
+      (record) => record.parent?.executionId === caller
+    );
   }
 
   async function childOf(caller: string, stepKey: string) {

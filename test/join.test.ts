@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, expectTypeOf, test, vi } from "vitest";
 import type { Logger } from "pino";
 import {
+  isExecutionRecord,
   DEFAULT_LEASE_DURATION,
   InfrastructureError,
   WORKFLOW_RESULT_STEP_KEY,
@@ -21,6 +22,7 @@ import {
 } from "yieldstar";
 import { cleanup, createTestSdk, sdkKinds } from "./observation-harness";
 import { withoutVersion } from "./outcome";
+import { findLiveRecord } from "@yieldstar/runtime-conformance";
 
 const isBun = "Bun" in globalThis;
 const { createSqliteDb } = isBun
@@ -232,7 +234,7 @@ describe.each(runtimes)("step.join and step.call on $name", ({ create }) => {
 
   /** Runs one delivery under `lease` without acknowledging it. */
   async function run(lease: ExecutionLease) {
-    const record = await runtime.executions.get(lease.executionId);
+    const record = await findLiveRecord(runtime.executions, lease.executionId);
     return withoutVersion(
       await runner.run(
         {
@@ -276,7 +278,9 @@ describe.each(runtimes)("step.join and step.call on $name", ({ create }) => {
 
   async function childOf(caller = JOINER, workflowId = "ship-order") {
     const page = await runtime.executions.list({ workflowId });
-    return page.executions.filter((record) => record.parent?.executionId === caller);
+    return page.executions.filter(isExecutionRecord).filter(
+      (record) => record.parent?.executionId === caller
+    );
   }
 
   const waiters = (target = TARGET) => runtime.joins.getWaiters(target);
@@ -783,7 +787,7 @@ describe.each(runtimes)("step.join and step.call on $name", ({ create }) => {
 
     test("an execution admitted by trigger has no parent", async () => {
       await admit(JOINER, "call-ship");
-      expect((await runtime.executions.get(JOINER))?.parent).toBeUndefined();
+      expect((await findLiveRecord(runtime.executions, JOINER))?.parent).toBeUndefined();
       const observer = createExecutionObserver(runtime.executions);
       expect(await observer.poll(JOINER)).not.toHaveProperty("parent");
     });

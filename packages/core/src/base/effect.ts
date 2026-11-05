@@ -103,6 +103,12 @@ export interface EffectClient {
 
   /** For operators: the effect, its result and any conflict reports. */
   getEffect(effectId: string): Promise<EffectRecord | undefined>;
+
+  /**
+   * Deletes every waiter the execution holds, for a pruned execution. Effect
+   * records are kept. Safe to repeat.
+   */
+  deleteWaitersForExecution(executionId: string): Promise<void>;
 }
 
 /**

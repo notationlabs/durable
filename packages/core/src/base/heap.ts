@@ -31,6 +31,13 @@ export abstract class HeapClient {
   abstract listSteps(params: { executionId: string }): Promise<HeapStep[]>;
 
   /**
+   * Deletes every attempt of every step record of a pruned execution,
+   * whatever its kind. Not fenced: a pruned execution has no lease. Safe to
+   * repeat and to run concurrently.
+   */
+  abstract deleteSteps(params: { executionId: string }): Promise<void>;
+
+  /**
    * Records one attempt of a step, fenced by `lease`. The token check and the
    * write are atomic: if the lease is not current, nothing changes and the
    * write returns `lost`. A `done` record also deletes the step's store,

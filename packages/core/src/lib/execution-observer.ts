@@ -1,5 +1,6 @@
 import type { ExecutionClient } from "../base/execution";
 import {
+  isPrunedExecutionView,
   isTerminalExecutionView,
   toExecutionView,
   type ExecutionObserver,
@@ -31,9 +32,9 @@ export type ExecutionObserverOptions = {
 
 /**
  * Observes executions through `executions`. `wait` reads the record, and then
- * reads it again every `pollInterval` until it is terminal, so it returns
- * outcomes recorded by any process sharing the backend, before or after the
- * call, and across a restart.
+ * reads it again every `pollInterval` until it is terminal or pruned, so it
+ * returns outcomes recorded by any process sharing the backend, before or
+ * after the call, and across a restart.
  */
 export function createExecutionObserver(
   executions: Pick<ExecutionClient, "get" | "list">,
@@ -76,7 +77,7 @@ export function createExecutionObserver(
           const record = await executions.get(executionId);
           if (!record) return undefined;
           const view = toExecutionView(record);
-          if (isTerminalExecutionView(view)) return view;
+          if (isTerminalExecutionView(view) || isPrunedExecutionView(view)) return view;
           const remaining = deadline - Date.now();
           if (remaining <= 0) return { status: "timed-out", execution: view };
           if (notified || signal?.aborted) continue;

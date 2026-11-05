@@ -36,7 +36,7 @@ const exec = await sdk.trigger({
 });
 ```
 
-When the server rejects the admission, `trigger` throws an `ExecutionAdmissionError` with the server's `code`: `EXECUTION_ID_CONFLICT` or `EXECUTION_REQUEST_MISMATCH` for a `409`, and `INVALID_EXECUTION_EVENT` or `IDEMPOTENT_TRIGGER_REQUIRES_ID` for a `400` (see [Local SDK](./sdk-local.md#sdktrigger)). `trigger` throws `INVALID_EXECUTION_EVENT` without sending a request when its own params or context are not durable. Any other error response, such as a middleware denial, throws an `HttpRouteError` with the response's `status`, and its `code` when the body has one.
+When the server rejects the admission, `trigger` throws an `ExecutionAdmissionError` with the server's `code`: `EXECUTION_ID_CONFLICT`, `EXECUTION_REQUEST_MISMATCH` or `EXECUTION_PRUNED` for a `409`, and `INVALID_EXECUTION_EVENT` or `IDEMPOTENT_TRIGGER_REQUIRES_ID` for a `400` (see [Local SDK](./sdk-local.md#sdktrigger)). `trigger` throws `INVALID_EXECUTION_EVENT` without sending a request when its own params or context are not durable. Any other error response, such as a middleware denial, throws an `HttpRouteError` with the response's `status`, and its `code` when the body has one.
 
 ## `exec.ack()`
 
@@ -54,7 +54,7 @@ Calls [`sdk.wait`](#sdkpoll-sdkwait-and-sdklist) without a timeout. It returns t
 const result = await exec.waitForResult();
 ```
 
-The server writes the view with the durable value codec, and the SDK reads it with the same codec, so `undefined` properties keep their keys and errors keep their shape across HTTP. If the record is `failed`, `waitForResult` throws the recorded error as its registered class, with its original `stack`, `code` and `cause`. If the record is `cancelled`, it throws a `WorkflowCancelledError` with the outcome's `reason` and `source`. For an unknown ID it throws an `HttpRouteError` with code `EXECUTION_NOT_FOUND`.
+The server writes the view with the durable value codec, and the SDK reads it with the same codec, so `undefined` properties keep their keys and errors keep their shape across HTTP. If the record is `failed`, `waitForResult` throws the recorded error as its registered class, with its original `stack`, `code` and `cause`. If the record is `cancelled`, it throws a `WorkflowCancelledError` with the outcome's `reason` and `source`. If the execution was [pruned](./retention.md), it throws an `ExecutionPrunedError` with the tombstone's `executionId`, `workflowId`, `terminalStatus` and `prunedAt`. For an unknown ID it throws an `HttpRouteError` with code `EXECUTION_NOT_FOUND`.
 
 `sdk.waitForResult({ executionId })` does the same for an execution triggered elsewhere.
 
@@ -67,6 +67,8 @@ const execution = await sdk.wait("order-abc123", { timeout: 30_000 });
 ```
 
 The server holds each `/wait` request open for at most 8 seconds by default (its `maxWait`), and then responds `timed-out`. `sdk.wait` repeats the request until the execution is terminal or your own `timeout` passes, so a `timeout` longer than 8 seconds, or no `timeout`, works as it does locally.
+
+For a [pruned](./retention.md) execution, `/poll` and `/wait` respond `200` with the pruned view. `poll` and `wait` resolve with it, and `wait` does not repeat the request.
 
 Errors map to the same results as in the local SDK where they can:
 
@@ -94,6 +96,7 @@ const result = await sdk.cancel("order-42", { reason: "abandoned" });
 | ----------------------------------- | ---------------------------------------------------- |
 | `202` with `{ status: "requested", execution }` | Resolves with that result                |
 | `200` with a terminal view          | Resolves with the view, including after a forced cancel |
+| `200` with a pruned view            | Resolves with the view. Nothing changed              |
 | `404` `EXECUTION_NOT_FOUND`         | Resolves with `undefined`                            |
 | Any other error response, such as a middleware denial | Throws an `HttpRouteError`         |
 
@@ -109,7 +112,7 @@ const result = await sdk.clearDivergence("order-42");
 
 | Server response                     | SDK result                                           |
 | ----------------------------------- | ---------------------------------------------------- |
-| `200` with `{ status: "cleared" }` or `{ status: "not-diverged" }` | Resolves with that result |
+| `200` with `{ status: "cleared" }` or `{ status: "not-diverged" }` | Resolves with that result. A pruned execution is `not-diverged` |
 | `404` `EXECUTION_NOT_FOUND`         | Resolves with `undefined`                            |
 | Any other error response, such as a middleware denial | Throws an `HttpRouteError`         |
 

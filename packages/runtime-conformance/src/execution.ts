@@ -1,4 +1,5 @@
 import {
+  isExecutionRecord,
   DEFAULT_LEASE_DURATION,
   ExecutionListRequestError,
   defineStore,
@@ -15,6 +16,7 @@ import {
   type StoreWaiter,
 } from "@yieldstar/core";
 import { describe, expect, test } from "vitest";
+import { findLiveRecord, liveRecord } from "./records";
 
 const EXECUTION_STATUSES: readonly ExecutionStatus[] = [
   "admitted",
@@ -310,7 +312,7 @@ export function registerExecutionClientConformance({
         });
         expect(conflict.status === "rejected" && typeof conflict.message).toBe("string");
 
-        const after = await runtime.executions.get("order-42");
+        const after = await findLiveRecord(runtime.executions, "order-42");
         expect(after).toEqual(before);
         expect([...after!.context.entries()]).toEqual([["tenant", "acme"]]);
         // The rejected admission did not add a second due delivery.
@@ -403,7 +405,7 @@ export function registerExecutionClientConformance({
         params.nested.a.b.c = "mutated";
         context.set("tenant", "mutated");
 
-        const record = await runtime.executions.get("event");
+        const record = await findLiveRecord(runtime.executions, "event");
         expect(record).toBeDefined();
         expect(record!.workflowId).toBe("charge-order");
         expect(record!.params).toEqual({
@@ -433,7 +435,7 @@ export function registerExecutionClientConformance({
           params: undefined,
           context: new Map(),
         });
-        const bare = await runtime.executions.get("no-params");
+        const bare = await findLiveRecord(runtime.executions, "no-params");
         expect(bare!.params).toBeUndefined();
         expect(bare!.context.size).toBe(0);
       });
@@ -455,7 +457,7 @@ export function registerExecutionClientConformance({
         expect(lease.expiresAt).toBe(clock.now + LEASE);
 
         // The worker reads the event from the record.
-        const record = await runtime.executions.get(lease.executionId);
+        const record = await findLiveRecord(runtime.executions, lease.executionId);
         expect(record).toMatchObject({
           workflowId: "charge-order",
           params: { orderId: 42 },
@@ -505,7 +507,7 @@ export function registerExecutionClientConformance({
           admittedAt: clock.now,
           updatedAt: clock.now,
         });
-        expect((await runtime.executions.get("admitted"))!.outcome).toBeUndefined();
+        expect((await liveRecord(runtime.executions, "admitted")).outcome).toBeUndefined();
         await claimOne(runtime, "admitted");
       });
     });
@@ -752,6 +754,28 @@ export function registerExecutionClientConformance({
         expect(await claimedIds(runtime)).toEqual(["consumer"]);
       });
 
+      it("wakes the executions waiting on a store that deleteStore or deleteStoreFrom deletes", async ({
+        runtime,
+      }) => {
+        for (const executionId of ["deleted", "deleted-from"]) {
+          await admitSuspended(runtime, executionId);
+          const snapshot = await runtime.stores.getStore({ definition: Store, id: executionId });
+          await runtime.stores.registerWaiter(
+            waiter(executionId, snapshot.instanceId, snapshot.version)
+          );
+        }
+        expect(await claim(runtime)).toEqual([]);
+
+        await runtime.stores.deleteStore({ definition: Store, id: "deleted" });
+        expect(await claimedIds(runtime)).toEqual(["deleted"]);
+
+        const snapshot = await runtime.stores.getStore({ definition: Store, id: "deleted-from" });
+        expect(
+          await runtime.stores.deleteStoreFrom({ definition: Store, id: "deleted-from", snapshot })
+        ).toEqual({ deleted: true });
+        expect(await claimedIds(runtime)).toEqual(["deleted-from"]);
+      });
+
       it("deletes a waiter with the write that records its step's result", async ({
         runtime,
         clock,
@@ -959,7 +983,7 @@ export function registerExecutionClientConformance({
             outcome: { status: "suspended", wakeAt: clock.now + 1_000 },
           })
         ).toEqual({ status: "suspended" });
-        const record = await runtime.executions.get("suspends");
+        const record = await findLiveRecord(runtime.executions, "suspends");
         expect(record).toMatchObject({
           status: "suspended",
           admittedAt: START,
@@ -984,7 +1008,7 @@ export function registerExecutionClientConformance({
         });
 
         await admitCompleted(runtime, "void", undefined);
-        const voidRecord = await runtime.executions.get("void");
+        const voidRecord = await findLiveRecord(runtime.executions, "void");
         expect(voidRecord!.status).toBe("completed");
         expect(voidRecord!.outcome).toEqual({ status: "completed", result: undefined });
       });
@@ -999,7 +1023,7 @@ export function registerExecutionClientConformance({
           outcome: { status: "failed", error: new PaymentDeclinedError("card declined") },
         });
         expect(acknowledged.status).toBe("failed");
-        const record = await runtime.executions.get("fails");
+        const record = await findLiveRecord(runtime.executions, "fails");
         expect(record!.status).toBe("failed");
         for (const outcome of [acknowledged, record!.outcome!]) {
           if (outcome.status !== "failed") throw new Error("expected a failed outcome");
@@ -1011,7 +1035,7 @@ export function registerExecutionClientConformance({
           expect((outcome.error as { code?: string }).code).toBe("CARD_DECLINED");
         }
         // Every later read returns the same recorded error.
-        const again = await runtime.executions.get("fails");
+        const again = await findLiveRecord(runtime.executions, "fails");
         expect(again!.outcome).toMatchObject({ status: "failed" });
         const error = (again!.outcome as { error: Error }).error;
         expect([error.name, error.message]).toEqual(["PaymentDeclinedError", "card declined"]);
@@ -1029,7 +1053,7 @@ export function registerExecutionClientConformance({
           lease,
           outcome: { status: "failed", error },
         });
-        const record = await runtime.executions.get("fails-registered");
+        const record = await findLiveRecord(runtime.executions, "fails-registered");
         for (const outcome of [acknowledged, record!.outcome!]) {
           if (outcome.status !== "failed") throw new Error("expected a failed outcome");
           expect(outcome.error).toBeInstanceOf(GatewayTimeoutError);
@@ -1058,7 +1082,7 @@ export function registerExecutionClientConformance({
           tagged: { $type: "error", name: "E", message: "m" },
         };
         await admitCompleted(runtime, "completes-tagged", result);
-        const outcome = (await runtime.executions.get("completes-tagged"))!.outcome!;
+        const outcome = (await liveRecord(runtime.executions, "completes-tagged")).outcome!;
         if (outcome.status !== "completed") throw new Error("expected completed");
         const recorded = outcome.result as typeof result;
         expect(recorded).toEqual(result);
@@ -1076,7 +1100,7 @@ export function registerExecutionClientConformance({
           lease,
           outcome: { status: "completed", result: { point: new Point(1) } },
         });
-        const record = await runtime.executions.get("invalid-result");
+        const record = await findLiveRecord(runtime.executions, "invalid-result");
         expect(record!.status).toBe("failed");
         for (const outcome of [acknowledged, record!.outcome!]) {
           expect(outcome).toMatchObject({
@@ -1144,7 +1168,7 @@ export function registerExecutionClientConformance({
         advance,
       }) => {
         await admitSuspended(runtime, "infra");
-        const before = await runtime.executions.get("infra");
+        const before = await findLiveRecord(runtime.executions, "infra");
         await runtime.executions.requestWake({ executionId: "infra", wakeAt: clock.now });
         await claimOne(runtime, "infra");
         // deliver() rejected: the dispatcher does not acknowledge.
@@ -1153,7 +1177,7 @@ export function registerExecutionClientConformance({
           status: "suspended",
           updatedAt: before!.updatedAt,
         });
-        expect((await runtime.executions.get("infra"))!.outcome).toBeUndefined();
+        expect((await liveRecord(runtime.executions, "infra")).outcome).toBeUndefined();
         await claimOne(runtime, "infra");
       });
     });
@@ -1367,14 +1391,14 @@ export function registerExecutionClientConformance({
         advance,
       }) => {
         await admitSuspended(runtime, "released");
-        const before = await runtime.executions.get("released");
+        const before = await findLiveRecord(runtime.executions, "released");
         await runtime.executions.requestWake({ executionId: "released", wakeAt: START });
         const first = await claimOne(runtime, "released");
         expect(await runtime.executions.release({ lease: first })).toEqual({
           status: "released",
         });
         // Releasing acknowledges nothing: the status and outcome are unchanged.
-        const released = await runtime.executions.get("released");
+        const released = await findLiveRecord(runtime.executions, "released");
         expect(released).toMatchObject({ status: "suspended", unacknowledgedDeliveryCount: 1 });
         expect(released!.outcome).toBeUndefined();
         expect(released!.updatedAt).toBe(before!.updatedAt);
@@ -1937,7 +1961,7 @@ export function registerExecutionClientConformance({
             params: { orderId: 42, note: undefined },
           })
         );
-        const withUndefined = (await runtime.executions.get(undefinedParams))!.params!;
+        const withUndefined = (await liveRecord(runtime.executions, undefinedParams)).params!;
         expect(withUndefined).toEqual({ orderId: 42, note: undefined });
         expect(Object.keys(withUndefined)).toContain("note");
 
@@ -1946,7 +1970,7 @@ export function registerExecutionClientConformance({
 
         // Without params, the target is admitted with none.
         const bare = acceptedId(await startFrom(runtime, "caller", "bare", { params: undefined }));
-        expect((await runtime.executions.get(bare))!.params).toBeUndefined();
+        expect((await liveRecord(runtime.executions, bare)).params).toBeUndefined();
       });
 
       it("admits the target with the caller's context", async ({ runtime }) => {
@@ -1961,7 +1985,7 @@ export function registerExecutionClientConformance({
           ]),
         });
         const targetId = acceptedId(await startFrom(runtime, "caller", "ship"));
-        const target = await runtime.executions.get(targetId);
+        const target = await findLiveRecord(runtime.executions, targetId);
         expect([...target!.context.entries()]).toEqual([
           ["tenant", "acme"],
           ["7", { roles: ["admin"] }],
@@ -1992,7 +2016,7 @@ export function registerExecutionClientConformance({
           } as typeof request)
         ).toEqual({ status: "accepted", executionId: first });
         expect(
-          [...(await runtime.executions.get(first))!.context.entries()]
+          [...(await liveRecord(runtime.executions, first)).context.entries()]
         ).toEqual([["tenant", "acme"]]);
       });
 
@@ -2141,7 +2165,7 @@ export function registerExecutionClientConformance({
       }) => {
         await admitSuspended(runtime, "caller");
         const first = acceptedId(await startFrom(runtime, "caller", "ship"));
-        const record = await runtime.executions.get(first);
+        const record = await findLiveRecord(runtime.executions, first);
 
         const restarted = await restart();
         expect(await restarted.executions.get(first)).toEqual(record);
@@ -2213,7 +2237,7 @@ export function registerExecutionClientConformance({
           })
         ).toEqual({ status: "existing", executionId: "order-42" });
         expect(
-          [...(await runtime.executions.get("order-42"))!.context.entries()]
+          [...(await liveRecord(runtime.executions, "order-42")).context.entries()]
         ).toEqual([["token", "first"]]);
       });
 
@@ -2473,7 +2497,7 @@ export function registerExecutionClientConformance({
         clock.now += 3_600_000;
         await admit(runtime, "third");
 
-        const records = (await runtime.executions.list()).executions;
+        const records = (await runtime.executions.list()).executions.filter(isExecutionRecord);
         expect(records.map((record) => record.executionId)).toEqual([
           "third",
           "second",
@@ -2706,7 +2730,7 @@ export function registerExecutionClientConformance({
           )
         ).toEqual(records);
         expect(
-          [...(await restarted.executions.get("admitted"))!.context.entries()]
+          [...(await liveRecord(restarted.executions, "admitted")).context.entries()]
         ).toEqual([["tenant", "acme"]]);
 
         // Restarting does not lose a lease: the in-flight delivery's execution

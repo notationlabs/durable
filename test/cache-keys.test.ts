@@ -4,6 +4,7 @@ import { ExecutionDispatcher, WorkflowRunner, type WorkflowRouter } from "@yield
 import { createWorkflowInvoker } from "@yieldstar/test-invoker";
 import { MemoryRuntime } from "@yieldstar/test-runtime";
 import { createLocalSdk, createWorkflow } from "yieldstar";
+import { findLiveRecord } from "@yieldstar/runtime-conformance";
 
 const logger = { info() {}, error() {}, warn() {} } as unknown as Logger;
 const dispatchers: ExecutionDispatcher[] = [];
@@ -31,7 +32,7 @@ function start(router: WorkflowRouter) {
 /** Waits until the execution is parked with a divergence, and returns it. */
 async function divergence(runtime: MemoryRuntime, executionId: string) {
   return vi.waitFor(async () => {
-    const record = await runtime.executions.get(executionId);
+    const record = await findLiveRecord(runtime.executions, executionId);
     if (!record?.divergence) throw new Error("not diverged yet");
     return record.divergence;
   });

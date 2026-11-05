@@ -59,7 +59,7 @@ Execution views carry `cancellation` too, so `poll`, `wait` and `list` show it. 
 | Absent        | The request is recorded, and the workflow has not received it yet    |
 | Present       | The workflow has received `WorkflowCancelledError` and is cleaning up |
 
-The request stays on the record whatever the outcome.
+The request stays on the record whatever the outcome, until a [retention policy](./retention.md) prunes the execution.
 
 ## Where the workflow receives it
 
@@ -201,6 +201,7 @@ A forced cancel after a graceful one is accepted. It keeps the first `reason`, a
 
 - A repeated request keeps the first `reason` and `source`.
 - Cancelling a terminal execution, including one that is already `cancelled`, changes nothing and returns its terminal view.
+- Cancelling a [pruned](./retention.md) execution changes nothing and returns its pruned view.
 - Cancelling an unknown execution ID returns `undefined`.
 - A graceful request makes the execution due now, but the [redelivery delay](./workflows.md#execution-records) still applies to an execution whose earlier deliveries ended without an outcome.
 - A graceful request on a [diverged](./replay-stability.md#divergence) execution is recorded but not delivered, because no delivery runs while the divergence is set. Force-cancel the execution, or clear the divergence after deploying code that matches its history. A forced cancel records `cancelled` and removes the divergence.

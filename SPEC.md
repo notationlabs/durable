@@ -440,7 +440,7 @@ Convergence: crash after store commit but before heap write → replay cache-mis
 
 Unmatched take outcomes are NOT recorded. An unmatched take commits nothing, registers a waiter, and suspends – it must remain free to re-evaluate the selector on every wake. Only committed (matched) outcomes enter the ledger.
 
-Ledger retention: ledger rows share the lifecycle of workflow execution retention. When executions are pruned, their ledger rows become unreachable (a replayed `stepId` requires a live execution) and can be deleted with them. Retention machinery is deferred to the execution-retention feature; no separate GC is built for the ledger.
+Ledger retention: ledger rows share the lifecycle of workflow execution retention. A runtime with a retention policy prunes a terminal execution once its period has passed. Its ledger rows are then unreachable, because a replayed `stepId` requires a live execution, so the cleanup of the pruned execution deletes them with `StoreClient.deleteExecutionData`, together with the store waiters the execution holds. A stale lease holder could still replay a `stepId` of the pruned execution, because store commits are not fenced by the lease. The store client therefore rejects, in the commit's own atomic write, any commit whose `stepId` names a pruned execution, so the step is never applied again. No separate GC is built for the ledger. Without a retention policy, ledger rows are kept forever.
 
 ## External Runtime API
 
@@ -494,12 +494,14 @@ Lifecycle is implicit:
 ```text
 No id provided:
   store id = executionId
-  lifecycle may be tied to workflow execution retention
+  deleted when the execution is pruned, only if its policy sets pruneExecutionStores
 
 id provided:
   store id = params.id
   lifecycle is independent and app-managed
 ```
+
+An execution-local store is kept when its execution is pruned, unless the execution's retention policy sets `pruneExecutionStores`. Store identity is not scoped to an execution: an `id` equal to the execution ID is only a default, and other executions and external code may read the store by that ID. With `pruneExecutionStores`, `StoreClient.deleteExecutionData` deletes every store whose `id` equals the execution ID, under any definition name, with its waiters. In the same write it requests a wake for every other execution that waited on those stores, so none stays suspended on a deleted store. Stores with an explicit `id` are never pruned.
 
 ## Example Agent
 

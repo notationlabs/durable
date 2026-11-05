@@ -1,8 +1,27 @@
 export type { HeapClient, HeapRecord, HeapStep } from "./base/heap";
 export type { DeliveryOptions, WorkflowInvoker } from "./base/invoker";
 export { WorkerExitedError } from "./base/invoker";
-export type { RuntimeOptions } from "./base/runtime";
+export type { PruneFailure, PruneResult, RuntimeOptions } from "./base/runtime";
 export { Runtime } from "./base/runtime";
+export type {
+  ExecutionTombstone,
+  PrunedExecutionRecord,
+  RetentionOptions,
+  RetentionPolicy,
+} from "./base/retention";
+export {
+  DEFAULT_PRUNE_BATCH_SIZE,
+  ExecutionPrunedError,
+  isExecutionRecord,
+  isPrunedExecution,
+} from "./base/retention";
+export {
+  DEFAULT_PRUNE_INTERVAL,
+  isExecutionExpired,
+  prunesExecutionStores,
+  retentionPolicyFor,
+  validateRetentionOptions,
+} from "./lib/retention";
 export type {
   JoinClient,
   JoinResult,
@@ -114,6 +133,7 @@ export type {
   CancellationRequest,
   ExecutionCancellationState,
   ExecutionDivergenceState,
+  ExecutionPruneState,
   ExecutionState,
   PreparedExecutionStart,
   StartRequestState,
@@ -128,6 +148,7 @@ export {
   claimExecution,
   clearExecutionDivergence,
   createExecutionState,
+  assertStartCaller,
   createStartedExecution,
   decodeExecutionEvent,
   decodeExecutionOutcome,
@@ -136,6 +157,7 @@ export {
   executionIdConflict,
   executionNotFound,
   executionStatusAt,
+  finishExecutionPrune,
   matchExecutionAdmission,
   isExecutionClaimable,
   isLeaseCurrent,
@@ -146,6 +168,7 @@ export {
   prepareExecutionCancel,
   prepareExecutionStart,
   propagatedCancellation,
+  pruneExecution,
   recordWorkflowVersion,
   redeliveryDelay,
   releaseExecutionLease,
@@ -155,6 +178,8 @@ export {
   toExecutionCancellation,
   toExecutionDivergence,
   toExecutionRecord,
+  toExecutionRecordOrTombstone,
+  toPrunedExecutionRecord,
   unacknowledgedDeliveryCountAt,
 } from "./lib/execution-state";
 export {
@@ -183,10 +208,16 @@ export type {
   ExecutionView,
   ExecutionViewPage,
   ExecutionWaitOptions,
+  PrunedExecutionView,
   TerminalExecutionView,
   WaitResult,
 } from "./base/observation";
-export { isTerminalExecutionView, toExecutionView } from "./base/observation";
+export {
+  isPrunedExecutionView,
+  isTerminalExecutionView,
+  toExecutionView,
+  toPrunedExecutionView,
+} from "./base/observation";
 export type {
   ExecutionNotifier,
   ExecutionObserverOptions,
@@ -239,6 +270,7 @@ export {
   encodeStoreValue,
   diffStorePaths,
   isStoreSelectorMatch,
+  prunedStoreStepError,
   storePathsIntersect,
   trackStoreSelector,
   trackStoreUpdater,

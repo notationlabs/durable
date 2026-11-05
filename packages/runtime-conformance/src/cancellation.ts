@@ -9,6 +9,7 @@ import {
   type StoreWaiter,
 } from "@yieldstar/core";
 import { describe, expect, test } from "vitest";
+import { findLiveRecord, liveRecord } from "./records";
 
 export type CancellationConformanceHarnessOptions = {
   /** The suite's clock. Construct the runtime with it. */
@@ -213,7 +214,7 @@ export function registerCancellationClientConformance({
   }
 
   async function cancellationOf(runtime: Runtime, executionId: string) {
-    return (await runtime.executions.get(executionId))?.cancellation;
+    return (await findLiveRecord(runtime.executions, executionId))?.cancellation;
   }
 
   function cancel(runtime: Runtime, request: ExecutionCancelRequest) {
@@ -304,7 +305,7 @@ export function registerCancellationClientConformance({
         expect(await cancel(peer, { executionId: "order-42", reason: "abandoned" })).toEqual({
           status: "requested",
         });
-        const record = await runtime.executions.get("order-42");
+        const record = await findLiveRecord(runtime.executions, "order-42");
         expect(record).toMatchObject({ status: "suspended", updatedAt: clock.now });
         expect(record!.cancellation).toEqual({
           reason: "abandoned",
@@ -456,7 +457,7 @@ export function registerCancellationClientConformance({
         expect(
           await cancel(peer, { executionId: "order-42", reason: "stuck", force: true })
         ).toEqual({ status: "cancelled", reason: "stuck" });
-        const record = await runtime.executions.get("order-42");
+        const record = await findLiveRecord(runtime.executions, "order-42");
         expect(record).toMatchObject({
           status: "cancelled",
           outcome: { status: "cancelled", reason: "stuck" },
@@ -523,7 +524,7 @@ export function registerCancellationClientConformance({
         expect(
           await cancel(runtime, { executionId: "order-42", reason: "stuck", force: true })
         ).toEqual({ status: "cancelled", reason: "abandoned" });
-        const record = await runtime.executions.get("order-42");
+        const record = await findLiveRecord(runtime.executions, "order-42");
         expect(record).toMatchObject({ status: "cancelled", updatedAt: clock.now });
         expect(record!.cancellation).toEqual({
           reason: "abandoned",
@@ -643,7 +644,7 @@ export function registerCancellationClientConformance({
 
         await cancel(runtime, { executionId: "order-42", reason: "stuck", force: true });
         for (const descendant of [child, grandchild]) {
-          const record = await runtime.executions.get(descendant);
+          const record = await findLiveRecord(runtime.executions, descendant);
           expect(record).toMatchObject({
             status: "cancelled",
             outcome: { status: "cancelled", reason: "stuck", source: "order-42" },
@@ -695,12 +696,12 @@ export function registerCancellationClientConformance({
         });
         const underReceipt = await startChild(runtime, receipt, "start:email");
 
-        expect((await peer.executions.get(receipt))!.parent).toEqual({
+        expect((await liveRecord(peer.executions, receipt)).parent).toEqual({
           executionId: "order-42",
           stepKey: "start:receipt",
           detached: true,
         });
-        expect((await peer.executions.get(attached))!.parent).toEqual({
+        expect((await liveRecord(peer.executions, attached)).parent).toEqual({
           executionId: "order-42",
           stepKey: "start:fulfil",
           detached: false,
@@ -1167,9 +1168,9 @@ export function registerCancellationClientConformance({
         });
         await suspend(runtime, holder);
         const before = {
-          order: await runtime.executions.get("order-42"),
-          child: await runtime.executions.get(child),
-          receipt: await runtime.executions.get(receipt),
+          order: await findLiveRecord(runtime.executions, "order-42"),
+          child: await findLiveRecord(runtime.executions, child),
+          receipt: await findLiveRecord(runtime.executions, receipt),
         };
 
         const restarted = await restart();

@@ -9,6 +9,7 @@ import {
   type WorkflowRunOutcome,
 } from "@yieldstar/core";
 import { describe, expect, test } from "vitest";
+import { findLiveRecord } from "./records";
 
 export type ReplayStabilityConformanceHarnessOptions = {
   /** The suite's clock. Construct the runtime with it. */
@@ -184,11 +185,11 @@ export function registerReplayStabilityClientConformance({
   }
 
   async function versionOf(runtime: Runtime, executionId: string) {
-    return (await runtime.executions.get(executionId))?.workflowVersion;
+    return (await findLiveRecord(runtime.executions, executionId))?.workflowVersion;
   }
 
   async function divergenceOf(runtime: Runtime, executionId: string) {
-    return (await runtime.executions.get(executionId))?.divergence;
+    return (await findLiveRecord(runtime.executions, executionId))?.divergence;
   }
 
   async function listIds(runtime: Runtime, request: ExecutionListRequest) {
@@ -431,7 +432,7 @@ export function registerReplayStabilityClientConformance({
           })
         ).toEqual({ status: "diverged" });
 
-        const record = await peer.executions.get("order-42");
+        const record = await findLiveRecord(peer.executions, "order-42");
         expect(record).toMatchObject({
           status: "suspended",
           updatedAt: clock.now,
@@ -469,7 +470,7 @@ export function registerReplayStabilityClientConformance({
             code: "STEP_SCHEMA_CHANGED",
           })
         ).toEqual({ status: "diverged" });
-        const record = await runtime.executions.get("order-42");
+        const record = await findLiveRecord(runtime.executions, "order-42");
         expect(record).toMatchObject({ status: "admitted" });
         expect(record).not.toHaveProperty("workflowVersion");
         expect(record!.divergence).toEqual({

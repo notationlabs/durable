@@ -23,6 +23,7 @@ export const manual: DocCategory = {
         { label: "Retries", slug: "manual/retries" },
         { label: "Cancellation", slug: "manual/cancellation" },
         { label: "Replay Stability", slug: "manual/replay-stability" },
+        { label: "Execution Retention", slug: "manual/retention" },
       ],
     },
     {

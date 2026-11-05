@@ -13,7 +13,10 @@ import {
   WorkflowCancelledError,
   isTerminalExecutionStatus,
 } from "../base/execution";
+import { isPrunedExecution } from "../base/retention";
 import { DEFAULT_LEASE_DURATION } from "./execution-state";
+import { DEFAULT_PRUNE_BATCH_SIZE } from "../base/retention";
+import { DEFAULT_PRUNE_INTERVAL } from "./retention";
 
 export const DEFAULT_DISPATCHER_CONCURRENCY = 10;
 
@@ -54,6 +57,14 @@ export interface DispatcherOptions {
    * @default every execution whose due time has passed
    */
   filter?: ExecutionClaimFilter;
+  /**
+   * Milliseconds between pruning runs when the runtime has a `retain`
+   * policy. Each run repeats `Runtime.prune` while passes find a full batch.
+   * The first run starts with the dispatcher. Without `retain`, the
+   * dispatcher does not prune.
+   * @default 60_000
+   */
+  pruneInterval?: number;
 }
 
 /**
@@ -76,6 +87,9 @@ export interface DispatcherOptions {
  *   execution is delivered again after the redelivery delay.
  * - If reading the record, acknowledging or releasing throws, the lease is
  *   left to expire rather than released.
+ * - When the runtime has a `retain` policy, it runs a pruning pass every
+ *   `pruneInterval`. A pass that throws is logged, and the next one finishes
+ *   its work.
  */
 export class ExecutionDispatcher {
   private runtime: Runtime;
@@ -88,6 +102,9 @@ export class ExecutionDispatcher {
   private renewInterval: number;
   private abortGracePeriod: number;
   private filter: ExecutionClaimFilter | undefined;
+  private pruneInterval: number;
+  private pruneTimer: ReturnType<typeof setTimeout> | undefined;
+  private pruning: Promise<void> | undefined;
   private running = false;
   private looping = false;
   private timer: ReturnType<typeof setTimeout> | undefined;
@@ -106,6 +123,10 @@ export class ExecutionDispatcher {
     this.renewInterval = options.renewInterval ?? this.leaseDuration / 3;
     this.abortGracePeriod = options.abortGracePeriod ?? DEFAULT_ABORT_GRACE_PERIOD;
     this.filter = options.filter;
+    this.pruneInterval = options.pruneInterval ?? DEFAULT_PRUNE_INTERVAL;
+    if (!(this.pruneInterval > 0 && Number.isFinite(this.pruneInterval))) {
+      throw new RangeError("pruneInterval must be a positive finite number");
+    }
     if (!Number.isInteger(this.concurrency) || this.concurrency < 1) {
       throw new RangeError("concurrency must be a positive integer");
     }
@@ -127,14 +148,46 @@ export class ExecutionDispatcher {
     if (this.running) return;
     this.running = true;
     void this.loop();
+    if (this.runtime.retain && !this.pruneTimer && !this.pruning) this.schedulePrune(0);
   }
 
-  /** Stops claiming and waits for in-flight deliveries to settle. */
+  /** Stops claiming and pruning, and waits for in-flight work to settle. */
   async stop() {
     this.running = false;
     if (this.timer) clearTimeout(this.timer);
     this.timer = undefined;
+    if (this.pruneTimer) clearTimeout(this.pruneTimer);
+    this.pruneTimer = undefined;
+    await this.pruning;
     await this.drain();
+  }
+
+  private schedulePrune(delay: number) {
+    this.pruneTimer = setTimeout(() => {
+      this.pruneTimer = undefined;
+      this.pruning = this.prune().finally(() => {
+        this.pruning = undefined;
+        if (this.running && !this.pruneTimer) this.schedulePrune(this.pruneInterval);
+      });
+    }, delay);
+    if (!this.keepAlive) this.pruneTimer.unref?.();
+  }
+
+  /** Runs pruning passes until one finds less than a full batch of work. */
+  private async prune() {
+    try {
+      while (this.running) {
+        const { pruned, cleaned, errors } = await this.runtime.prune({
+          limit: DEFAULT_PRUNE_BATCH_SIZE,
+        });
+        for (const { executionId, error } of errors) {
+          this.logger.error({ err: error, executionId }, "Failed to clean up a pruned execution");
+        }
+        if (pruned < DEFAULT_PRUNE_BATCH_SIZE && cleaned < DEFAULT_PRUNE_BATCH_SIZE) return;
+      }
+    } catch (err) {
+      this.logger.error({ err }, "Failed to prune executions");
+    }
   }
 
   get activeDeliveries() {
@@ -215,6 +268,8 @@ export class ExecutionDispatcher {
         this.logger.error({ executionId }, "Claimed execution has no record");
         return;
       }
+      // A tombstone is never due; a pruned record has no outcome to return.
+      if (isPrunedExecution(record)) return;
 
       // A finished execution never runs again: return its recorded outcome.
       // Reaching a terminal status ends the lease, so no lease is current

@@ -24,6 +24,7 @@ import {
   type WorkflowEvent,
   type WorkflowFn,
 } from "yieldstar";
+import { findLiveRecord } from "@yieldstar/runtime-conformance";
 
 type Step = Parameters<WorkflowFn<any, any, any>>[0];
 type Observation = { value: unknown } | { thrown: unknown };
@@ -857,7 +858,7 @@ describe("HTTP transport", () => {
       expect(response.status).toBe(202);
       const { executionId } = (await response.json()) as { executionId: string };
       await vi.waitFor(async () =>
-        expect((await runtime.executions.get(executionId))?.outcome).toEqual({
+        expect((await findLiveRecord(runtime.executions, executionId))?.outcome).toEqual({
           status: "completed",
           result: { params: { n: 1 }, tenant: "t" },
         })

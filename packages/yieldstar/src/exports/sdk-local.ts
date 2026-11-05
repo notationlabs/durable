@@ -19,6 +19,7 @@ import type {
 } from "@yieldstar/core";
 import {
   ExecutionAdmissionError,
+  ExecutionPrunedError,
   WorkflowCancelledError,
   createExecutionControl,
   createExecutionObserver,
@@ -55,8 +56,9 @@ export function createLocalSdk<W extends WorkflowRouter>(
      * `idempotent: true`, a repeat of the same request resolves with
      * `status: "existing"` and admits nothing.
      * @throws {ExecutionAdmissionError} when the ID is in use (in idempotent
-     * mode, by a different request), an idempotent trigger has no ID, or the
-     * event cannot be stored without loss
+     * mode, by a different request), an idempotent trigger names a pruned
+     * execution (`EXECUTION_PRUNED`) or has no ID, or the event cannot be
+     * stored without loss
      */
     async trigger<K extends string & keyof W>(
       event: TriggerEvent<K, EventParamsOf<W[K]>>
@@ -80,6 +82,8 @@ export function createLocalSdk<W extends WorkflowRouter>(
      * recorded error.
      * @throws {WorkflowCancelledError} with the outcome's `reason` and
      * `source` when the execution ends `cancelled`
+     * @throws {ExecutionPrunedError} with the tombstone's fields when the
+     * execution was pruned before the wait read it
      */
     async triggerAndWait<K extends string & keyof W>(
       event: TriggerEvent<K, EventParamsOf<W[K]>>
@@ -93,13 +97,17 @@ export function createLocalSdk<W extends WorkflowRouter>(
       if (result.status === "cancelled") {
         throw new WorkflowCancelledError({ reason: result.reason, source: result.source });
       }
+      if (result.status === "pruned") throw new ExecutionPrunedError(result);
       if (result.status === "timed-out") {
         throw new Error(`Execution "${executionId}" is still ${result.execution.status}`);
       }
       return result.result as WorkflowGeneratorReturnType<W[K]>;
     },
 
-    /** The current view of an execution, or `undefined` if none exists. */
+    /**
+     * The current view of an execution, the pruned view of a pruned
+     * execution, or `undefined` if none exists.
+     */
     poll(executionId: string): Promise<ExecutionView | undefined> {
       return observer.poll(executionId);
     },
@@ -107,7 +115,8 @@ export function createLocalSdk<W extends WorkflowRouter>(
     /**
      * Reads the execution record, and then waits for a terminal outcome.
      * Resolves with `timed-out` and the current view when `timeout` passes
-     * first, and with `undefined` at once for an unknown ID.
+     * first, at once with the pruned view of a pruned execution, and with
+     * `undefined` at once for an unknown ID.
      * @throws {RangeError} for a negative timeout
      */
     wait(
@@ -118,7 +127,8 @@ export function createLocalSdk<W extends WorkflowRouter>(
     },
 
     /**
-     * Pages through executions, newest first by admission.
+     * Pages through executions, newest first by admission. Pruned
+     * executions are left out unless `status` is `pruned`.
      * @throws {ExecutionListRequestError} for an invalid limit, status or cursor
      */
     list(request?: ExecutionListRequest): Promise<ExecutionViewPage> {
@@ -129,7 +139,8 @@ export function createLocalSdk<W extends WorkflowRouter>(
      * Records a cancellation request and returns without waiting for the
      * workflow to stop. Resolves with `requested` and the current view, with
      * the terminal view when the execution is terminal (including after a
-     * forced cancel), and with `undefined` for an unknown ID.
+     * forced cancel), with the pruned view of a pruned execution, which is
+     * not changed, and with `undefined` for an unknown ID.
      * @throws {ExecutionCancelRequestError} for an empty ID, or a `reason` or
      * `force` of the wrong type
      */
@@ -140,7 +151,8 @@ export function createLocalSdk<W extends WorkflowRouter>(
     /**
      * Removes a diverged execution's `divergence` and makes it due now, so
      * the next delivery replays it on the code deployed by then. Resolves
-     * with `not-diverged` when there is nothing to clear, and with
+     * with `not-diverged` when there is nothing to clear, including for a
+     * pruned execution, and with
      * `undefined` for an unknown ID.
      * @throws {TypeError} for an empty ID
      */

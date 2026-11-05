@@ -8,6 +8,7 @@ import {
   CasStoreClient,
   decodeStoreValue,
   encodeStoreValue,
+  prunedStoreStepError,
   storePathsIntersect,
   type StandardSchemaV1,
   type StoreDefinition,
@@ -110,6 +111,7 @@ export class SqliteStoreClient extends CasStoreClient {
   ): Promise<StoreMutationCommitResult> {
     return runTransaction(this.db, (): StoreMutationCommitResult => {
       if (mutation.stepId) {
+        this.rejectPrunedStep(mutation.stepId);
         const applied = this.getAppliedStepRow({
           storeName: mutation.definition.name,
           storeId: mutation.id,
@@ -213,7 +215,7 @@ export class SqliteStoreClient extends CasStoreClient {
           $storeName: params.definition.name,
           $storeId: params.id,
         });
-      this.storeWaitersDao.deleteStoreWaiters(params.definition.name, params.id);
+      this.wakeAndDeleteStoreWaiters(params.definition.name, params.id);
     });
   }
 
@@ -222,6 +224,7 @@ export class SqliteStoreClient extends CasStoreClient {
   ): Promise<StoreMutationCommitResult> {
     return runTransaction(this.db, (): StoreMutationCommitResult => {
       if (deletion.stepId) {
+        this.rejectPrunedStep(deletion.stepId);
         const applied = this.getAppliedStepRow({
           storeName: deletion.definition.name,
           storeId: deletion.id,
@@ -244,7 +247,7 @@ export class SqliteStoreClient extends CasStoreClient {
         return { status: "conflict", snapshot: toSnapshot(row) };
       }
 
-      this.storeWaitersDao.deleteStoreWaiters(deletion.definition.name, deletion.id);
+      this.wakeAndDeleteStoreWaiters(deletion.definition.name, deletion.id);
       this.db
         .query(`DELETE FROM stores WHERE instance_id = $instanceId`)
         .run({ $instanceId: row.instance_id });
@@ -257,6 +260,31 @@ export class SqliteStoreClient extends CasStoreClient {
         });
       }
       return { status: "committed" };
+    });
+  }
+
+  async deleteExecutionData(params: {
+    executionId: string;
+    deleteExecutionStore: boolean;
+  }): Promise<void> {
+    const { executionId } = params;
+    runTransaction(this.db, () => {
+      this.db
+        .query(`DELETE FROM store_applied_steps WHERE execution_id = $executionId`)
+        .run({ $executionId: executionId });
+      this.storeWaitersDao.deleteExecutionWaiters(executionId);
+      if (!params.deleteExecutionStore) return;
+      // Wake the other executions waiting on the deleted stores, so they
+      // replay instead of staying suspended on a store that is gone.
+      for (const row of this.storeWaitersDao.getStoreIdWaiters(executionId)) {
+        if (row.execution_id !== executionId) {
+          this.executions.wakeInTransaction(row.execution_id);
+        }
+      }
+      this.storeWaitersDao.deleteStoreIdWaiters(executionId);
+      this.db
+        .query(`DELETE FROM stores WHERE store_id = $storeId`)
+        .run({ $storeId: executionId });
     });
   }
 
@@ -280,6 +308,23 @@ export class SqliteStoreClient extends CasStoreClient {
     });
   }
 
+  private rejectPrunedStep(stepId: StoreStepId) {
+    if (this.executions.isPrunedInTransaction(stepId.executionId)) {
+      throw prunedStoreStepError(stepId);
+    }
+  }
+
+  /**
+   * For a store that is being deleted, so its waiters replay instead of
+   * staying suspended. The caller holds the transaction.
+   */
+  private wakeAndDeleteStoreWaiters(storeName: string, storeId: string) {
+    for (const row of this.storeWaitersDao.getStoreWaiters(storeName, storeId)) {
+      this.executions.wakeInTransaction(row.execution_id);
+    }
+    this.storeWaitersDao.deleteStoreWaiters(storeName, storeId);
+  }
+
   private setupDb() {
     this.createStoresTable();
 
@@ -292,6 +337,9 @@ export class SqliteStoreClient extends CasStoreClient {
         result TEXT NOT NULL,
         PRIMARY KEY (store_name, store_id, execution_id, step_key)
       );
+      CREATE INDEX IF NOT EXISTS idx_store_applied_steps_execution
+      ON store_applied_steps(execution_id);
+      CREATE INDEX IF NOT EXISTS idx_stores_store_id ON stores(store_id);
     `);
   }
 
