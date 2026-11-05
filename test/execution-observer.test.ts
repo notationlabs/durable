@@ -2,6 +2,7 @@ import { EventEmitter } from "node:events";
 import { afterEach, describe, expect, test } from "vitest";
 import { ExecutionListRequestError, createExecutionObserver } from "@yieldstar/core";
 import { MemoryRuntime } from "@yieldstar/test-runtime";
+import { createLocalSdk } from "yieldstar";
 import {
   LEASE,
   admit,
@@ -232,4 +233,13 @@ test("aborting a wait's signal stops its reads and rejects with the signal's rea
   reads = 0;
   await expect(observer.wait("slow", { signal: controller.signal })).rejects.toBe(reason);
   expect(reads).toBe(0);
+});
+
+test("the observer and the local SDK reject a pollInterval that is not greater than zero", () => {
+  const runtime = new MemoryRuntime();
+  for (const pollInterval of [-1, 0, NaN]) {
+    const error = new RangeError("pollInterval must be a positive number of milliseconds");
+    expect(() => createExecutionObserver(runtime.executions, { pollInterval })).toThrow(error);
+    expect(() => createLocalSdk(runtime, { pollInterval })).toThrow(error);
+  }
 });

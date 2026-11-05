@@ -22,7 +22,8 @@ export type ExecutionNotifier = {
 
 export type ExecutionObserverOptions = {
   /**
-   * How often `wait` reads the record, in milliseconds.
+   * How often `wait` reads the record, in milliseconds. It must be greater
+   * than zero.
    * @default 25
    */
   pollInterval?: number;
@@ -41,7 +42,9 @@ export function createExecutionObserver(
   options: ExecutionObserverOptions = {}
 ): ExecutionObserver {
   const pollInterval = options.pollInterval ?? DEFAULT_OBSERVER_POLL_INTERVAL;
-  assertDuration("pollInterval", pollInterval);
+  if (!isDuration(pollInterval) || pollInterval === 0) {
+    throw new RangeError("pollInterval must be a positive number of milliseconds");
+  }
 
   return {
     async poll(executionId) {

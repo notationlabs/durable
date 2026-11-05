@@ -165,8 +165,8 @@ Options:
 - `logger`: A Pino logger instance
 - `middleware`: Optional array of middleware functions for `/trigger`
 - `observationMiddleware`: Optional array of functions that allow or deny `/poll`, `/wait`, `/list` and `/events` requests
-- `pollInterval`: Optional. How often each open `/wait` and `/events` request reads the record, in milliseconds. Defaults to 25. Each open request reads on its own, so many concurrent waits multiply the reads of the backend
-- `maxWait`: Optional. The longest the server holds a `/wait` request open, in milliseconds. Defaults to 8000
+- `pollInterval`: Optional. How often each open `/wait` and `/events` request reads the record, in milliseconds. Defaults to 25. It must be greater than zero. Each open request reads on its own, so many concurrent waits multiply the reads of the backend
+- `maxWait`: Optional. The longest the server holds a `/wait` request open, in milliseconds. Defaults to 8000. It must be greater than zero
 - `basePath`: Optional path to mount the routes on
 
 Responses:

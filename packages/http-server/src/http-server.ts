@@ -382,7 +382,7 @@ export function createRoutes(params: {
   observationMiddleware?: ObservationMiddlewareFunction[];
   /**
    * How often each open `/wait` and `/events` request reads the record, in
-   * milliseconds.
+   * milliseconds. It must be greater than zero.
    * @default 25
    */
   pollInterval?: number;
@@ -390,7 +390,7 @@ export function createRoutes(params: {
    * The longest the server holds a `/wait` request open, in milliseconds. A
    * request that reaches it responds `timed-out`, and the HTTP SDK repeats
    * it. Keep it below the server's idle timeout (10 seconds by default in
-   * Bun).
+   * Bun). It must be greater than zero.
    * @default 8000
    */
   maxWait?: number;
@@ -398,8 +398,8 @@ export function createRoutes(params: {
   const { logger, runtime, invoker, middleware = [], basePath = "" } = params;
   const { executions } = runtime;
   const maxWait = params.maxWait ?? DEFAULT_MAX_WAIT;
-  if (!isDuration(maxWait)) {
-    throw new RangeError("maxWait must be a non-negative number of milliseconds");
+  if (!isDuration(maxWait) || maxWait === 0) {
+    throw new RangeError("maxWait must be a positive number of milliseconds");
   }
   const observation: ObservationParams = {
     executions,

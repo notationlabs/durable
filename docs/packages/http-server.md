@@ -30,8 +30,8 @@ Bun.serve({
 | `logger`     | `Logger`               | Pino logger                      |
 | `middleware` | `MiddlewareFunction[]` | Optional middleware chain for `/trigger` |
 | `observationMiddleware` | `ObservationMiddlewareFunction[]` | Optional. Allows or denies `/poll`, `/wait`, `/list` and `/events` requests |
-| `pollInterval` | `number`             | Optional. How often each open `/wait` and `/events` request reads the record, in milliseconds. Defaults to 25 |
-| `maxWait`    | `number`               | Optional. The longest the server holds a `/wait` request open, in milliseconds. Defaults to 8000. A negative value throws a `RangeError` |
+| `pollInterval` | `number`             | Optional. How often each open `/wait` and `/events` request reads the record, in milliseconds. Defaults to 25. A value that is not greater than zero throws a `RangeError` |
+| `maxWait`    | `number`               | Optional. The longest the server holds a `/wait` request open, in milliseconds. Defaults to 8000. A value that is not greater than zero throws a `RangeError` |
 | `basePath`   | `` `/${string}` ``     | Optional prefix for routes       |
 
 Every error response has the body `{ code, message }`. A route that throws, including a middleware function, responds `500` with code `INTERNAL_ERROR` and the fixed message `Internal error`, and logs the thrown error with `logger.error`. `ObservationErrorCode` is the union of the codes the observation routes respond with.

@@ -19,7 +19,7 @@ new ExecutionDispatcher(runtime, { invoker, logger }).start();
 | Option         | Type              | Default | Description                                                                         |
 | -------------- | ----------------- | ------- | ----------------------------------------------------------------------------------- |
 | `invoker`      | `WorkflowInvoker` | –       | Optional. When the dispatcher runs in this process, lets `wait` and `triggerAndWait` read the record as soon as the dispatcher records an outcome, instead of at their next read. No result depends on it |
-| `pollInterval` | `number`          | `25`    | Milliseconds between reads of the execution record in `wait` and `triggerAndWait`. A negative value throws a `RangeError` |
+| `pollInterval` | `number`          | `25`    | Milliseconds between reads of the execution record in `wait` and `triggerAndWait`. It must be greater than zero; any other value throws a `RangeError` |
 
 ## `sdk.trigger`
 
