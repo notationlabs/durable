@@ -15,6 +15,7 @@ import {
   durableValueCodec,
   encodeThrownValue,
 } from "@yieldstar/core";
+import { StepBranchesDecision, type BranchesDecision } from "./branches";
 
 /** A `StepCacheCheck` that resumes with the step's unfinished record as a `StepUnfinished`, not null. */
 export class UnfinishedCacheCheck extends StepCacheCheck {}
@@ -95,6 +96,9 @@ function encodeResponse(response: StepResponse, stepKey: string): string {
   if (response instanceof StepCancelled) {
     return `{"err":${encodeThrownValue(response.err)},"type":"step-cancelled"}`;
   }
+  if (response instanceof StepBranchesDecision) {
+    return encodeDecision(response.decision);
+  }
   if (response instanceof StepDelay) {
     return `{"type":"step-delay","wakeAt":${JSON.stringify(response.wakeAt)}}`;
   }
@@ -115,6 +119,35 @@ function encodeResponse(response: StepResponse, stepKey: string): string {
     return `{"type":${JSON.stringify(response.type)}}`;
   }
   throw new Error(`Cannot record a ${response.type} step response`);
+}
+
+function encodeDecision(decision: BranchesDecision): string {
+  const type = `"type":"branches-decision"`;
+  switch (decision.decision) {
+    case "rejected":
+    case "won":
+      return `{"decision":"${decision.decision}","index":${JSON.stringify(decision.index)},${type}}`;
+    case "cancelled":
+      return `{"decision":"cancelled","err":${encodeThrownValue(decision.err)},${type}}`;
+    default:
+      return `{"decision":"${decision.decision}",${type}}`;
+  }
+}
+
+function decodeDecision(record: Record<string, unknown>): BranchesDecision {
+  switch (record.decision) {
+    case "fulfilled":
+    case "settled":
+    case "failed":
+      return { decision: record.decision };
+    case "rejected":
+    case "won":
+      if (typeof record.index !== "number") break;
+      return { decision: record.decision, index: record.index };
+    case "cancelled":
+      return { decision: "cancelled", err: decodeParsedValue(record.err, "err") };
+  }
+  throw new Error(`Invalid step record: unknown combinator decision ${JSON.stringify(record.decision)}`);
 }
 
 export function decodeStepRecord(json: string): StepResponse {
@@ -138,6 +171,8 @@ export function decodeStepRecord(json: string): StepResponse {
         });
       case "step-cancelled":
         return new StepCancelled(decodeParsedValue(record.err, "err"));
+      case "branches-decision":
+        return new StepBranchesDecision(decodeDecision(record));
       case "step-delay":
         return new StepDelay(record.wakeAt);
       case "effect-wait":

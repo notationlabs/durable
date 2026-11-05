@@ -57,6 +57,15 @@ import {
 } from "./runtime-call";
 import type { WorkflowEvent } from "@yieldstar/core";
 import {
+  BranchesStepKey,
+  StepBranches,
+  type AllOptions,
+  type Branch,
+  type BranchResults,
+  type RaceResult,
+  type SettledResults,
+} from "./branches";
+import {
   StepEffectCall,
   type EffectCallOutcome,
   type EffectLookup,
@@ -328,7 +337,101 @@ export function createStepRunner(params: {
     });
   }
 
-  return { run, delay: createDelay(clock), poll, store, start, effect, join, call };
+  /**
+   * Drives `branches` concurrently and returns their results in branch order.
+   * The outcome is recorded under `stepKey`, so replay returns or throws it
+   * again. In `fail-fast` mode the first branch failure is thrown and the
+   * other branches start no new steps.
+   */
+  function all<const B extends readonly Branch<unknown>[]>(
+    stepKey: string,
+    branches: B,
+    options?: AllOptions & { mode?: "fail-fast" }
+  ): AsyncGenerator<StepResponse, BranchResults<B>, any>;
+  /** In `settle` mode, every branch runs to completion or failure. */
+  function all<const B extends readonly Branch<unknown>[]>(
+    stepKey: string,
+    branches: B,
+    options: AllOptions & { mode: "settle" }
+  ): AsyncGenerator<StepResponse, SettledResults<B>, any>;
+  function all(
+    stepKey: string,
+    branches: readonly Branch<unknown>[],
+    options?: AllOptions
+  ): AsyncGenerator<StepResponse, unknown, any> {
+    assertNonEmpty("step.all", "step key", stepKey);
+    assertBranches("step.all", branches);
+    const mode = options?.mode ?? "fail-fast";
+    if (mode !== "fail-fast" && mode !== "settle") {
+      throw new TypeError(`step.all mode must be "fail-fast" or "settle"`);
+    }
+    const concurrency = options?.concurrency ?? Infinity;
+    if (
+      concurrency !== Infinity &&
+      (!Number.isInteger(concurrency) || concurrency < 1)
+    ) {
+      throw new TypeError("step.all concurrency must be a positive integer");
+    }
+    return branchesStep(
+      stepKey,
+      new StepBranches({ combinator: "all", mode, concurrency, branches: [...branches] })
+    );
+  }
+
+  /**
+   * Drives `branches` concurrently and returns the index and value of the
+   * first branch to succeed. A failed branch does not end the race; if every
+   * branch fails, throws `WorkflowRaceError`. The winner is recorded under
+   * `stepKey`, so replay returns the same winner. The other branches are
+   * abandoned: they start no new steps and are not resumed.
+   */
+  function race<const B extends readonly Branch<unknown>[]>(
+    stepKey: string,
+    branches: B
+  ): AsyncGenerator<StepResponse, RaceResult<B>, any> {
+    assertNonEmpty("step.race", "step key", stepKey);
+    assertBranches("step.race", branches);
+    return branchesStep(
+      stepKey,
+      new StepBranches({
+        combinator: "race",
+        mode: "fail-fast",
+        concurrency: Infinity,
+        branches: [...branches],
+      })
+    ) as AsyncGenerator<StepResponse, RaceResult<B>, any>;
+  }
+
+  return { run, delay: createDelay(clock), poll, store, start, effect, join, call, all, race };
+}
+
+function assertBranches(method: string, branches: unknown) {
+  if (!Array.isArray(branches)) {
+    throw new TypeError(`${method} requires an array of branches`);
+  }
+  for (const branch of branches) {
+    if (
+      typeof branch !== "object" ||
+      branch === null ||
+      typeof (branch as AsyncGenerator).next !== "function" ||
+      typeof (branch as AsyncGenerator).throw !== "function" ||
+      !(Symbol.asyncIterator in branch)
+    ) {
+      throw new TypeError(
+        `${method} branches must be step generators, such as step.run(...) or the result of calling an async function*`
+      );
+    }
+  }
+}
+
+async function* branchesStep(
+  stepKey: string,
+  request: StepBranches
+): AsyncGenerator<StepResponse, any, any> {
+  yield new BranchesStepKey(stepKey);
+  yield new StepCacheCheck();
+  const outcome: StepResult = yield request;
+  return outcome.result;
 }
 
 // As in step.start and a timed store.when: a value of the wrong type is a

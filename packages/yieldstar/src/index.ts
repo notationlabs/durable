@@ -12,6 +12,7 @@ export {
   WorkflowCancelledError,
   WorkflowEffectError,
   WorkflowJoinError,
+  WorkflowRaceError,
   WorkflowStartError,
   WorkflowValueError,
   registerErrorClass,
