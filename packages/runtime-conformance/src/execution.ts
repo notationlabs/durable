@@ -2401,7 +2401,6 @@ export function registerExecutionClientConformance({
         };
       }
 
-      /** Pages through every matching execution, newest first. */
       async function listAll(
         runtime: Runtime,
         request: Omit<ExecutionListRequest, "cursor"> = {}

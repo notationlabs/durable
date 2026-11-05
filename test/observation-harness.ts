@@ -198,8 +198,8 @@ export function startDispatcher(runtime: Runtime, router: WorkflowRouter) {
 }
 
 /**
- * Starts `test/fixtures/observation/dispatcher.mjs` in its own process. It runs
- * a dispatcher against the SQLite file until it is killed.
+ * Runs `test/fixtures/observation/dispatcher.mjs` against the SQLite file in a
+ * child process. The process is killed when the test ends.
  */
 export function spawnDispatcher(path: string): ChildProcess {
   const child = spawn(
@@ -214,10 +214,9 @@ export function spawnDispatcher(path: string): ChildProcess {
 }
 
 /**
- * Starts `test/fixtures/observation/admit.mjs` in its own process, once per
- * request, against the SQLite file. Each process opens the file, and all of
- * them call `admit` together once every one is ready. Resolves with each
- * process's admission result, in request order.
+ * Runs `test/fixtures/observation/admit.mjs` against the SQLite file in one
+ * child process per request. All processes call `admit` together once every
+ * one is ready. Resolves with the admission results in request order.
  */
 export async function admitFromProcesses(path: string, requests: unknown[]) {
   const children = requests.map((request) => {

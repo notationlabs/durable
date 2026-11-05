@@ -285,8 +285,8 @@ export function createStepRunner(params: {
    * Starts the workflow `target.workflowId` and waits until it is terminal,
    * as `step.start` followed by `step.join`, recorded as one step under
    * `stepKey`. Until the step is recorded, each replay repeats the start,
-   * which returns the same child, and joins it. `W` checks `params` and types
-   * the result; it does not check that `workflowId` names that workflow.
+   * which returns the same child, and joins it. The type parameter `W` types
+   * `params` and the result. It is not checked against `workflowId`.
    * `options.detached` is as in `step.start`.
    */
   function call<W extends WorkflowGenerator<any, any, any>>(
