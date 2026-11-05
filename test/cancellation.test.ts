@@ -41,7 +41,15 @@ const WarehouseStore = defineStore("warehouse", testSchema<{ released?: boolean 
   initial: () => ({}),
 });
 
-type SuspendKind = "delay" | "when" | "take" | "join" | "effect" | "retry" | "run";
+type SuspendKind =
+  | "delay"
+  | "when"
+  | "timed-when"
+  | "take"
+  | "join"
+  | "effect"
+  | "retry"
+  | "run";
 
 /** What workflow code caught, on each evaluation. */
 let caught: unknown[] = [];
@@ -88,6 +96,9 @@ const router = {
           break;
         case "when":
           yield* payments.when("wait", (state) => state.paid);
+          break;
+        case "timed-when":
+          yield* payments.when("wait", (state) => state.paid, { deadline: START + DAY });
           break;
         case "take":
           yield* payments.take("wait", (state) => state.paid, (draft) => {
@@ -437,6 +448,28 @@ describe.each(runtimes)("cancellation on $name", ({ create }) => {
         if (kind === "retry") expect(ran).toEqual(["wait"]);
       }
     );
+
+    test("a timed when receives the cancellation at its step, and its store waiter no longer wakes the execution", async () => {
+      await admit(ORDER, "suspend", { kind: "timed-when" });
+      expect(await deliver()).toEqual({ status: "suspended", wakeAt: START + DAY });
+      expect(harness.storeWaiters()).toEqual(["wait"]);
+
+      await cancel(ORDER, { reason: "abandoned" });
+      expect(await deliver()).toEqual({ status: "cancelled" });
+      expect(caught).toEqual([cancelled("abandoned")]);
+      expect(await readStep()).toMatchObject({ type: "step-cancelled", attempt: 1, done: true });
+      expect(harness.storeWaiters()).toEqual([]);
+
+      await runtime.stores.updateStore({
+        definition: PaymentStore,
+        id: ORDER,
+        updater(draft) {
+          draft.paid = true;
+        },
+      });
+      expect(await claim(ORDER)).toBeUndefined();
+      expect((await get()).outcome).toEqual({ status: "cancelled", reason: "abandoned" });
+    });
 
     test("an admitted execution that never ran throws at its first step without running it", async () => {
       await admit(ORDER, "suspend", { kind: "run" });
