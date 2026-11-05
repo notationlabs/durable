@@ -149,9 +149,6 @@ export {
   unacknowledgedDeliveryCountAt,
 } from "./lib/execution-state";
 export {
-  becameTerminal,
-  compareJoinWaiters,
-  prepareJoinWaiter,
   readJoinTarget,
 } from "./lib/join-state";
 export type { DispatcherOptions } from "./lib/execution-dispatcher";

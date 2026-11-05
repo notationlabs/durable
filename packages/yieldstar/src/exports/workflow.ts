@@ -20,7 +20,6 @@ import { createStepRunner } from "../internal/step-runner";
 import {
   StepRuntimeCall,
   StepStoreWaitRequest,
-  StepUnfinishedRecord,
   executeRuntimeCall,
   type RuntimeClients,
   infrastructure,
@@ -149,11 +148,10 @@ export function workflow<
     }
 
     /**
-     * Records the delivery of `request` at every parked step in one write,
-     * with their waiters deleted and `deliveredAt` set. Each combinator above
-     * a parked step that has not settled records `cancelled` in the same
-     * write. Returns the error to throw into workflow code at each step. A
-     * lost lease or a conflicting record ends the delivery, as in `writeStep`.
+     * Records the cancellation at every parked step, and at each unsettled
+     * combinator above one, in one write. Returns the error to throw into
+     * workflow code at each step. A lost lease or a conflicting record ends
+     * the delivery.
      */
     async function deliverCancellation(
       request: ExecutionCancellation,
@@ -393,23 +391,10 @@ export function workflow<
       while (
         stepResponse instanceof StepRuntimeCall ||
         stepResponse instanceof StepEffectCall ||
-        stepResponse instanceof StepStoreWaitRequest ||
-        stepResponse instanceof StepUnfinishedRecord
+        stepResponse instanceof StepStoreWaitRequest
       ) {
         stopIfAborted(signal);
         if (branch.stopped) return { status: "stopped" };
-        if (stepResponse instanceof StepUnfinishedRecord) {
-          await writeStep({
-            stepKey,
-            stepAttempt,
-            done: false,
-            stepResponseJson: encodeStepRecord(stepResponse.response, stepKey).json,
-          });
-          stepAttempt++;
-          iteratorResult = await next();
-          stepResponse = iteratorResult.value;
-          continue;
-        }
         if (stepResponse instanceof StepStoreWaitRequest) {
           const { waiter } = stepResponse;
           // 1. Record the unfinished step. A timed wait's deadline must be

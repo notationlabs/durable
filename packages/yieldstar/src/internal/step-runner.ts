@@ -11,7 +11,6 @@ import {
   type ExecutionStartRequest,
   type ExecutionStartResult,
   type EventParamsOf,
-  InfrastructureError,
   type JoinResult,
   type StandardSchemaV1,
   StepResponse,
@@ -51,7 +50,7 @@ import { StepUnfinished, UnfinishedCacheCheck } from "./step-record";
 import {
   StepRuntimeCall,
   StepStoreWaitRequest,
-  StepUnfinishedRecord,
+  infrastructure,
   workflowCallback,
   type RuntimeCallResult,
 } from "./runtime-call";
@@ -144,10 +143,17 @@ export type TimedJoinResult<R> =
   | { status: "completed"; result: R }
   | { status: "timed-out" };
 
+// `params` is required when the child's params type does not admit undefined.
 type CallTarget<W extends WorkflowGenerator<any, any, any>> = {
   workflowId: string;
-  params?: EventParamsOf<W>;
-};
+} & (undefined extends EventParamsOf<W>
+  ? { params?: EventParamsOf<W> }
+  : { params: EventParamsOf<W> });
+
+// The child of a `step.call` without a type argument, which cannot be
+// inferred: it takes no params, and its result is a `DurableValue`, as for an
+// untyped `step.join`.
+type UntypedChild = WorkflowGenerator<void, DurableValue, any>;
 
 /** A store selector whose result, which the step records, is durable. */
 type DurableSelector<T, R> = IfDurable<R, StoreSelector<T, Durable<R>>>;
@@ -289,7 +295,7 @@ export function createStepRunner(params: {
    * `params` and the result. It is not checked against `workflowId`.
    * `options.detached` is as in `step.start`.
    */
-  function call<W extends WorkflowGenerator<any, any, any>>(
+  function call<W extends WorkflowGenerator<any, any, any> = UntypedChild>(
     stepKey: string,
     target: CallTarget<W>,
     options?: StartOptions
@@ -299,7 +305,7 @@ export function createStepRunner(params: {
    * @param options.deadline absolute time in milliseconds. The first
    * evaluation records it and later evaluations ignore the argument.
    */
-  function call<W extends WorkflowGenerator<any, any, any>>(
+  function call<W extends WorkflowGenerator<any, any, any> = UntypedChild>(
     stepKey: string,
     target: CallTarget<W>,
     options: StartOptions & { deadline: number }
@@ -516,24 +522,15 @@ async function* joinStep(params: {
     throw err;
   }
 
-  // The deadline must be durable before the waiter can wake a redelivery,
-  // which would otherwise compute it again.
-  if (deadline !== undefined && recordedDeadline === undefined) {
-    yield new StepUnfinishedRecord(new StepJoinWait(deadline));
-  }
-
   const joined: RuntimeCallResult<JoinResult> = yield new StepRuntimeCall(
-    async ({ joins }) => {
-      try {
-        return await joins.join({
+    ({ joins }) =>
+      infrastructure(() =>
+        joins.join({
           targetExecutionId: targetId,
           executionId: event.executionId,
           stepKey,
-        });
-      } catch (err) {
-        throw InfrastructureError.is(err) ? err : new InfrastructureError(err);
-      }
-    }
+        })
+      )
   );
   if (!joined.ok) {
     throw new Error("JoinClient.join failed without an infrastructure error");
@@ -762,15 +759,11 @@ async function* startTarget(
   request: ExecutionStartRequest
 ): AsyncGenerator<StepResponse, string, any> {
   const started: RuntimeCallResult<ExecutionStartResult> =
-    yield new StepRuntimeCall(async ({ executions }) => {
-      // The client's failures are never the workflow's to catch: whatever it
-      // throws, the delivery ends and the next attempt calls it again.
-      try {
-        return await executions.start(request);
-      } catch (err) {
-        throw InfrastructureError.is(err) ? err : new InfrastructureError(err);
-      }
-    });
+    // The client's failures are never the workflow's to catch: whatever it
+    // throws, the delivery ends and the next attempt calls it again.
+    yield new StepRuntimeCall(({ executions }) =>
+      infrastructure(() => executions.start(request))
+    );
 
   if (!started.ok) {
     throw new Error("ExecutionClient.start failed without an infrastructure error");

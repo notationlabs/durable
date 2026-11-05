@@ -215,7 +215,6 @@ export function registerJoinClientConformance({
           status: "terminal",
           outcome: { status: "completed", result: { trackingNumber: "TRK-1" } },
         });
-        expect(await runtime.joins.getWaiters("ship-42")).toEqual([]);
         expect(await claim(runtime)).toEqual([]);
       });
 
@@ -234,7 +233,7 @@ export function registerJoinClientConformance({
           name: "ConformanceCourierRejectedError",
           message: "Courier rejected the address",
         });
-        expect(await runtime.joins.getWaiters("ship-42")).toEqual([]);
+        expect(await claim(runtime)).toEqual([]);
       });
 
       it("returns not-found for an unknown target and registers nothing", async ({
@@ -244,7 +243,6 @@ export function registerJoinClientConformance({
         expect(await join(runtime, "charge-42", "join:ship", "ship-unknown")).toEqual({
           status: "not-found",
         });
-        expect(await runtime.joins.getWaiters("ship-unknown")).toEqual([]);
 
         // A target admitted later does not wake the joiner.
         await admitSuspended(runtime, "ship-unknown");
@@ -259,47 +257,45 @@ export function registerJoinClientConformance({
         await admitSuspended(runtime, "ship-running");
         const running = await lease(runtime, "ship-running");
         await admitSuspended(runtime, "ship-suspended");
-        await admitSuspended(runtime, "charge-42");
+        const targets = ["ship-admitted", "ship-running", "ship-suspended"];
+        for (const target of targets) {
+          await admitSuspended(runtime, target.replace("ship", "charge"));
+        }
         await admit(runtime, "ship-admitted");
-
-        for (const target of ["ship-admitted", "ship-running", "ship-suspended"]) {
-          expect(await join(peer, "charge-42", "join:ship", target)).toEqual({
+        for (const target of targets) {
+          expect(await join(peer, target.replace("ship", "charge"), "join:ship", target)).toEqual({
             status: "waiting",
           });
-          expect(await runtime.joins.getWaiters(target)).toEqual([
-            waiter("charge-42", "join:ship", target),
-          ]);
         }
-        expect(await claimedIds(runtime)).toEqual(["ship-admitted"]);
-        await runtime.executions.acknowledge({
-          lease: running,
-          outcome: { status: "suspended" },
-        });
+        const admitted = await claimOne(runtime, "ship-admitted");
+
+        await complete(runtime, "ship-suspended", null);
+        for (const targetLease of [admitted, running]) {
+          await runtime.executions.acknowledge({
+            lease: targetLease,
+            outcome: { status: "completed", result: null },
+          });
+        }
+        expect(await claimedIds(runtime)).toEqual([
+          "charge-admitted",
+          "charge-running",
+          "charge-suspended",
+        ]);
       });
 
-      it("keeps one registration when a join is repeated", async ({ runtime, peer }) => {
+      it("wakes the joiner once when a join is repeated", async ({ runtime, peer }) => {
         await admitSuspended(runtime, "ship-42");
         await admitSuspended(runtime, "charge-42");
         await join(runtime, "charge-42");
         await join(peer, "charge-42");
         await join(runtime, "charge-42");
-        expect(await runtime.joins.getWaiters("ship-42")).toEqual([waiter("charge-42")]);
-      });
-
-      it("returns waiters that callers cannot use to change the registration", async ({
-        runtime,
-      }) => {
-        await admitSuspended(runtime, "ship-42");
-        await admitSuspended(runtime, "charge-42");
-        await join(runtime, "charge-42");
-        const [registered] = await runtime.joins.getWaiters("ship-42");
-        registered.executionId = "changed";
-        expect(await runtime.joins.getWaiters("ship-42")).toEqual([waiter("charge-42")]);
+        await complete(runtime, "ship-42", null);
+        expect(await claimedIds(runtime)).toEqual(["charge-42"]);
       });
     });
 
     describe("terminal acknowledgement", () => {
-      it("wakes every join waiter on the target and keeps them registered", async ({
+      it("wakes every join waiter on the target", async ({
         runtime,
         peer,
       }) => {
@@ -311,10 +307,6 @@ export function registerJoinClientConformance({
 
         await complete(peer, "ship-42", { trackingNumber: "TRK-1" });
         expect(await claimedIds(runtime)).toEqual(["audit-42", "charge-42"]);
-        expect(await runtime.joins.getWaiters("ship-42")).toEqual([
-          waiter("audit-42", "join:audit"),
-          waiter("charge-42"),
-        ]);
 
         for (const joiner of ["charge-42", "audit-42"]) {
           expect(await join(peer, joiner)).toEqual({
@@ -372,19 +364,20 @@ export function registerJoinClientConformance({
           await admitSuspended(runtime, target);
           await admitSuspended(runtime, joiner);
           const targetLease = await lease(runtime, target);
-          const joining = join(i % 2 ? runtime : peer, joiner, "join:ship", target);
-          const completing = (i % 2 ? peer : runtime).executions.acknowledge({
-            lease: targetLease,
-            outcome: { status: "completed", result: i },
-          });
+          const joinNow = () => join(i % 2 ? runtime : peer, joiner, "join:ship", target);
+          const completeNow = () =>
+            (i % 2 ? peer : runtime).executions.acknowledge({
+              lease: targetLease,
+              outcome: { status: "completed", result: i },
+            });
+          // Alternate which call is made first, as well as which runtime makes it.
           const result =
             i % 4 < 2
-              ? (await Promise.all([joining, completing]))[0]
-              : (await Promise.all([completing, joining]))[1];
+              ? (await Promise.all([joinNow(), completeNow()]))[0]
+              : (await Promise.all([completeNow(), joinNow()]))[1];
 
           if (result.status === "terminal") {
             expect(result.outcome).toEqual({ status: "completed", result: i });
-            expect(await runtime.joins.getWaiters(target)).toEqual([]);
             expect(await claim(runtime)).toEqual([]);
           } else {
             expect(result).toEqual({ status: "waiting" });
@@ -451,32 +444,42 @@ export function registerJoinClientConformance({
     });
 
     describe("waiter deletion", () => {
-      it("deletes a waiter in the write that records its step's result, and keeps it for an unfinished write", async ({
-        runtime,
-      }) => {
+      it("keeps a waiter when its step is recorded unfinished", async ({ runtime }) => {
         await admitSuspended(runtime, "ship-42");
         await admitSuspended(runtime, "charge-42");
-        await join(runtime, "charge-42", "join:ship");
-        await join(runtime, "charge-42", "join:other");
+        await join(runtime, "charge-42");
 
         const unfinished = await lease(runtime, "charge-42");
-        await recordStep(runtime, unfinished, { attempt: 1, done: false });
+        await recordStep(runtime, unfinished, { done: false });
         await runtime.executions.acknowledge({
           lease: unfinished,
           outcome: { status: "suspended" },
         });
-        expect(await runtime.joins.getWaiters("ship-42")).toEqual([
-          waiter("charge-42", "join:other"),
-          waiter("charge-42", "join:ship"),
-        ]);
+        await complete(runtime, "ship-42", null);
+        expect(await claimedIds(runtime)).toEqual(["charge-42"]);
+      });
+
+      it("deletes only the waiters of the step whose result is recorded", async ({
+        runtime,
+      }) => {
+        await admitSuspended(runtime, "ship-42");
+        await admitSuspended(runtime, "ship-43");
+        await admitSuspended(runtime, "charge-42");
+        await admitSuspended(runtime, "audit-42");
+        await join(runtime, "charge-42", "join:ship", "ship-42");
+        await join(runtime, "charge-42", "join:other", "ship-43");
+        await join(runtime, "audit-42", "join:ship", "ship-42");
 
         const done = await lease(runtime, "charge-42");
-        await recordStep(runtime, done, { attempt: 2 });
+        await recordStep(runtime, done);
         await runtime.executions.acknowledge({ lease: done, outcome: { status: "suspended" } });
-        // Another step's waiter is unaffected.
-        expect(await runtime.joins.getWaiters("ship-42")).toEqual([
-          waiter("charge-42", "join:other"),
-        ]);
+
+        await complete(runtime, "ship-42", null);
+        const audit = await claimOne(runtime, "audit-42");
+        await runtime.executions.acknowledge({ lease: audit, outcome: { status: "suspended" } });
+
+        await complete(runtime, "ship-43", null);
+        expect(await claimedIds(runtime)).toEqual(["charge-42"]);
       });
 
       it("keeps the waiter when a stale holder's step result is rejected", async (ctx) => {
@@ -491,7 +494,6 @@ export function registerJoinClientConformance({
 
         expect(await recordStep(runtime, stale)).toEqual({ status: "lost" });
         await peer.executions.acknowledge({ lease: current, outcome: { status: "suspended" } });
-        expect(await runtime.joins.getWaiters("ship-42")).toEqual([waiter("charge-42")]);
 
         await complete(runtime, "ship-42", null);
         expect(await claimedIds(runtime)).toEqual(["charge-42"]);
@@ -511,7 +513,6 @@ export function registerJoinClientConformance({
         expect(await join(peer, "charge-42")).toEqual({ status: "waiting" });
         await recordStep(peer, current);
         await peer.executions.acknowledge({ lease: current, outcome: { status: "suspended" } });
-        expect(await runtime.joins.getWaiters("ship-42")).toEqual([]);
 
         // The stale holder's join is not fenced, so it registers again.
         expect(await join(runtime, "charge-42")).toEqual({ status: "waiting" });
@@ -574,7 +575,6 @@ export function registerJoinClientConformance({
 
         const restarted = await restart();
         expect(await claimedIds(restarted)).toEqual(["charge-42"]);
-        expect(await restarted.joins.getWaiters("ship-42")).toEqual([waiter("charge-42")]);
       });
 
       itAfterRestart("keeps join waiters across a restart", async ({ runtime, restart }) => {
@@ -583,7 +583,6 @@ export function registerJoinClientConformance({
         await join(runtime, "charge-42");
 
         const restarted = await restart();
-        expect(await restarted.joins.getWaiters("ship-42")).toEqual([waiter("charge-42")]);
         await complete(restarted, "ship-42", null);
         expect(await claimedIds(restarted)).toEqual(["charge-42"]);
       });

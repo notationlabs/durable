@@ -1,6 +1,5 @@
 import {
   acknowledgeExecution,
-  becameTerminal,
   claimExecution,
   createExecutionState,
   createStartedExecution,
@@ -284,40 +283,37 @@ export class SqliteExecutionClient implements ExecutionClient {
     lease: ExecutionLease;
     outcome: WorkflowRunOutcome;
   }): Promise<ExecutionAcknowledgeResult> {
-    return this.transition(
-      request.lease,
-      (state) =>
-        acknowledgeExecution(state, {
-          lease: request.lease,
-          outcome: request.outcome,
-          now: this.clock(),
-        }),
-      (before, after) => {
-        // The join waiters stay registered until each joiner records its step.
-        if (becameTerminal(before, after)) this.wakeJoinWaiters(after.executionId);
-      }
+    return this.transition(request.lease, (state) =>
+      acknowledgeExecution(state, {
+        lease: request.lease,
+        outcome: request.outcome,
+        now: this.clock(),
+      })
     );
   }
 
   /**
    * Applies a fenced transition in one transaction. The transition checks the
    * lease against the stored token, so the check and the write are atomic.
-   * @param afterWrite runs inside the transaction after the state is written,
-   * and only when the transition changed it.
    */
   private transition<R>(
     lease: ExecutionLease,
-    fn: (state: ExecutionState) => { state: ExecutionState; result: R },
-    afterWrite?: (before: ExecutionState, after: ExecutionState) => void
+    fn: (state: ExecutionState) => { state: ExecutionState; result: R }
   ): Promise<R | { status: "lost" }> {
     return Promise.resolve(
       runTransaction(this.db, () => {
         const state = this.executionsDao.getState(lease.executionId);
         if (!state) return { status: "lost" as const };
         const next = fn(state);
+        // A transition returns the same state when the lease is lost or the
+        // record is already terminal, so a changed terminal state is the
+        // acknowledgement that made it terminal. Its join waiters stay
+        // registered until each joiner records its step.
         if (next.state !== state) {
           this.executionsDao.updateState(next.state);
-          afterWrite?.(state, next.state);
+          if (isTerminalExecutionStatus(next.state.status)) {
+            this.wakeJoinWaiters(state.executionId);
+          }
         }
         return next.result;
       })
