@@ -393,6 +393,14 @@ export class SqliteExecutionClient implements ExecutionClient {
   }
 
   /**
+   * @internal Whether the execution is a tombstone, read inside a transaction
+   * the caller already holds on the same database (a store commit).
+   */
+  isPrunedInTransaction(executionId: string): boolean {
+    return (this.executionsDao.getState(executionId)?.pruned ?? null) !== null;
+  }
+
+  /**
    * @internal Requests a wake from inside a transaction the caller already
    * holds on the same database, so the wake commits with the caller's write
    * (e.g. a store commit). `wakeAt` defaults to the runtime clock's now.

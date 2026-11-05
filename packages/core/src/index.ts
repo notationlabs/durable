@@ -276,6 +276,7 @@ export {
   encodeStoreValue,
   diffStorePaths,
   isStoreSelectorMatch,
+  prunedStoreStepError,
   storePathsIntersect,
   trackStoreSelector,
   trackStoreUpdater,

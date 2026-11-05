@@ -399,14 +399,52 @@ export function registerRetentionClientConformance({
         }
       });
 
-      it("deletes the execution's store receipts, so a repeated update applies again", RETAIN_NONE, async ({
+      it("deletes the execution's store receipts, and rejects a later commit with its step ID", RETAIN_NONE, async ({
         runtime,
+        peer,
       }) => {
         await runOrder(runtime);
         expect((await updateLedger(runtime, 2)).state).toEqual({ total: 1 });
 
+        // Before cleanup the receipt answers the repeat with its recorded result.
+        await runtime.executions.prune({ retain: RETAIN_NONE, limit: 10 });
+        expect((await updateLedger(runtime, 2)).state).toEqual({ total: 1 });
+
+        // After cleanup there is no receipt, and the commit is rejected, as a
+        // stale lease holder's would be.
         await runtime.prune();
-        expect((await updateLedger(runtime, 2)).state).toEqual({ total: 2 });
+        await expect(updateLedger(runtime, 2)).rejects.toThrow(/was pruned/);
+        await expect(updateLedger(peer, 2)).rejects.toThrow(/was pruned/);
+        const shared = await runtime.stores.getStore({ definition: LedgerStore, id: "shared" });
+        expect(shared.state).toEqual({ total: 1 });
+        await expect(
+          runtime.stores.deleteStoreFrom({
+            definition: LedgerStore,
+            id: "shared",
+            snapshot: shared,
+            stepId: { executionId: ORDER, stepKey: "delete-ledger" },
+          })
+        ).rejects.toThrow(/was pruned/);
+        expect(await runtime.stores.listStores(LedgerStore)).toEqual(["shared"]);
+
+        // Commits without a step ID, or with another execution's, still apply.
+        await runtime.stores.updateStore({
+          definition: LedgerStore,
+          id: "shared",
+          updater: (draft) => {
+            draft.total = 3;
+          },
+        });
+        await admit(runtime, "billing-42");
+        const updated = await runtime.stores.updateStore({
+          definition: LedgerStore,
+          id: "shared",
+          updater: (draft) => {
+            draft.total = 4;
+          },
+          stepId: { executionId: "billing-42", stepKey: "ledger" },
+        });
+        expect(updated.state).toEqual({ total: 4 });
       });
 
       it("deletes the start requests the execution owns as the caller", RETAIN_NONE, async ({
@@ -747,6 +785,37 @@ export function registerRetentionClientConformance({
           (await runtime.stores.getStore({ definition: OrderStore, id: ORDER })).state
         ).toEqual({});
       });
+
+      it("wakes another execution waiting on a store that pruneExecutionStores deletes", {
+        default: { completed: 0, pruneExecutionStores: true },
+      }, async ({ runtime }) => {
+        await runOrder(runtime);
+        await admitSuspended(runtime, "courier-42", "dispatch-courier");
+        const snapshot = await runtime.stores.getStore({ definition: OrderStore, id: ORDER });
+        await runtime.stores.registerWaiter({
+          workflowId: "dispatch-courier",
+          executionId: "courier-42",
+          stepKey: "wait-for-payment",
+          storeName: OrderStore.name,
+          storeId: ORDER,
+          instanceId: snapshot.instanceId,
+          sinceVersion: snapshot.version,
+          readPaths: [["paid"]],
+        });
+        const claimCourier = async () =>
+          (
+            await runtime.executions.claimDue({
+              limit: 1,
+              duration: LEASE,
+              filter: { executionIds: ["courier-42"] },
+            })
+          ).map((lease) => lease.executionId);
+        expect(await claimCourier()).toEqual([]);
+
+        await runtime.prune();
+        expect(await runtime.stores.listStores(OrderStore)).toEqual([]);
+        expect(await claimCourier()).toEqual(["courier-42"]);
+      });
     });
 
     describe("crashes and concurrency", () => {
@@ -776,7 +845,7 @@ export function registerRetentionClientConformance({
         expect(await peer.prune()).toEqual({ pruned: 0, cleaned: 1, failed: 0, errors: [] });
         expect(await peer.executions.listPendingPrunes({ limit: 10 })).toEqual([]);
         expect(await runtime.heap.listSteps({ executionId: ORDER })).toEqual([]);
-        expect((await updateLedger(runtime, 2)).state).toEqual({ total: 2 });
+        await expect(updateLedger(runtime, 2)).rejects.toThrow(/was pruned/);
         expect(await runtime.executions.get(ORDER)).toEqual(pruned);
       });
 

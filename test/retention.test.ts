@@ -198,16 +198,21 @@ describe.each(backends)("retention on %s", (_name, create) => {
     });
     expect(await runtime.effects.getEffect("charge-42")).toMatchObject({ status: "pending" });
 
-    // A repeated receipt is gone, so the update applies again.
-    const repeated = await runtime.stores.updateStore({
-      definition: LedgerStore,
-      id: "shared",
-      updater: (draft) => {
-        draft.total = 2;
-      },
-      stepId: { executionId: ORDER, stepKey: "ledger" },
-    });
-    expect(repeated.state).toEqual({ total: 2 });
+    // The receipt is gone, and a commit with the pruned execution's step ID
+    // is rejected rather than applied again.
+    await expect(
+      runtime.stores.updateStore({
+        definition: LedgerStore,
+        id: "shared",
+        updater: (draft) => {
+          draft.total = 2;
+        },
+        stepId: { executionId: ORDER, stepKey: "ledger" },
+      })
+    ).rejects.toThrow(/was pruned/);
+    expect(
+      (await runtime.stores.getStore({ definition: LedgerStore, id: "shared" })).state
+    ).toEqual({ total: 1 });
 
     // Settling the effect wakes nobody: the waiter went with the cleanup.
     await runtime.effects.settle({

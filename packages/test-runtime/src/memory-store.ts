@@ -4,6 +4,7 @@ import {
   cloneStoreState,
   decodeStoreValue,
   encodeStoreValue,
+  prunedStoreStepError,
   storePathsIntersect,
   type StandardSchemaV1,
   type StoreDefinition,
@@ -34,11 +35,13 @@ export class MemoryStoreClient extends CasStoreClient {
   // section (within the write queue) as the state commit, so a retried
   // workflow step returns the recorded result instead of re-applying.
   private appliedSteps = new Map<string, string>();
-  private executions: Pick<MemoryExecutionClient, "wakeNow">;
+  private executions: Pick<MemoryExecutionClient, "getState" | "wakeNow">;
   // Serializes writes so concurrent commits cannot interleave.
   private writeLock: Promise<unknown> = Promise.resolve();
 
-  constructor(params: { executions: Pick<MemoryExecutionClient, "wakeNow"> }) {
+  constructor(params: {
+    executions: Pick<MemoryExecutionClient, "getState" | "wakeNow">;
+  }) {
     super();
     this.executions = params.executions;
   }
@@ -98,6 +101,7 @@ export class MemoryStoreClient extends CasStoreClient {
   ): Promise<StoreMutationCommitResult> {
     return this.enqueueWrite(async () => {
       if (mutation.stepId) {
+        this.rejectPrunedStep(mutation.stepId);
         const applied = this.appliedSteps.get(
           this.appliedStepKey(
             mutation.definition.name,
@@ -174,11 +178,9 @@ export class MemoryStoreClient extends CasStoreClient {
     return this.enqueueWrite(async () => {
       const { name } = params.definition;
       this.stores.delete(this.storeKey(name, params.id));
-      for (const [key, waiter] of [...this.waiters.entries()]) {
-        if (waiter.storeName === name && waiter.storeId === params.id) {
-          this.waiters.delete(key);
-        }
-      }
+      this.wakeAndDeleteWaiters(
+        (waiter) => waiter.storeName === name && waiter.storeId === params.id
+      );
     });
   }
 
@@ -193,6 +195,7 @@ export class MemoryStoreClient extends CasStoreClient {
             deletion.stepId
           )
         : undefined;
+      if (deletion.stepId) this.rejectPrunedStep(deletion.stepId);
       if (ledgerKey) {
         const applied = this.appliedSteps.get(ledgerKey);
         if (applied) {
@@ -211,11 +214,7 @@ export class MemoryStoreClient extends CasStoreClient {
       }
 
       this.stores.delete(key);
-      for (const [waiterKey, waiter] of [...this.waiters.entries()]) {
-        if (waiter.instanceId === record.instanceId) {
-          this.waiters.delete(waiterKey);
-        }
-      }
+      this.wakeAndDeleteWaiters((waiter) => waiter.instanceId === record.instanceId);
       if (ledgerKey) {
         this.appliedSteps.set(ledgerKey, encodeStoreValue(deletion.result));
       }
@@ -232,15 +231,11 @@ export class MemoryStoreClient extends CasStoreClient {
       for (const key of [...this.appliedSteps.keys()]) {
         if (JSON.parse(key)[2] === executionId) this.appliedSteps.delete(key);
       }
-      for (const [key, waiter] of [...this.waiters.entries()]) {
-        if (
-          waiter.executionId === executionId ||
-          (params.deleteExecutionStore && waiter.storeId === executionId)
-        ) {
-          this.waiters.delete(key);
-        }
-      }
+      this.deleteWaitersForExecution(executionId);
       if (!params.deleteExecutionStore) return;
+      // Other executions may wait on the deleted stores. Each is woken, so it
+      // replays and reads the store again instead of staying suspended.
+      this.wakeAndDeleteWaiters((waiter) => waiter.storeId === executionId);
       for (const [key, record] of [...this.stores.entries()]) {
         if (record.storeId === executionId) this.stores.delete(key);
       }
@@ -297,6 +292,24 @@ export class MemoryStoreClient extends CasStoreClient {
   deleteWaitersForExecution(executionId: string) {
     for (const [key, waiter] of [...this.waiters.entries()]) {
       if (waiter.executionId === executionId) this.waiters.delete(key);
+    }
+  }
+
+  private rejectPrunedStep(stepId: StoreStepId) {
+    if ((this.executions.getState(stepId.executionId)?.pruned ?? null) !== null) {
+      throw prunedStoreStepError(stepId);
+    }
+  }
+
+  /**
+   * Requests a wake for every waiter that `matches`, then deletes it, for
+   * writes that delete the store it waits on.
+   */
+  private wakeAndDeleteWaiters(matches: (waiter: StoreWaiter) => boolean) {
+    for (const [key, waiter] of [...this.waiters.entries()]) {
+      if (!matches(waiter)) continue;
+      this.executions.wakeNow(waiter.executionId);
+      this.waiters.delete(key);
     }
   }
 

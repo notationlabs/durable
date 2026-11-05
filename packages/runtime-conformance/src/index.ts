@@ -1406,7 +1406,7 @@ export function registerStoreClientConformance({
       }
     });
 
-    test("deleteStore purges the store's waiters", async () => {
+    test("deleteStore wakes the store's waiters once and purges them", async () => {
       const harness = await create();
       const { runtime } = harness;
       try {
@@ -1419,6 +1419,9 @@ export function registerStoreClientConformance({
           waiter(Store.name, "deleted-waiters", original.instanceId, original.version)
         );
         await runtime.stores.deleteStore({ definition: Store, id: "deleted-waiters" });
+        // The deletion wakes the waiter, so its execution replays and reads
+        // the store again rather than waiting on an instance that is gone.
+        await expectWoken(runtime, ["execution"]);
         const recreated = await runtime.stores.getStore({
           definition: Store,
           id: "deleted-waiters",
@@ -1447,7 +1450,7 @@ export function registerStoreClientConformance({
       }
     });
 
-    test("conditional deletion purges the store's waiters", async () => {
+    test("conditional deletion wakes the store's waiters once and purges them", async () => {
       const harness = await create();
       const { runtime } = harness;
       try {
@@ -1477,6 +1480,7 @@ export function registerStoreClientConformance({
             snapshot: current,
           })
         ).toEqual({ deleted: true });
+        await expectWoken(runtime, ["execution"]);
         await runtime.stores.getStore({
           definition: Store,
           id: "conditional-delete-wake",

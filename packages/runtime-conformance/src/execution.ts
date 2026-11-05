@@ -744,6 +744,28 @@ export function registerExecutionClientConformance({
         expect(await claimedIds(runtime)).toEqual(["consumer"]);
       });
 
+      it("wakes the executions waiting on a store that deleteStore or deleteStoreFrom deletes", async ({
+        runtime,
+      }) => {
+        for (const executionId of ["deleted", "deleted-from"]) {
+          await admitSuspended(runtime, executionId);
+          const snapshot = await runtime.stores.getStore({ definition: Store, id: executionId });
+          await runtime.stores.registerWaiter(
+            waiter(executionId, snapshot.instanceId, snapshot.version)
+          );
+        }
+        expect(await claim(runtime)).toEqual([]);
+
+        await runtime.stores.deleteStore({ definition: Store, id: "deleted" });
+        expect(await claimedIds(runtime)).toEqual(["deleted"]);
+
+        const snapshot = await runtime.stores.getStore({ definition: Store, id: "deleted-from" });
+        expect(
+          await runtime.stores.deleteStoreFrom({ definition: Store, id: "deleted-from", snapshot })
+        ).toEqual({ deleted: true });
+        expect(await claimedIds(runtime)).toEqual(["deleted-from"]);
+      });
+
       it("deletes a waiter with the write that records its step's result", async ({
         runtime,
         clock,

@@ -8,6 +8,7 @@ import {
   CasStoreClient,
   decodeStoreValue,
   encodeStoreValue,
+  prunedStoreStepError,
   storePathsIntersect,
   type StandardSchemaV1,
   type StoreDefinition,
@@ -110,6 +111,7 @@ export class SqliteStoreClient extends CasStoreClient {
   ): Promise<StoreMutationCommitResult> {
     return runTransaction(this.db, (): StoreMutationCommitResult => {
       if (mutation.stepId) {
+        this.rejectPrunedStep(mutation.stepId);
         const applied = this.getAppliedStepRow({
           storeName: mutation.definition.name,
           storeId: mutation.id,
@@ -213,7 +215,7 @@ export class SqliteStoreClient extends CasStoreClient {
           $storeName: params.definition.name,
           $storeId: params.id,
         });
-      this.storeWaitersDao.deleteStoreWaiters(params.definition.name, params.id);
+      this.wakeAndDeleteStoreWaiters(params.definition.name, params.id);
     });
   }
 
@@ -222,6 +224,7 @@ export class SqliteStoreClient extends CasStoreClient {
   ): Promise<StoreMutationCommitResult> {
     return runTransaction(this.db, (): StoreMutationCommitResult => {
       if (deletion.stepId) {
+        this.rejectPrunedStep(deletion.stepId);
         const applied = this.getAppliedStepRow({
           storeName: deletion.definition.name,
           storeId: deletion.id,
@@ -244,7 +247,7 @@ export class SqliteStoreClient extends CasStoreClient {
         return { status: "conflict", snapshot: toSnapshot(row) };
       }
 
-      this.storeWaitersDao.deleteStoreWaiters(deletion.definition.name, deletion.id);
+      this.wakeAndDeleteStoreWaiters(deletion.definition.name, deletion.id);
       this.db
         .query(`DELETE FROM stores WHERE instance_id = $instanceId`)
         .run({ $instanceId: row.instance_id });
@@ -271,6 +274,14 @@ export class SqliteStoreClient extends CasStoreClient {
         .run({ $executionId: executionId });
       this.storeWaitersDao.deleteExecutionWaiters(executionId);
       if (!params.deleteExecutionStore) return;
+      // Other executions may wait on the deleted stores. Each is woken in
+      // this transaction, so it replays and reads the store again instead
+      // of staying suspended.
+      for (const row of this.storeWaitersDao.getStoreIdWaiters(executionId)) {
+        if (row.execution_id !== executionId) {
+          this.executions.wakeInTransaction(row.execution_id);
+        }
+      }
       this.storeWaitersDao.deleteStoreIdWaiters(executionId);
       this.db
         .query(`DELETE FROM stores WHERE store_id = $storeId`)
@@ -296,6 +307,25 @@ export class SqliteStoreClient extends CasStoreClient {
         this.executions.wakeInTransaction(waiter.executionId);
       }
     });
+  }
+
+  private rejectPrunedStep(stepId: StoreStepId) {
+    if (this.executions.isPrunedInTransaction(stepId.executionId)) {
+      throw prunedStoreStepError(stepId);
+    }
+  }
+
+  /**
+   * Requests a wake for every execution waiting on a store that is being
+   * deleted, then deletes the waiters. A woken execution replays and reads
+   * the store again, so it does not stay suspended on a store that will
+   * never change. The caller holds the transaction.
+   */
+  private wakeAndDeleteStoreWaiters(storeName: string, storeId: string) {
+    for (const row of this.storeWaitersDao.getStoreWaiters(storeName, storeId)) {
+      this.executions.wakeInTransaction(row.execution_id);
+    }
+    this.storeWaitersDao.deleteStoreWaiters(storeName, storeId);
   }
 
   private setupDb() {
