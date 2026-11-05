@@ -19,6 +19,7 @@ import {
   workflow,
   type TimedJoinResult,
 } from "yieldstar";
+import { cleanup, createTestSdk, sdkKinds } from "./observation-harness";
 
 const isBun = "Bun" in globalThis;
 const { createSqliteDb } = isBun
@@ -110,6 +111,19 @@ const router = {
     return yield* step.join("join", target, { deadline: Date.now() + DAY });
   }),
   "ship-order": shipOrder,
+  "ship-order-fails": workflow(async function* () {
+    throw new CourierRejectedError("address rejected");
+  }),
+  "call-failing-ship": workflow(async function* (step) {
+    try {
+      return yield* step.call("ship", { workflowId: "ship-order-fails" });
+    } catch (err) {
+      caught.push(describeCaught(err));
+      // A later step, so that the next delivery replays the call.
+      yield* step.delay("after-join", AFTER_JOIN);
+      return "handled";
+    }
+  }),
   "call-ship": workflow(async function* (step) {
     try {
       return yield* step.call<typeof shipOrder>("ship", {
@@ -167,7 +181,8 @@ beforeEach(() => {
   vi.useFakeTimers({ toFake: ["Date"], now: START });
 });
 
-afterEach(() => {
+afterEach(async () => {
+  await cleanup();
   vi.useRealTimers();
   vi.restoreAllMocks();
 });
@@ -256,8 +271,8 @@ describe.each(runtimes)("step.join and step.call on $name", ({ create }) => {
     return record && { ...JSON.parse(record.stepResponseJson), done: record.meta.done };
   }
 
-  async function childOf(caller = JOINER) {
-    const page = await runtime.executions.list({ workflowId: "ship-order" });
+  async function childOf(caller = JOINER, workflowId = "ship-order") {
+    const page = await runtime.executions.list({ workflowId });
     return page.executions.filter((record) => record.parent?.executionId === caller);
   }
 
@@ -540,6 +555,39 @@ describe.each(runtimes)("step.join and step.call on $name", ({ create }) => {
     });
   });
 
+  describe("timed join replay", () => {
+    test.each([
+      {
+        result: "timed-out",
+        async resolve() {
+          advanceTo(DEADLINE);
+          return DEADLINE + AFTER_JOIN;
+        },
+        expected: { status: "timed-out" },
+      },
+      {
+        result: "completed",
+        async resolve() {
+          await finishTarget({ status: "completed", result: "booked" });
+          return START + AFTER_JOIN;
+        },
+        expected: { status: "completed", result: "booked" },
+      },
+    ])("a recorded $result result replays without reading the target", async ({ resolve, expected }) => {
+      await admitTarget();
+      await admitJoiner("timed-join-ship");
+      await deliver();
+      const wakeAt = await resolve();
+      expect(await deliver()).toEqual({ status: "suspended", wakeAt });
+      expect(await readStep()).toEqual({ type: "step-result", result: expected, done: true });
+
+      const join = spyJoin();
+      advanceTo(wakeAt);
+      expect(await deliver()).toEqual({ status: "completed", result: expected });
+      expect(join).not.toHaveBeenCalled();
+    });
+  });
+
   describe("call", () => {
     test("a resolved call records one step under the caller's key and returns the child's result", async () => {
       await admit(JOINER, "call-ship");
@@ -617,10 +665,11 @@ describe.each(runtimes)("step.join and step.call on $name", ({ create }) => {
       expect(join).not.toHaveBeenCalled();
     });
 
-    test("a changed request throws WorkflowStartError with START_REQUEST_MISMATCH", async () => {
+    test("a changed request throws WorkflowStartError with START_REQUEST_MISMATCH and deletes the waiter", async () => {
       await admit(JOINER, "call-ship");
       await deliver();
       const [child] = await childOf();
+      expect(await waiters(child!.executionId)).toHaveLength(1);
       await deliver(child!.executionId);
       advance(MINUTE);
 
@@ -634,7 +683,60 @@ describe.each(runtimes)("step.join and step.call on $name", ({ create }) => {
         type: "step-error",
         err: { name: "WorkflowStartError", code: "START_REQUEST_MISMATCH" },
       });
+      expect(await waiters(child!.executionId)).toEqual([]);
     });
+
+    /** Runs `call-failing-ship` until its child has failed and the call has thrown. */
+    async function failCall() {
+      await admit(JOINER, "call-failing-ship");
+      expect(await deliver()).toEqual({ status: "suspended", wakeAt: undefined });
+      const [child] = await childOf(JOINER, "ship-order-fails");
+      expect((await deliver(child!.executionId))?.status).toBe("failed");
+      expect(await deliver()).toEqual({ status: "suspended", wakeAt: START + AFTER_JOIN });
+      return child!.executionId;
+    }
+
+    test("a failed child is thrown as JOINED_EXECUTION_FAILED with the child's ID; replay throws it again without starting or joining", async () => {
+      const childId = await failCall();
+      expect(await readStep(JOINER, "ship")).toMatchObject({
+        type: "step-error",
+        err: { name: "WorkflowJoinError", code: "JOINED_EXECUTION_FAILED" },
+        done: true,
+      });
+
+      const start = vi.spyOn(runtime.executions, "start");
+      const join = spyJoin();
+      advance(AFTER_JOIN);
+      expect(await deliver()).toEqual({ status: "completed", result: "handled" });
+      const expected = {
+        isJoinError: true,
+        code: "JOINED_EXECUTION_FAILED",
+        executionId: childId,
+        cause: {
+          isRegisteredClass: true,
+          name: "CourierRejectedError",
+          message: "address rejected",
+        },
+      };
+      expect(caught).toEqual([expected, expected]);
+      expect(start).not.toHaveBeenCalled();
+      expect(join).not.toHaveBeenCalled();
+    });
+
+    test.each(sdkKinds)(
+      "the %s SDK's wait on a failed child returns an error with the same name and message as the join error's cause",
+      async (sdkKind) => {
+        const childId = await failCall();
+        const sdk = createTestSdk(sdkKind, runtime);
+        const waited = await sdk.wait(childId);
+        if (waited?.status !== "failed") throw new Error("expected a failed outcome");
+        const { cause } = caught[0] as ReturnType<typeof describeCaught>;
+        expect({ name: waited.error.name, message: waited.error.message }).toEqual({
+          name: cause!.name,
+          message: cause!.message,
+        });
+      }
+    );
 
     test("a timed call returns completed with the child's result", async () => {
       await admit(JOINER, "timed-call-ship");
