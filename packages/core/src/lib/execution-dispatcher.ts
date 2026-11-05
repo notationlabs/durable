@@ -8,7 +8,11 @@ import type {
   ExecutionLease,
   WorkflowRunOutcome,
 } from "../base/execution";
-import { LeaseLostError, isTerminalExecutionStatus } from "../base/execution";
+import {
+  LeaseLostError,
+  WorkflowCancelledError,
+  isTerminalExecutionStatus,
+} from "../base/execution";
 import { DEFAULT_LEASE_DURATION } from "./execution-state";
 
 export const DEFAULT_DISPATCHER_CONCURRENCY = 10;
@@ -407,6 +411,11 @@ export class ExecutionDispatcher {
       this.invoker.workflowEndEmitter.emit(executionId, result.result);
     } else if (result.status === "failed") {
       this.invoker.workflowEndEmitter.emit(executionId, result.error);
+    } else if (result.status === "cancelled") {
+      this.invoker.workflowEndEmitter.emit(
+        executionId,
+        new WorkflowCancelledError({ reason: result.reason, source: result.source })
+      );
     }
   }
 }

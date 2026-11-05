@@ -16,6 +16,7 @@ import { testSchema } from "@yieldstar/test-utils";
 import {
   ExecutionAdmissionError,
   RetryableError,
+  WorkflowCancelledError,
   createHttpSdkFactory,
   createLocalSdk,
   defineStore,
@@ -319,6 +320,28 @@ test("a terminal execution delivered again returns its outcome without running w
 
   await expect(emitted).resolves.toBe("first");
   expect(runs).toBe(1);
+});
+
+test("a cancelled outcome is emitted on workflowEndEmitter as a WorkflowCancelledError", async () => {
+  const { runtime, sdk, dispatcher, invoker } = setup({
+    waits: workflow(async function* (step) {
+      yield* step.delay("wait", 60_000);
+    }),
+  });
+  dispatcher.start();
+  await sdk.trigger({ workflowId: "waits", executionId: "order-42" });
+  await vi.waitFor(async () => {
+    expect((await runtime.executions.get("order-42"))?.status).toBe("suspended");
+  });
+
+  const emitted = new Promise((resolve) =>
+    invoker.workflowEndEmitter.once("order-42", resolve)
+  );
+  await runtime.executions.cancel({ executionId: "order-42", reason: "abandoned" });
+
+  const error = await emitted;
+  expect(error).toBeInstanceOf(WorkflowCancelledError);
+  expect(error).toMatchObject({ reason: "abandoned" });
 });
 
 test("an execution whose workflowId has no registered workflow is acknowledged as failed", async () => {
