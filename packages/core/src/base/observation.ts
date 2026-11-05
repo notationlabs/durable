@@ -6,7 +6,7 @@ import type {
   ExecutionRecord,
 } from "./execution";
 
-export type ExecutionViewBase = {
+type ExecutionViewBase = {
   executionId: string;
   workflowId: string;
   admittedAt: number;
@@ -43,6 +43,11 @@ export type ExecutionWaitOptions = {
    * until the execution is terminal.
    */
   timeout?: number;
+  /**
+   * Ends the wait. `wait` stops reading the record and rejects with the
+   * signal's reason.
+   */
+  signal?: AbortSignal;
 };
 
 export type ExecutionViewPage = {
@@ -80,13 +85,18 @@ export interface ExecutionObserver {
    * Reads the record, and then waits for a terminal outcome. Resolves with
    * the outcome, or with `timed-out` and the current view when `timeout`
    * passes first. Resolves with `undefined` at once for an unknown ID.
+   * Rejects with the signal's reason once `signal` aborts.
+   * @throws {RangeError} for a negative timeout
    */
   wait(
     executionId: string,
     options?: ExecutionWaitOptions
   ): Promise<WaitResult | undefined>;
 
-  /** Pages through executions, newest first by admission sequence. */
+  /**
+   * Pages through executions, newest first by admission sequence.
+   * @throws {ExecutionListRequestError} for an invalid limit, status or cursor
+   */
   list(request?: ExecutionListRequest): Promise<ExecutionViewPage>;
 }
 

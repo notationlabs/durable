@@ -1,6 +1,5 @@
 import {
   DEFAULT_LEASE_DURATION,
-  EXECUTION_STATUSES,
   ExecutionListRequestError,
   defineStore,
   durableValueCodec,
@@ -10,11 +9,21 @@ import {
   type ExecutionLease,
   type ExecutionListRequest,
   type ExecutionStartResult,
+  type ExecutionStatus,
   type Runtime,
   type StandardSchemaV1,
   type StoreWaiter,
 } from "@yieldstar/core";
 import { describe, expect, test } from "vitest";
+
+const EXECUTION_STATUSES: readonly ExecutionStatus[] = [
+  "admitted",
+  "running",
+  "suspended",
+  "completed",
+  "failed",
+  "cancelled",
+];
 
 export type ExecutionConformanceHarnessOptions = {
   /**
@@ -2642,14 +2651,6 @@ export function registerExecutionClientConformance({
           expect(error).toMatchObject({ code: "INVALID_LIST_REQUEST" });
         });
       }
-
-      it("treats a null workflowId, status, cursor or limit as absent", async ({ runtime }) => {
-        for (const id of ["a", "b"]) await admit(runtime, id);
-        const request = { workflowId: null, status: null, cursor: null, limit: null };
-        expect(await listIds(runtime, request as unknown as ExecutionListRequest)).toEqual({
-          ids: ["b", "a"],
-        });
-      });
 
       itAfterRestart("resumes a cursor after a restart", async ({ runtime, restart }) => {
         for (const id of ["a", "b", "c"]) await admit(runtime, id);

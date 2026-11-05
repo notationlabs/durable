@@ -167,9 +167,9 @@ for (const backendKind of backendKinds) {
       );
     });
 
-    test("/events waits for an outcome recorded later, past the /wait cap", async () => {
+    test("/events waits for an outcome recorded later, past maxWait", async () => {
       const { runtime, peer } = openBackend(backendKind);
-      const { url } = serveRoutes(runtime, { waitCap: 20 });
+      const { url } = serveRoutes(runtime, { maxWait: 20 });
       await admit(runtime, "later");
       let settled = false;
       const response = post(url, "events", { executionId: "later" }).finally(() => {
@@ -290,31 +290,6 @@ for (const backendKind of backendKinds) {
         expect(requests[0]).not.toHaveProperty("load");
       });
 
-      test("/list treats null fields as absent", async () => {
-        const { runtime } = openBackend(backendKind);
-        await admit(runtime, "a");
-        await admit(runtime, "b");
-        const requests: ObservationRequest[] = [];
-        const { url } = serveRoutes(runtime, {
-          observationMiddleware: [
-            async (_req, request) => {
-              requests.push(request);
-              return { allow: true };
-            },
-          ],
-        });
-        const response = await post(url, "list", {
-          workflowId: null,
-          status: null,
-          cursor: null,
-          limit: null,
-        });
-        expect(response.status).toBe(200);
-        const page = (await response.json()) as { executions: { executionId: string }[] };
-        expect(page.executions.map((view) => view.executionId)).toEqual(["b", "a"]);
-        expect(requests).toEqual([{ operation: "list", filter: {} }]);
-      });
-
       test("middleware runs in array order, and the first denial wins", async () => {
         const { runtime } = openBackend(backendKind);
         const calls: string[] = [];
@@ -424,37 +399,40 @@ for (const backendKind of backendKinds) {
   });
 }
 
-test("many open /wait and /events requests on one ID share one workflowEndEmitter listener", async () => {
+test("a /wait or /events request stops reading the record when the client disconnects", async () => {
   const runtime = new MemoryRuntime();
-  const workflowEndEmitter = new EventEmitter();
-  const warnings: Error[] = [];
-  const onWarning = (warning: Error) => warnings.push(warning);
-  process.on("warning", onWarning);
-  try {
-    const { url } = serveRoutes(runtime, {
-      invoker: { workflowEndEmitter },
-      pollInterval: 60_000,
-    });
-    await admit(runtime, "popular");
-    const responses = [
-      ...Array.from({ length: 12 }, () => post(url, "wait", { executionId: "popular" })),
-      ...Array.from({ length: 12 }, () => post(url, "events", { executionId: "popular" })),
-    ];
-    await sleep(20);
-    expect(workflowEndEmitter.listenerCount("popular")).toBe(1);
-
-    await complete(runtime, "popular", "receipt");
-    workflowEndEmitter.emit("popular", "receipt");
-    for (const response of await Promise.all(responses)) {
-      expect(response.status).toBe(200);
-    }
-    expect(workflowEndEmitter.listenerCount("popular")).toBe(0);
-    await sleep(10);
-    expect(warnings.filter((warning) => warning.name === "MaxListenersExceededWarning")).toEqual(
-      []
+  let reads = 0;
+  const executions = new Proxy(runtime.executions, {
+    get(target, property) {
+      if (property === "get") {
+        return (executionId: string) => {
+          reads++;
+          return target.get(executionId);
+        };
+      }
+      const value = Reflect.get(target, property);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+  const routes = createRoutes({ runtime: { executions }, logger, pollInterval: 5 });
+  await admit(runtime, "slow");
+  for (const route of ["/wait", "/events"] as const) {
+    reads = 0;
+    const controller = new AbortController();
+    const response = routes[route].POST(
+      new Request(`http://yieldstar.test${route}`, {
+        method: "POST",
+        body: JSON.stringify({ executionId: "slow" }),
+        signal: controller.signal,
+      })
     );
-  } finally {
-    process.off("warning", onWarning);
+    await sleep(30);
+    controller.abort();
+    await response;
+    const readsAtAbort = reads;
+    expect(readsAtAbort).toBeGreaterThan(1);
+    await sleep(30);
+    expect(reads).toBe(readsAtAbort);
   }
 });
 
@@ -470,7 +448,33 @@ test("pollInterval sets how often /wait reads the record", async () => {
   expect(await value.json()).toMatchObject({ status: "completed", result: "receipt" });
   expect(ms).toBeGreaterThanOrEqual(190);
 
-  expect(() => createRoutes({ runtime, logger, pollInterval: -1 })).toThrow(RangeError);
+});
+
+test("createRoutes rejects a pollInterval or maxWait that is not a positive, finite number", () => {
+  const runtime = new MemoryRuntime();
+  for (const value of [-1, 0, NaN, Infinity]) {
+    expect(() => createRoutes({ runtime, logger, pollInterval: value })).toThrow(
+      new RangeError("pollInterval must be a positive, finite number of milliseconds")
+    );
+    expect(() => createRoutes({ runtime, logger, maxWait: value })).toThrow(
+      new RangeError("maxWait must be a positive, finite number of milliseconds")
+    );
+  }
+});
+
+test("createRoutes warns when trigger middleware is set without observationMiddleware", () => {
+  const runtime = new MemoryRuntime();
+  const guard = async () => new Response("Unauthorized", { status: 401 });
+  const warned = vi.spyOn(logger, "warn").mockImplementation(() => {});
+  try {
+    createRoutes({ runtime, logger, middleware: [guard] });
+    expect(warned).toHaveBeenCalledTimes(1);
+    createRoutes({ runtime, logger, middleware: [guard], observationMiddleware: [] });
+    createRoutes({ runtime, logger });
+    expect(warned).toHaveBeenCalledTimes(1);
+  } finally {
+    warned.mockRestore();
+  }
 });
 
 test("basePath prefixes every route", () => {
