@@ -87,10 +87,8 @@ Run `pok` with no arguments for the full command menu.
 
 ### Documentation
 
-`docs/` holds the Markdown. notation-web publishes it as the Engine site at
-notation.dev/engine; run notation-web to preview it. Each category keeps its
-sidebar in a `nav.ts` beside its Markdown, and the build fails on a broken link
-or a duplicate slug. See [docs/README.md](docs/README.md) for the layout.
+`docs/` holds the Markdown, published at notation.dev/engine. `docs/site.ts`
+declares the sidebar.
 
 ### Examples
 
