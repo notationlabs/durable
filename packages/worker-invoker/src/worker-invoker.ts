@@ -1,7 +1,7 @@
 import type { Logger } from "pino";
 import type {
   DeliveryOptions,
-  WorkflowEvent,
+  DeliveryEvent,
   WorkflowInvoker,
   WorkflowRunOutcome,
 } from "@yieldstar/core";
@@ -47,7 +47,10 @@ export function createWorkflowInvoker(params: {
   const { logger, workerPath, execPath, handshakeTimeout = 5_000 } = params;
   return {
     workflowEndEmitter,
-    deliver(event: WorkflowEvent, { lease, signal, cancellation }: DeliveryOptions) {
+    deliver(
+      event: DeliveryEvent,
+      { lease, signal, cancellation, workflowVersion }: DeliveryOptions
+    ) {
       const { executionId } = event;
 
       const filePath = workerPath.startsWith("file:")
@@ -142,6 +145,7 @@ export function createWorkflowInvoker(params: {
                 event: { ...event, ...encoded },
                 lease,
                 ...(cancellation ? { cancellation } : {}),
+                ...(workflowVersion !== undefined ? { workflowVersion } : {}),
               };
               request(delivery);
               return;
@@ -165,17 +169,21 @@ export function createWorkflowInvoker(params: {
 }
 
 function deserializeOutcome(outcome: SerializedOutcome): WorkflowRunOutcome {
+  const version =
+    outcome.workflowVersion !== undefined ? { workflowVersion: outcome.workflowVersion } : {};
   switch (outcome.status) {
     case "suspended":
     case "cancelled":
+    case "diverged":
       return outcome;
     case "completed":
-      return { status: "completed", result: decodeOrThrow(outcome.result) };
+      return { status: "completed", result: decodeOrThrow(outcome.result), ...version };
     case "failed": {
       const error = decodeOrThrow(outcome.error);
       return {
         status: "failed",
         error: error instanceof Error ? error : new Error(String(error)),
+        ...version,
       };
     }
   }

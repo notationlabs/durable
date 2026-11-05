@@ -3,7 +3,7 @@ import type {
   EventContext,
   ExecutionCancellation,
   ExecutionLease,
-  WorkflowEvent,
+  DeliveryEvent,
   WorkflowRunOutcome,
   WorkflowRunner,
 } from "@yieldstar/core";
@@ -37,12 +37,14 @@ export type WorkerMessage =
 export type WorkerDelivery = {
   type: "deliver";
   /** `params` and `context` as encoded by `encodeExecutionEvent`. */
-  event: Omit<WorkflowEvent, "params" | "context"> & {
+  event: Omit<DeliveryEvent, "params" | "context"> & {
     params: string;
     context: string;
   };
   lease: ExecutionLease;
   cancellation?: ExecutionCancellation;
+  /** The workflow version on the record, when one is recorded. */
+  workflowVersion?: number;
 };
 
 export type WorkerRequest = WorkerDelivery;
@@ -50,8 +52,9 @@ export type WorkerRequest = WorkerDelivery;
 export type SerializedOutcome =
   | Extract<WorkflowRunOutcome, { status: "suspended" }>
   | Extract<WorkflowRunOutcome, { status: "cancelled" }>
-  | { status: "completed"; result: string }
-  | { status: "failed"; error: string };
+  | Extract<WorkflowRunOutcome, { status: "diverged" }>
+  | { status: "completed"; result: string; workflowVersion?: number }
+  | { status: "failed"; error: string; workflowVersion?: number };
 
 /** The exit code of a worker whose runtime process has gone. */
 export const WORKER_ORPHANED_EXIT_CODE = 75;
@@ -78,9 +81,9 @@ export function createWorkflowWorker(
       // delivery's signal never aborts inside the worker.
       const { signal } = new AbortController();
       process.on("message", async (message: WorkerRequest) => {
-        const { event, lease, cancellation } = message;
+        const { event, lease, cancellation, workflowVersion } = message;
         try {
-          const workflowEvent: WorkflowEvent = {
+          const workflowEvent: DeliveryEvent = {
             ...event,
             ...decodeExecutionEvent(event),
           };
@@ -89,6 +92,7 @@ export function createWorkflowWorker(
             lease,
             signal,
             ...(cancellation ? { cancellation } : {}),
+            ...(workflowVersion !== undefined ? { workflowVersion } : {}),
             logger,
           });
           send({ status: "outcome", outcome: serializeOutcome(outcome) });
@@ -102,13 +106,21 @@ export function createWorkflowWorker(
 }
 
 function serializeOutcome(outcome: WorkflowRunOutcome): SerializedOutcome {
-  if (outcome.status === "suspended" || outcome.status === "cancelled") return outcome;
+  if (
+    outcome.status === "suspended" ||
+    outcome.status === "cancelled" ||
+    outcome.status === "diverged"
+  ) {
+    return outcome;
+  }
+  const version =
+    outcome.workflowVersion !== undefined ? { workflowVersion: outcome.workflowVersion } : {};
   if (outcome.status === "failed") {
-    return { status: "failed", error: encodeThrownValue(outcome.error) };
+    return { status: "failed", error: encodeThrownValue(outcome.error), ...version };
   }
   const result = durableValueCodec.encode(outcome.result);
   if (result.status === "encoded") {
-    return { status: "completed", result: result.canonical };
+    return { status: "completed", result: result.canonical, ...version };
   }
   // As acknowledgement would record it.
   const error = new WorkflowValueError(
@@ -116,5 +128,5 @@ function serializeOutcome(outcome: WorkflowRunOutcome): SerializedOutcome {
     WORKFLOW_RESULT_STEP_KEY,
     `Workflow result is not a durable value: ${result.message}`
   );
-  return { status: "failed", error: encodeThrownValue(error) };
+  return { status: "failed", error: encodeThrownValue(error), ...version };
 }
