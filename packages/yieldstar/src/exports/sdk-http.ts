@@ -20,6 +20,7 @@ import {
   ExecutionAdmissionError,
   ExecutionCancelRequestError,
   ExecutionListRequestError,
+  ExecutionPrunedError,
   WorkflowCancelledError,
   durableValueCodec,
   prepareExecutionCancel,
@@ -261,6 +262,7 @@ export function createHttpSdkFactory<W extends WorkflowRouter>() {
         if (result.status === "cancelled") {
           throw new WorkflowCancelledError({ reason: result.reason, source: result.source });
         }
+        if (result.status === "pruned") throw new ExecutionPrunedError(result);
         if (result.status === "timed-out") {
           throw new Error(
             `Execution "${ack.executionId}" is still ${result.execution.status}`

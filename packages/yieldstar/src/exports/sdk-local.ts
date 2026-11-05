@@ -19,6 +19,7 @@ import type {
 } from "@yieldstar/core";
 import {
   ExecutionAdmissionError,
+  ExecutionPrunedError,
   WorkflowCancelledError,
   createExecutionControl,
   createExecutionObserver,
@@ -89,6 +90,7 @@ export function createLocalSdk<W extends WorkflowRouter>(
       if (result.status === "cancelled") {
         throw new WorkflowCancelledError({ reason: result.reason, source: result.source });
       }
+      if (result.status === "pruned") throw new ExecutionPrunedError(result);
       if (result.status === "timed-out") {
         throw new Error(`Execution "${executionId}" is still ${result.execution.status}`);
       }

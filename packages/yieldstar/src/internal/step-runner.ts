@@ -617,6 +617,15 @@ async function* joinStep(params: {
       yield new StepError(err);
       throw err;
     }
+    case "pruned": {
+      const err = new WorkflowJoinError(
+        "JOIN_TARGET_PRUNED",
+        targetId,
+        `Execution "${targetId}" was pruned, so its outcome is no longer kept`
+      );
+      yield new StepError(err);
+      throw err;
+    }
     case "waiting":
       if (deadline !== undefined && clock() >= deadline) {
         return yield* record<TimedJoinResult<unknown>>({ status: "timed-out" });
