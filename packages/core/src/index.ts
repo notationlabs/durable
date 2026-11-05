@@ -134,7 +134,6 @@ export {
   DEFAULT_DISPATCHER_CONCURRENCY,
   ExecutionDispatcher,
 } from "./lib/execution-dispatcher";
-export { waitForExecutionOutcome } from "./lib/wait-for-outcome";
 export type {
   ActiveExecutionView,
   ExecutionObserver,

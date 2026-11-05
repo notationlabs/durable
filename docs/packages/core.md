@@ -289,13 +289,9 @@ interface ExecutionObserver {
 - `poll` returns the record's view, or `undefined` when no record exists.
 - `wait` reads the record, and then reads it again every `pollInterval` ms (default `25`) until it is terminal or `timeout` passes. It resolves with the terminal view, with `{ status: "timed-out", execution }`, or with `undefined` at once for an unknown ID. When `signal` aborts, it stops reading and rejects with the signal's reason. A negative `timeout` throws a `RangeError`. `isDuration(value)` is the check it applies to `timeout`: a number that is not `NaN` and not negative. `createExecutionObserver` throws a `RangeError` for a `pollInterval` that is not greater than zero, because a `pollInterval` of `0` reads the record continuously.
 - `list` returns `executions.list`'s page with each record turned into a view.
-- `notifier` is an optional fast path, such as the invoker's `workflowEndEmitter`: an event for the execution ID makes `wait` read the record early. No result depends on it. Each open wait adds one listener for its execution ID and removes it when it settles. An `EventEmitter` prints `MaxListenersExceededWarning` when more than 10 waits on one ID are open at once; raise its limit with `setMaxListeners` if you expect more.
+- `notifier` is an optional fast path, such as the invoker's `workflowEndEmitter`: an event for the execution ID makes `wait` read the record early. An event that arrives while a read is in progress makes the next read start as soon as that read returns. No result depends on it. Each open wait adds one listener for its execution ID and removes it when it settles. An `EventEmitter` prints `MaxListenersExceededWarning` when more than 10 waits on one ID are open at once; raise its limit with `setMaxListeners` if you expect more.
 
 The views leave out `params`, `context`, lease and wake state and `unacknowledgedDeliveryCount`. `toExecutionView(record)` builds one, and `isTerminalExecutionView(view)` recognises a completed or failed view. See [Execution views](../manual/sdk-local.md#execution-views) for the types.
-
-## `waitForExecutionOutcome`
-
-`waitForExecutionOutcome(executions, executionId, { emitter?, pollInterval?, signal? })` polls `executions.get` until the record is terminal and resolves with its `ExecutionOutcome`, or with `undefined` when no record exists. `pollInterval` defaults to `25` ms. It reads the record the same way as an observer's `wait` without a timeout; passing the invoker's `workflowEndEmitter` as `emitter` triggers an early re-read when the dispatcher records an outcome.
 
 ## `HeapClient` (abstract class)
 
