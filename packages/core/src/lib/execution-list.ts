@@ -113,7 +113,7 @@ export function toExecutionListPage(
 
 const CURSOR_PREFIX = "v1:";
 
-export function encodeExecutionListCursor(admissionSequence: number): string {
+function encodeExecutionListCursor(admissionSequence: number): string {
   return toBase64Url(`${CURSOR_PREFIX}${admissionSequence}`);
 }
 

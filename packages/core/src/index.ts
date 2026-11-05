@@ -162,7 +162,6 @@ export {
   DEFAULT_EXECUTION_LIST_LIMIT,
   EXECUTION_STATUSES,
   MAX_EXECUTION_LIST_LIMIT,
-  encodeExecutionListCursor,
   matchesExecutionListRequest,
   prepareExecutionListRequest,
   toExecutionListPage,

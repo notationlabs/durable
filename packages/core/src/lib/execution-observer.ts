@@ -1,11 +1,10 @@
 import type { ExecutionClient, ExecutionRecord } from "../base/execution";
 import { isTerminalExecutionStatus } from "../base/execution";
 import {
+  isTerminalExecutionView,
   toExecutionView,
-  type ActiveExecutionView,
   type ExecutionObserver,
   type ExecutionWaitOptions,
-  type TerminalExecutionView,
 } from "../base/observation";
 
 /** How often `wait` reads the record, in milliseconds. */
@@ -57,10 +56,8 @@ export function createExecutionObserver(
       });
       if (!record) return undefined;
       const view = toExecutionView(record);
-      if (isTerminalExecutionStatus(record.status)) {
-        return view as TerminalExecutionView;
-      }
-      return { status: "timed-out", execution: view as ActiveExecutionView };
+      if (isTerminalExecutionView(view)) return view;
+      return { status: "timed-out", execution: view };
     },
 
     async list(request) {
