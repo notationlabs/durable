@@ -1,7 +1,7 @@
 import { expect, test, vi } from "vitest";
 import type { StandardSchemaV1, StepRunner } from "yieldstar";
 import { testSchema } from "@yieldstar/test-utils";
-import { DEFAULT_LEASE_DURATION, waitForExecutionOutcome } from "@yieldstar/core";
+import { DEFAULT_LEASE_DURATION, createExecutionObserver } from "@yieldstar/core";
 import { createSdk } from "./sdk";
 import { WORKFLOW_RESULT_STEP_KEY, defineStore, workflow } from "yieldstar";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -863,10 +863,10 @@ test("deleteFrom replay returns its committed result without deleting a new inst
     outcome: { status: "suspended", wakeAt: sdk.runtime.clock() },
   });
   sdk.dispatcher.start();
-  const replayed = await waitForExecutionOutcome(sdk.runtime.executions, executionId, {
+  const replayed = await createExecutionObserver(sdk.runtime.executions, {
     pollInterval: 1,
-  });
-  expect(replayed).toEqual({ status: "completed", result: { deleted: true } });
+  }).wait(executionId);
+  expect(replayed).toMatchObject({ status: "completed", result: { deleted: true } });
   expect(await sdk.storeClient.getStore({
     definition: ConversationStore,
     id: storeId,

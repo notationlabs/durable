@@ -8,8 +8,8 @@ import {
   ExecutionDispatcher,
   WorkerExitedError,
   WorkflowRunner,
+  createExecutionObserver,
   redeliveryDelay,
-  waitForExecutionOutcome,
   type WorkflowInvoker,
 } from "@yieldstar/core";
 import { createWorkflowInvoker } from "@yieldstar/test-invoker";
@@ -347,8 +347,8 @@ test("an EffectClient failure inside a worker replies retry: deliver rejects, th
 
   dispatcher.start();
   expect(
-    await waitForExecutionOutcome(runtime.executions, "order-42", { pollInterval: 5 })
-  ).toEqual({ status: "completed", result: { chargeId: "ch-1" } });
+    await createExecutionObserver(runtime.executions, { pollInterval: 5 }).wait("order-42")
+  ).toMatchObject({ status: "completed", result: { chargeId: "ch-1" } });
   expect(readFileSync(join(dir, "calls"), "utf8")).toBe("perform\n");
   expect(await runtime.effects.getEffect("acct-1:charge:order-42")).toMatchObject({
     status: "settled",

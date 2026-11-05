@@ -19,7 +19,7 @@ new ExecutionDispatcher(runtime, { invoker, logger }).start();
 | Option         | Type              | Default | Description                                                                         |
 | -------------- | ----------------- | ------- | ----------------------------------------------------------------------------------- |
 | `invoker`      | `WorkflowInvoker` | –       | Optional. When the dispatcher runs in this process, lets `wait` and `triggerAndWait` read the record as soon as the dispatcher records an outcome, instead of at their next read. No result depends on it |
-| `pollInterval` | `number`          | `25`    | Milliseconds between reads of the execution record in `wait` and `triggerAndWait`. A negative value throws a `RangeError` |
+| `pollInterval` | `number`          | `25`    | Milliseconds between reads of the execution record in `wait` and `triggerAndWait`. It must be a finite number greater than zero; any other value throws a `RangeError` |
 
 ## `sdk.trigger`
 
@@ -73,7 +73,7 @@ When the ID is not in use, the trigger is admitted as usual and returns `"accept
 - If `workflowId` and `params` match, the trigger admits nothing and returns `"existing"` with the same `executionId`. This is true whatever the execution's status, including `completed`, `failed` and `cancelled`, and also when the first trigger was not idempotent.
 - If either differs, the trigger throws `EXECUTION_REQUEST_MISMATCH`, and the record is unchanged.
 
-`params` match when they are equal after a round trip through the durable value codec, so the key order of plain objects does not matter. Missing `params` and `{}` do not match. `context` is not compared, because it carries per-request data such as an authentication token. Of two idempotent triggers with the same request that run at the same time, one returns `"accepted"` and the other `"existing"`.
+`params` match when their canonical durable value encodings are equal. The encoding sorts the keys of plain objects, so their key order does not matter. Missing `params` and `{}` do not match. `context` is not compared, because it carries per-request data such as an authentication token. Of two idempotent triggers with the same request that run at the same time, one returns `"accepted"` and the other `"existing"`.
 
 So the retry for `order-42` returns `"existing"`, and the server can call [`wait`](#sdkwait) on `order-42`. A trigger that reuses `order-42` with a different amount throws `EXECUTION_REQUEST_MISMATCH`, and the caller knows to choose a new ID.
 
@@ -130,6 +130,7 @@ if (!execution) {
 - When `timeout` (in milliseconds) passes first, it resolves with `{ status: "timed-out", execution }`, where `execution` is the current view. It does not throw.
 - Without a `timeout`, it waits until the execution is terminal.
 - For an unknown ID it resolves with `undefined` at once. It does not wait for a later admission.
+- When `signal` (an `AbortSignal`) aborts, it stops reading the record and rejects with the signal's reason.
 - A negative `timeout` throws a `RangeError`.
 
 A failed execution returns the same error, with the same `name` and `message`, every time it is read.
@@ -162,7 +163,7 @@ The order is the order in which the backend admitted the executions, not `admitt
 - Every matching execution admitted before the first page appears once. Executions admitted after the first page do not appear on later pages.
 - `status` is compared with the status at the runtime clock's current time, so `running` matches executions with a live lease. An execution whose status changes while you page through a `status` filter may appear or disappear on later pages.
 
-`list` throws `ExecutionListRequestError` (`code: "INVALID_LIST_REQUEST"`) for a `workflowId` that is not a string, a `limit` that is not a positive integer, an unknown `status`, or a `cursor` that `list` did not return. A field set to `null` is treated as absent.
+`list` throws `ExecutionListRequestError` (`code: "INVALID_LIST_REQUEST"`) for a `workflowId` that is not a string, a `limit` that is not a positive integer, an unknown `status`, or a malformed `cursor`.
 
 ## `sdk.cancel`
 
@@ -204,6 +205,7 @@ type CancelResult =
 `poll`, `wait` and `list` return views of the execution record:
 
 ```ts
+// Not exported: the fields every view has.
 type ExecutionViewBase = {
   executionId: string;
   workflowId: string;

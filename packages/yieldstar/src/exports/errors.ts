@@ -29,6 +29,6 @@ export class HttpRouteError extends Error {
     super(message);
     this.name = "HttpRouteError";
     this.status = status;
-    if (code !== undefined) this.code = code;
+    this.code = code;
   }
 }
