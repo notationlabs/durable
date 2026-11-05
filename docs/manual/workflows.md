@@ -81,7 +81,7 @@ interface ExecutionRecord {
   admittedAt: number;
   updatedAt: number;
   unacknowledgedDeliveryCount: number; // consecutive deliveries that ended without an outcome
-  parent?: { executionId: string; stepKey: string }; // set when step.start admitted it
+  parent?: { executionId: string; stepKey: string }; // set when step.start or step.call admitted it
 }
 ```
 
@@ -89,13 +89,13 @@ interface ExecutionRecord {
 | ----------- | -------------------------------------------------------------------- |
 | `admitted`  | No delivery has been acknowledged yet                                |
 | `running`   | A dispatcher holds a live lease on the execution and is delivering it |
-| `suspended` | The latest delivery paused on a delay, retry, store wait or effect wait |
+| `suspended` | The latest delivery paused on a delay, retry, store wait, effect wait or join |
 | `completed` | The workflow returned. `outcome.result` holds the return value       |
 | `failed`    | Workflow code threw an uncaught error. `outcome.error` holds it      |
 
 `completed` and `failed` are terminal and permanent. A finished execution never runs workflow code again: a later delivery returns the recorded outcome.
 
-An execution started by another workflow with [`step.start`](./steps.md#stepstart) records the caller's execution ID and step key as `parent`. The link never changes, and executions created by a trigger have none.
+An execution started by another workflow with [`step.start`](./steps.md#stepstart) or [`step.call`](./steps.md#stepcall) records the caller's execution ID and step key as `parent`. The link never changes, and executions created by a trigger have none.
 
 **Execution IDs are unique for the lifetime of the runtime.** A trigger may supply its own `executionId`, and the runtime reserves it unchanged; otherwise the runtime chooses one. Reusing an ID that was ever admitted, including one whose execution failed, is rejected with `EXECUTION_ID_CONFLICT`. An [idempotent trigger](./sdk-local.md#idempotent-trigger) that repeats the same request returns the existing execution instead, and admits nothing. This matters because the ID is how a replay finds its own recorded steps, so a reused ID would replay another execution's results.
 

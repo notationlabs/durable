@@ -13,7 +13,7 @@ bun add yieldstar
 ```ts
 import { workflow, createWorkflow } from "yieldstar";
 import { createWorkflowRouter } from "yieldstar";
-import { RetryableError, ExecutionAdmissionError, WorkflowStartError } from "yieldstar";
+import { RetryableError, ExecutionAdmissionError, WorkflowStartError, WorkflowJoinError } from "yieldstar";
 import { ExecutionListRequestError, HttpRouteError } from "yieldstar";
 import { WorkflowValueError, registerErrorClass, WORKFLOW_RESULT_STEP_KEY } from "yieldstar";
 import { WorkflowEffectError, EffectDeliveryError, EffectClientInvariantError } from "yieldstar";
@@ -26,6 +26,8 @@ import type {
   StepRunOptions,
   DurableStepFn,
   WorkflowStore,
+  TimedWhenResult,
+  TimedJoinResult,
   ExecutionRecord,
   ExecutionStatus,
   ExecutionParent,
@@ -45,6 +47,7 @@ import type {
   ErrorClass,
   WorkflowValueErrorCode,
   WorkflowStartErrorCode,
+  WorkflowJoinErrorCode,
   EffectDescriptor,
   EffectLookup,
   EffectRecord,
@@ -119,6 +122,10 @@ Thrown by the HTTP SDK for an error response that has no more specific error, su
 
 Thrown to workflow code by `step.start` when the runtime rejects the start. `err.code` is `"INVALID_START_PARAMETERS"` (`params` are not a durable value, or `workflowId` is empty) or `"START_REQUEST_MISMATCH"` (the step already started a different workflow or different `params`). See [`step.start`](../manual/steps.md#stepstart).
 
+## `WorkflowJoinError`
+
+Thrown to workflow code by `step.join` and `step.call`. `err.code` is `"JOINED_EXECUTION_FAILED"` (the target failed, and `err.cause` is its recorded error), `"JOIN_TARGET_NOT_FOUND"` (no execution has the target ID) or `"JOIN_SELF"` (the target is the calling execution). `err.executionId` is the target's ID. It is recorded as the step's error, so replay throws the same class, code and `executionId`. See [`step.join`](../manual/steps.md#stepjoin).
+
 ## `WorkflowEffectError`
 
 Thrown to workflow code by `step.effect`. `err.code` is `"INVALID_EFFECT_REQUEST"` (the `effectId`, `operation`, `input`, `retryIn`, `maxAttempts`, `lookup`, `perform` or `failsOn` is invalid), `"EFFECT_REQUEST_MISMATCH"` (the effect already exists with a different `operation` or `input`) or `"EFFECT_OUTCOME_UNKNOWN"` (the outcome is still unknown after `maxAttempts` attempts). It is recorded as the step's error, so replay throws the same class and code. See [`step.effect`](../manual/steps.md#stepeffect).
@@ -172,6 +179,12 @@ const store = step.store(definition, { id }); // no yield*
 
 yield* step.start("key", { workflowId, params });
 
+yield* step.join<R>("key", executionId);
+yield* step.join<R>("key", executionId, { deadline });
+
+yield* step.call<typeof childWorkflow>("key", { workflowId, params });
+yield* step.call<typeof childWorkflow>("key", { workflowId, params }, { deadline });
+
 yield* step.effect("key", { effectId, operation, input, lookup, perform, retryIn, failsOn, maxAttempts });
 ```
 
@@ -180,6 +193,8 @@ yield* step.effect("key", { effectId, operation, input, lookup, perform, retryIn
 `when(key, selector, { deadline })` waits for the selector to match or for `deadline`, whichever is recorded first, and returns a `TimedWhenResult<R>`: `{ status: "matched", value }` or `{ status: "timed-out" }`. `deadline` is required in this form, so an optional deadline needs a separate call to the untimed form – see [Waiting with a deadline](../manual/store-waiting.md#waiting-with-a-deadline).
 
 `step.start` starts another workflow as its own execution, once per step key, and returns `{ executionId }` – see [Steps](../manual/steps.md#stepstart).
+
+`step.join` waits until the execution `executionId` is terminal and returns its result, or throws a `WorkflowJoinError` – see [Steps](../manual/steps.md#stepjoin). `step.call` starts a child as `step.start` does and joins it, under one step key; its type parameter checks `params` and types the result – see [Steps](../manual/steps.md#stepcall). With `{ deadline }`, both return a `TimedJoinResult<R>`: `{ status: "completed", result }` or `{ status: "timed-out" }`.
 
 `step.effect` calls an external system under a stable `effectId`, looking up an uncertain earlier attempt before performing it again, and returns the operation's result – see [Steps](../manual/steps.md#stepeffect). Its descriptor is typed `EffectDescriptor<T, Input>`, and `lookup` resolves with an `EffectLookup<T>`:
 

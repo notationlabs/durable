@@ -172,6 +172,7 @@ type ExecutionViewBase = {
   workflowId: string;
   admittedAt: number;
   updatedAt: number;
+  parent?: { executionId: string; stepKey: string };
 };
 
 type ActiveExecutionView = ExecutionViewBase & {
@@ -191,7 +192,7 @@ type WaitResult =
 type ExecutionViewPage = { executions: ExecutionView[]; cursor?: string };
 ```
 
-A view leaves out `params`, `context`, lease and wake state and `unacknowledgedDeliveryCount`. Operators can read those with `runtime.executions.get`. `admittedAt` and `updatedAt` come from the clock of the process that wrote them, so use them for display only.
+`parent` is present on executions started by [`step.start`](./steps.md#stepstart) or [`step.call`](./steps.md#stepcall), and names the caller's execution ID and step key. A view leaves out `params`, `context`, lease and wake state and `unacknowledgedDeliveryCount`. Operators can read those with `runtime.executions.get`. `admittedAt` and `updatedAt` come from the clock of the process that wrote them, so use them for display only.
 
 Both the local SDK and the [HTTP SDK](./sdk-http.md) implement the `ExecutionObserver` interface (`poll`, `wait` and `list`), which `yieldstar` exports with these types. Code that only reads executions can take an `ExecutionObserver` and work with either SDK.
 

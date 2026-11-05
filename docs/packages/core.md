@@ -90,7 +90,7 @@ interface ExecutionRecord {
 type ExecutionParent = { executionId: string; stepKey: string };
 ```
 
-`parent` names the execution and step that started this one with [`step.start`](../manual/steps.md#stepstart). It is set when the target is admitted and never changes. An execution admitted through `admit`, such as a trigger, has no parent.
+`parent` names the execution and step that started this one with [`step.start`](../manual/steps.md#stepstart) or [`step.call`](../manual/steps.md#stepcall). Execution views carry it too. It is set when the target is admitted and never changes. An execution admitted through `admit`, such as a trigger, has no parent.
 
 `running` means the execution has a live lease. When the lease ends without a terminal acknowledgement, the status returns to `suspended` if an earlier delivery was acknowledged as suspended, and to `admitted` otherwise. Operators can read `unacknowledgedDeliveryCount` to find executions that keep failing.
 
@@ -231,7 +231,7 @@ So `{ a: undefined }` and `{}` stay distinct, and only a tagged value decodes as
 
 An error keeps its `name`, `message`, a string `stack` and `code`, its own `cause` (encoded recursively), a non-enumerable `errors` array such as `AggregateError`'s, and its own enumerable properties whose values are durable, under `fields`. Properties that are not durable are left out rather than rejecting the error. `encodeThrownValue(value)` encodes a thrown value as thrown when it is durable, and as `Error(String(value))` otherwise.
 
-`decode` revives an error as the class registered under its `name` with `registerErrorClass(name, errorClass)`, setting its prototype and fields without calling the constructor, and as an `Error` with the same name, message, code, cause and fields when no class is registered. Registration is per process. `TypeError`, `RangeError`, `SyntaxError`, `ReferenceError`, `EvalError`, `URIError`, `AggregateError`, `WorkflowStartError`, `WorkflowValueError`, `WorkflowEffectError`, `EffectDeliveryError`, `EffectClientInvariantError` and `StoreValidationError` are registered by default, and `yieldstar` registers `RetryableError`.
+`decode` revives an error as the class registered under its `name` with `registerErrorClass(name, errorClass)`, setting its prototype and fields without calling the constructor, and as an `Error` with the same name, message, code, cause and fields when no class is registered. Registration is per process. `TypeError`, `RangeError`, `SyntaxError`, `ReferenceError`, `EvalError`, `URIError`, `AggregateError`, `WorkflowStartError`, `WorkflowJoinError`, `WorkflowValueError`, `WorkflowEffectError`, `EffectDeliveryError`, `EffectClientInvariantError` and `StoreValidationError` are registered by default, and `yieldstar` registers `RetryableError`.
 
 `WorkflowValueError` (`code: "INVALID_STEP_VALUE" | "STEP_SCHEMA_INVALID"`, `stepKey`) reports a value the codec or a step's schema rejects. A completed outcome whose result the codec rejects is recorded as `failed` with `INVALID_STEP_VALUE` and `stepKey` `WORKFLOW_RESULT_STEP_KEY` (`"$$workflow-result$$"`).
 
