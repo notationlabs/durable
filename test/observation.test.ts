@@ -190,7 +190,13 @@ for (const sdkKind of sdkKinds) {
       test("triggerAndWait returns the result without a workflowEndEmitter listener", async () => {
         const { runtime, sdk } = setup();
         const { invoker } = startDispatcher(runtime, router);
-        const emit = vi.spyOn(invoker.workflowEndEmitter, "emit");
+        const emitter = invoker.workflowEndEmitter;
+        const emit = vi.spyOn(emitter, "emit");
+        // An EventEmitter emits "newListener" for every listener added by any
+        // method, so this records a listener even if it was removed before
+        // the wait returned.
+        const added: (string | symbol)[] = [];
+        emitter.on("newListener", (event: string | symbol) => added.push(event));
 
         const result = await sdk.triggerAndWait({
           workflowId: "charge-order",
@@ -199,7 +205,7 @@ for (const sdkKind of sdkKinds) {
         });
         expect(result).toEqual({ receipt: "r-42" });
         expect(emit).toHaveBeenCalledWith("order-42", { receipt: "r-42" });
-        expect(invoker.workflowEndEmitter.listenerCount("order-42")).toBe(0);
+        expect(added).toEqual([]);
 
         const error = await sdk
           .triggerAndWait({ workflowId: "declined", executionId: "order-43", params: {} })

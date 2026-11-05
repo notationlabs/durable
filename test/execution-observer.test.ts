@@ -1,104 +1,27 @@
 import { EventEmitter } from "node:events";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
-import {
-  ExecutionListRequestError,
-  createExecutionObserver,
-  type Runtime,
-} from "@yieldstar/core";
+import { ExecutionListRequestError, createExecutionObserver } from "@yieldstar/core";
 import { MemoryRuntime } from "@yieldstar/test-runtime";
-import { SqliteRuntime } from "@yieldstar/sqlite-runtime";
+import {
+  LEASE,
+  admit,
+  backendKinds,
+  claim,
+  cleanup,
+  complete,
+  elapsed,
+  fail,
+  openBackend,
+  sleep,
+  suspend,
+} from "./observation-harness";
 
-const isBun = "Bun" in globalThis;
-const { createSqliteDb } = isBun
-  ? await import("@yieldstar/sqlite-runtime/bun")
-  : await import("@yieldstar/sqlite-runtime/node");
+afterEach(cleanup);
 
-const LEASE = 30_000;
+for (const backendKind of backendKinds) {
+  describe(`execution observer on ${backendKind}`, () => {
+    const create = () => openBackend(backendKind);
 
-const cleanups: (() => void)[] = [];
-afterEach(() => {
-  for (const cleanup of cleanups.splice(0)) cleanup();
-});
-
-/** Two runtimes on one database file, as two processes would open it. */
-function openSharedFile() {
-  const dir = mkdtempSync(join(tmpdir(), "yieldstar-observer-"));
-  const path = join(dir, "executions.db");
-  const dbs: ReturnType<typeof createSqliteDb>[] = [];
-  const open = (options?: { clock?: () => number }) => {
-    const db = createSqliteDb({ path, wal: true });
-    dbs.push(db);
-    return new SqliteRuntime(db, options);
-  };
-  cleanups.push(() => {
-    for (const db of dbs) db.close();
-    rmSync(dir, { recursive: true, force: true });
-  });
-  return open;
-}
-
-const backends: [string, () => { runtime: Runtime; peer: Runtime }][] = [
-  [
-    "memory",
-    () => {
-      const runtime = new MemoryRuntime();
-      return { runtime, peer: runtime };
-    },
-  ],
-  [
-    "sqlite file",
-    () => {
-      const open = openSharedFile();
-      return { runtime: open(), peer: open() };
-    },
-  ],
-];
-
-async function admit(runtime: Runtime, executionId: string) {
-  const admitted = await runtime.executions.admit({
-    executionId,
-    workflowId: "charge-order",
-    params: { orderId: 42 },
-    context: new Map([["token", "secret"]]),
-  });
-  expect(admitted).toEqual({ status: "accepted", executionId });
-}
-
-async function claim(runtime: Runtime, executionId: string) {
-  const leases = await runtime.executions.claimDue({
-    limit: 1,
-    duration: LEASE,
-    filter: { executionIds: [executionId] },
-  });
-  expect(leases).toHaveLength(1);
-  return leases[0];
-}
-
-async function complete(runtime: Runtime, executionId: string, result: unknown) {
-  await runtime.executions.acknowledge({
-    lease: await claim(runtime, executionId),
-    outcome: { status: "completed", result },
-  });
-}
-
-async function fail(runtime: Runtime, executionId: string, error: Error) {
-  await runtime.executions.acknowledge({
-    lease: await claim(runtime, executionId),
-    outcome: { status: "failed", error },
-  });
-}
-
-async function elapsed<T>(fn: () => Promise<T>) {
-  const start = Date.now();
-  const value = await fn();
-  return { value, ms: Date.now() - start };
-}
-
-for (const [name, create] of backends) {
-  describe(`execution observer on ${name}`, () => {
     test("poll returns a view of each status, with an outcome only when terminal", async () => {
       const { runtime } = create();
       const observer = createExecutionObserver(runtime.executions);
@@ -107,10 +30,7 @@ for (const [name, create] of backends) {
       await admit(runtime, "running");
       await claim(runtime, "running");
       await admit(runtime, "suspended");
-      await runtime.executions.acknowledge({
-        lease: await claim(runtime, "suspended"),
-        outcome: { status: "suspended" },
-      });
+      await suspend(runtime, "suspended");
       await admit(runtime, "completed");
       await complete(runtime, "completed", { receipt: "r-1" });
       await admit(runtime, "failed");
@@ -167,7 +87,7 @@ for (const [name, create] of backends) {
       const observer = createExecutionObserver(runtime.executions, { pollInterval: 5 });
       await admit(runtime, "later");
       const waiting = observer.wait("later");
-      await new Promise((resolve) => setTimeout(resolve, 20));
+      await sleep(20);
       await complete(peer, "later", "receipt");
       expect(await waiting).toMatchObject({
         executionId: "later",
@@ -252,7 +172,7 @@ for (const [name, create] of backends) {
 }
 
 test("wait returns an outcome recorded after a restart of the process that ran the execution", async () => {
-  const open = openSharedFile();
+  const { open } = openBackend("sqlite");
   const worker = open();
   const observer = createExecutionObserver(open().executions, { pollInterval: 5 });
   await admit(worker, "order-42");
@@ -275,7 +195,7 @@ test("a notifier makes wait read the record early", async () => {
   });
   await admit(runtime, "nudged");
   const waiting = elapsed(() => observer.wait("nudged"));
-  await new Promise((resolve) => setTimeout(resolve, 10));
+  await sleep(10);
   await complete(runtime, "nudged", "receipt");
   notifier.emit("nudged");
   const { value, ms } = await waiting;
@@ -297,7 +217,7 @@ test("many concurrent waits on one ID share one notifier listener", async () => 
     });
     await admit(runtime, "popular");
     const waits = Array.from({ length: 25 }, () => observer.wait("popular"));
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    await sleep(10);
     expect(notifier.listenerCount("popular")).toBe(1);
 
     await complete(runtime, "popular", "receipt");
@@ -306,7 +226,7 @@ test("many concurrent waits on one ID share one notifier listener", async () => 
       expect(result).toMatchObject({ status: "completed", result: "receipt" });
     }
     expect(notifier.listenerCount("popular")).toBe(0);
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    await sleep(10);
     expect(warnings.filter((warning) => warning.name === "MaxListenersExceededWarning")).toEqual(
       []
     );

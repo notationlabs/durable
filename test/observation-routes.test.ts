@@ -402,6 +402,7 @@ for (const backendKind of backendKinds) {
       test("trigger middleware that denies every request leaves observation routes unaffected", async () => {
         const { runtime } = openBackend(backendKind);
         await admit(runtime, "known");
+        await complete(runtime, "known", "receipt");
         const { url } = serveRoutes(runtime, {
           middleware: [async () => new Response("Unauthorized", { status: 401 })],
         });
@@ -409,6 +410,9 @@ for (const backendKind of backendKinds) {
         expect((await post(url, "poll", { executionId: "known" })).status).toBe(200);
         expect((await post(url, "wait", { executionId: "known", timeout: 0 })).status).toBe(200);
         expect((await post(url, "list", {})).status).toBe(200);
+        const events = await post(url, "events", { executionId: "known" });
+        expect(events.status).toBe(200);
+        expect(await events.json()).toBe("receipt");
       });
 
       test("observation middleware does not apply to /trigger", async () => {
