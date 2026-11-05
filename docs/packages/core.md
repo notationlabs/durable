@@ -417,7 +417,7 @@ interface ExecutionObserver {
 - `list` returns `executions.list`'s page with each record turned into a view.
 - `notifier` is an optional fast path, such as the invoker's `workflowEndEmitter`: an event for the execution ID makes `wait` read the record early. No result depends on it. All open waits on one notifier and execution ID share one listener, so many waits on one ID do not exceed an `EventEmitter`'s listener limit. `waitForExecutionOutcome` shares the same listener.
 
-The views leave out `params`, `context`, lease and wake state and `unacknowledgedDeliveryCount`. `toExecutionView(record)` builds one, and turns a tombstone into a `PrunedExecutionView` (`ExecutionTombstone & { status: "pruned" }`). `isTerminalExecutionView(view)` recognises a completed, failed or cancelled view, and `isPrunedExecutionView(view)` a pruned one. See [Execution views](../manual/sdk-local.md#execution-views) for the types.
+The views leave out `params`, `context`, lease and wake state and `unacknowledgedDeliveryCount`. `toExecutionView(record)` builds one, and turns a tombstone into a `PrunedExecutionView` (`ExecutionTombstone & { status: "pruned" }`); `toPrunedExecutionView(tombstone)` does only the latter. `isTerminalExecutionView(view)` recognises a completed, failed or cancelled view, and `isPrunedExecutionView(view)` a pruned one. See [Execution views](../manual/sdk-local.md#execution-views) for the types.
 
 ## `createExecutionControl`
 
@@ -609,8 +609,10 @@ An implementation must uphold these contracts:
 - When `stepId` is provided and the ledger already holds that step, the implementation returns the recorded result and does not run the updater or `initial`, even if the store has since been deleted.
 - `registerWaiter` compares the store's current instance and version with the waiter; if either has moved on, it wakes the waiter immediately rather than leaving it to sleep through a write that already happened.
 - A commit that satisfies a waiter requests a wake for the waiter's `executionId`. Once the commit is durable, that wake is durable too. A waiter carries no copy of the workflow event.
-- A waiter stays registered until the heap write that records its step's result deletes it, or until the execution that holds it is pruned.
+- A waiter stays registered until the heap write that records its step's result deletes it, until its store is deleted, or until the execution that holds it is pruned.
+- `deleteStore`, a committed conditional deletion and `deleteExecutionData` with `deleteExecutionStore` request a wake for the execution of each waiter on a deleted store, in the same write that deletes the waiter, so the execution replays and reads the store again. `deleteExecutionData` does not wake the pruned execution itself.
 - `deleteExecutionData` deletes a pruned execution's applied-steps ledger rows and the waiters it holds. With `deleteExecutionStore`, it also deletes every store whose `id` equals the execution ID, under any definition name, with the waiters registered on those stores. It is safe to repeat and to run concurrently. A replayed `stepId` needs a live execution, so the deleted ledger rows are never read again.
+- A commit, update or deletion, whose `stepId` names a pruned execution throws `prunedStoreStepError(stepId)` and writes nothing. The check is in the commit's atomic write. Store commits are not fenced by the lease, and this stops a stale holder from applying a step again after cleanup deleted its receipt; the throw is an infrastructure error, so the delivery stops without acknowledging.
 - Schema failures throw `StoreValidationError`. A state, initial state or take selection that is not a durable value throws `WorkflowValueError` (`INVALID_STEP_VALUE`) before anything commits; `validateStoreState` makes this check after the schema. Workflow code can catch these two; any other error a client throws is treated as an infrastructure error and abandons the delivery.
 
 ## `CasStoreClient` (abstract class)

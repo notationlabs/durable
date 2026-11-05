@@ -196,6 +196,9 @@ live logical IDs in ascending order, and `deleteStore({ definition, id })` for
 an unconditional, idempotent administrative deletion. Prefer `deleteFrom`
 when the deletion decision was made from previously read state.
 
+Either deletion wakes every execution that waits on the store with `when`. The
+execution replays and reads the store again, which creates it from `initial`.
+
 ## Waiting
 
 To pause a workflow until the store reaches some condition, see [Waiting on State](./store-waiting.md).

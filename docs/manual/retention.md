@@ -72,6 +72,8 @@ Pruning an execution deletes:
 - the contents of its execution record: `params`, `context`, the outcome, `cancellation`, `parent`, `workflowVersion`, `divergence`, and its wake and lease state; and
 - with `pruneExecutionStores: true` in its policy, every store whose `id` equals the execution ID, under any store definition, with the waiters registered on those stores.
 
+When another execution waits on one of those stores, for example with `step.store(definition, "order-42").when(...)`, the same write requests a wake for it before its waiter is deleted. The woken execution replays, reads the store again, and finds it created again from `initial`. Without the wake it would stay suspended on a store that no longer changes.
+
 A store created by `step.store(definition)` without an `id` has the execution ID as its `id`. Such stores are kept unless the policy sets `pruneExecutionStores`. A store's `id` is not tied to the execution: other executions, and external code through `runtime.stores.store(definition, id)`, can read the same store by its ID. Set `pruneExecutionStores` only when nothing else reads the store after the execution ends.
 
 ## What pruning keeps
@@ -96,7 +98,7 @@ type ExecutionTombstone = {
 type PrunedExecutionRecord = ExecutionTombstone & { status: "pruned" };
 ```
 
-`isPrunedExecution(value)` from `@yieldstar/core` recognises one. `"pruned"` is not an `ExecutionStatus`: a pruned execution has no record and no outcome left, only its tombstone.
+`isPrunedExecution(value)` from `@yieldstar/core` recognises one, and `isExecutionRecord(value)` recognises a live record. `"pruned"` is not an `ExecutionStatus`: a pruned execution has no record and no outcome left, only its tombstone.
 
 Because the tombstone stays, the execution ID stays in use:
 
@@ -112,6 +114,8 @@ So a late retry of the trigger for `order-42` cannot charge the card a second ti
 The waiter is deleted in the same write that records the joiner's join step. After that, the target can be pruned once its period has passed. A joiner that is parked with a divergence still holds its waiter, so the target stays.
 
 A waiter whose joiner is terminal or missing does not hold the target back, because that joiner never reads the target again. Some waiters stay registered for good, such as one that a stale lease holder registered after the step was recorded. The tombstone write deletes the waiters that are left on the target.
+
+A stale lease holder of a pruned execution can also register store, effect or join waiters after the cleanup has deleted that execution's waiters. These waiters are harmless. A wake requested for a tombstone is ignored, and a join waiter whose joiner is pruned does not hold its target back. They stay in the backend as unused rows.
 
 A `step.join` or `step.call` that reads a target after it was pruned records and throws `WorkflowJoinError` with code `JOIN_TARGET_PRUNED`:
 
@@ -193,12 +197,14 @@ const dispatcher = new ExecutionDispatcher(runtime, { invoker, logger, pruneInte
 dispatcher.start();
 ```
 
-Each run calls `runtime.prune` with a batch of 100 executions (`DEFAULT_PRUNE_BATCH_SIZE`), and calls it again while a pass finds a full batch. A run that throws is logged with `logger.error`, and the next run finishes its work. `stop()` stops pruning and waits for the pass in progress. A dispatcher with `filter` prunes every expired execution in the runtime, not only the filtered ones. Without `retain`, the dispatcher does not prune.
+Each run calls `runtime.prune` with a batch of 100 executions (`DEFAULT_PRUNE_BATCH_SIZE`), and calls it again while a pass finds a full batch. A run that throws is logged with `logger.error`, and the next run finishes its work. Each cleanup that failed in a pass is logged with `logger.error` and its `executionId`. `stop()` stops pruning and waits for the pass in progress. A dispatcher with `filter` prunes every expired execution in the runtime, not only the filtered ones.
+
+Without `retain`, the dispatcher does not run pruning passes at all, so it does not finish cleanups either. If you remove `retain` after a pass stopped part way, for example in a crash, the tombstones it left stay pending cleanup until you call `runtime.prune()` yourself. A pass without `retain` tombstones nothing and only finishes those cleanups.
 
 To prune at a time you choose, for example from a scheduled job, call `runtime.prune` yourself:
 
 ```ts
-const { pruned, cleaned } = await runtime.prune({ limit: 500 });
+const { pruned, cleaned, failed, errors } = await runtime.prune({ limit: 500 });
 ```
 
 One pass works in two phases:
@@ -206,9 +212,13 @@ One pass works in two phases:
 1. The runtime replaces up to `limit` expired executions with their tombstones, oldest outcome first. Each tombstone is one atomic write, together with the join waiter check. A reader sees either the whole terminal execution or the tombstone, never a partly deleted record.
 2. The runtime deletes the step records, store data, waiters and start requests of up to `limit` tombstones whose cleanup has not finished, and then marks each tombstone as cleaned.
 
-The pass resolves with the number of executions it tombstoned and the number it cleaned. `limit` defaults to 100, and a value that is not a positive integer throws a `RangeError`. Without `retain`, a pass tombstones nothing, and only finishes cleanups that are already pending.
+The pass resolves with the number of executions it tombstoned (`pruned`), cleaned (`cleaned`) and failed to clean (`failed`). A cleanup that throws does not stop the pass: the tombstone stays pending for a later pass, the pass goes on to the next one, and `errors` lists each failed cleanup's `executionId` and `error`. The pass rejects only when tombstoning or listing the pending cleanups fails. `limit` defaults to 100, and a value that is not a positive integer throws a `RangeError`. Without `retain`, a pass tombstones nothing, and only finishes cleanups that are already pending.
 
 If a process stops between the two phases, the tombstones stay marked as pending cleanup, and the next pass cleans them. Every step is safe to repeat, and several processes can prune the same backend at once: each execution is tombstoned once, and every process reaches the same end state.
+
+### Stale lease holders
+
+Store commits are not fenced by the lease. A process that still runs a delivery of an execution after its lease has ended could otherwise apply a step's store update a second time once cleanup has deleted the step's receipt. So a store commit that carries a step ID of a pruned execution is rejected in the commit's own write: the store client throws, and nothing is written. The runtime treats the rejection as an infrastructure error, so the stale delivery stops without acknowledging. The tombstone stays as it is.
 
 ### Upgrading a SQLite database
 
