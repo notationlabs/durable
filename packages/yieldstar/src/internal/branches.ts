@@ -116,10 +116,11 @@ export class Limiter {
 }
 
 /**
- * Orders a combinator's decision write after the runtime calls already in
- * flight, and runtime calls made after it behind it. A runtime call made in
- * shared mode checks first whether its branch has stopped, so no waiter is
- * registered after the decision write deleted the waiters of stopped branches.
+ * Orders a combinator's decision write after the runtime calls and delay
+ * writes already in flight under it, and those made after it behind it. Work
+ * done in shared mode checks first whether its branch has stopped, so no
+ * waiter is registered after the decision write deleted the waiters of
+ * stopped branches, and no delay is written after the decision listed delays.
  */
 export class DecisionLock {
   private readers = 0;
@@ -164,6 +165,7 @@ export class Combinator {
   readonly keys: string[] = [];
   readonly branches: DrivenBranch[] = [];
   readonly limiter: Limiter;
+  readonly lock = new DecisionLock();
   /** Checks whether the combinator can decide or settle. */
   evaluate = () => {};
 
@@ -243,9 +245,9 @@ export class DrivenBranch {
   }
 
   /**
-   * Whether a combinator that stopped this branch recorded the delay at
-   * `stepKey` as one that a branch was suspended at. The branch stops there
-   * on replay, as it did on the first run, even after the delay elapsed.
+   * Whether a combinator that stopped this branch lists the delay at
+   * `stepKey` as one that a branch was suspended at. A stopped branch stops
+   * at a recorded delay only if it is listed, whatever the clock says.
    */
   stopsAt(stepKey: string): boolean {
     for (let combinator = this.parent; combinator; combinator = combinator.owner.parent) {
@@ -258,6 +260,17 @@ export class DrivenBranch {
     for (let combinator = this.parent; combinator; combinator = combinator.owner.parent) {
       combinator.keys.push(stepKey);
     }
+  }
+
+  /** Runs `fn` holding the decision lock of every combinator above this branch in shared mode. */
+  shared<T>(fn: () => Promise<T>): Promise<T> {
+    const locks: DecisionLock[] = [];
+    for (let combinator = this.parent; combinator; combinator = combinator.owner.parent) {
+      locks.unshift(combinator.lock);
+    }
+    const hold = (i: number): Promise<T> =>
+      i === locks.length ? fn() : locks[i]!.shared(() => hold(i + 1));
+    return hold(0);
   }
 
   suspendAtDelay(stepKey: string) {

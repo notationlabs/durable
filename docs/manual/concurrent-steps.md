@@ -107,7 +107,7 @@ if (first.index === 1) {
 }
 ```
 
-`step.race` returns as soon as one branch returns. The result is `{ index, value }`: the winner's position in the array and its value. TypeScript narrows `value` by `index`, so `first.value` is the `when` result when `first.index === 0`.
+`step.race` is decided as soon as one branch returns. It returns once every losing branch has stopped, which waits for a losing `step.run` function that is already running (see [Abandoned branches](#abandoned-branches)). The result is `{ index, value }`: the winner's position in the array and its value. TypeScript narrows `value` by `index`, so `first.value` is the `when` result when `first.index === 0`.
 
 A branch that fails does not end the race. If every branch fails, `step.race` throws `WorkflowRaceError` with code `ALL_BRANCHES_FAILED` and each branch's error in `errors`, in branch order. An empty race throws `WorkflowRaceError` with no errors. `errors` is kept when the error ends the execution `failed`.
 
@@ -128,7 +128,7 @@ A losing race branch, and an unfinished branch of a `fail-fast` `step.all` after
 - **No new steps.** The branch replays its recorded steps, values and errors alike, and stops at the first step that needs new work. Its generator is not resumed past that step, so its `finally` blocks do not run.
 - **Delays stay where they stopped.** The decision record lists the keys of the delays that branches were suspended at when the combinator decided. On replay, an abandoned branch stops at each of these delays, even after it has elapsed. Replay therefore stops the branch where the first run stopped it.
 - **Waiters deleted.** The write that records the decision deletes the store, effect and join waiters of every step the abandoned branches reached. A payment at minute thirty-one does not wake `place-order`. The losing delay's wake time is not requested again.
-- **In-flight functions finish.** A `step.run` function that is already running is not interrupted. Its result is recorded but not used, and the combinator returns only after it is recorded. The delivery therefore acknowledges only after every write from an abandoned branch. The decision write also waits for every runtime call already in flight, including a `step.effect` call, so a slow effect call delays the decision. The branch resumes with the function's value or error, as it would on replay, and stops at its next step. If the function failed, the branch's `catch` and `finally` blocks therefore run up to that step.
+- **In-flight functions finish.** A `step.run` function that is already running is not interrupted. Its result is recorded but not used, and the combinator returns only after it is recorded. The delivery therefore acknowledges only after every write from an abandoned branch. The decision write also waits for every runtime call already in flight in the combinator's branches, including a `step.effect` call, so a slow effect call delays the decision. Runtime calls in branches outside the combinator do not delay it. The branch resumes with the function's value or error, as it would on replay, and stops at its next step. If the function failed, the branch's `catch` and `finally` blocks therefore run up to that step.
 - **Nested combinators record nothing.** A `step.all` or `step.race` inside an abandoned branch records no decision. Replay still drives its branches through their recorded steps.
 - **Between steps.** The driver checks for abandonment between steps. Workflow code that an abandoned branch runs between two steps is not interrupted.
 

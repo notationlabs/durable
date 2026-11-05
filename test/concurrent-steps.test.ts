@@ -249,6 +249,43 @@ const router = {
     yield* step.delay("after", DAY);
     return yield* step.run("K", () => work("K-after", "after"));
   }),
+  "winner-passed-delay": workflow(async function* (step) {
+    const first = yield* step.race("race", [
+      (async function* () {
+        yield* step.delay("d", MINUTE);
+        return yield* step.run("w", () => work("w", "w"));
+      })(),
+      step.delay("long", DAY),
+    ]);
+    observed.push(first.index);
+    yield* step.delay("after", MINUTE);
+    return first.index;
+  }),
+  "delay-written-during-decision": workflow(async function* (step) {
+    yield* step.race("race", [
+      step.run("fast", () => work("fast", "fast")),
+      (async function* () {
+        yield* step.delay("d", MINUTE);
+        observed.push("past-d");
+        return yield* step.run("K", () => work("K", "loser"));
+      })(),
+    ]);
+    yield* step.delay("after", DAY);
+    return "done";
+  }),
+  "race-beside-slow-call": workflow(async function* (step) {
+    const payments = step.store(PaymentStore);
+    yield* step.all("outer", [
+      payments.when("slow-wait", (state) => state.paid),
+      (async function* () {
+        yield* step.race("inner", [
+          step.run("a", () => work("a", "a")),
+          step.run("b", () => work("b", "b")),
+        ]);
+        observed.push("race returned");
+      })(),
+    ]);
+  }),
   "fail-then-succeed": workflow(async function* (step) {
     return yield* step.race("first", [
       step.run("a", () => fail("a")),
@@ -874,6 +911,58 @@ describe.each(runtimes)("concurrent steps on $name", ({ create }) => {
       expect(await deliver()).toEqual({ status: "completed", result: "after" });
       expect(observed).toEqual([]);
       expect(ran.sort()).toEqual(["K-after", "slow"]);
+    });
+
+    test("the winner of a recorded race replays a delay it passed when the clock steps back", async () => {
+      await admit("winner-passed-delay");
+      expect(await deliver()).toEqual({ status: "suspended", wakeAt: START + MINUTE });
+      advance(MINUTE);
+      expect(await deliver()).toEqual({ status: "suspended", wakeAt: START + 2 * MINUTE });
+      expect(await readStep("race")).toMatchObject({ decision: "won", index: 0 });
+
+      advance(MINUTE);
+      const lease = (await claim())!;
+      advance(-MINUTE - 1000);
+      expect(await run(lease)).toEqual({ status: "suspended", wakeAt: START + 2 * MINUTE });
+      expect(observed).toEqual([0, 0]);
+    });
+
+    test("a delay written while the race decides is listed in the decision", async () => {
+      const fast = closeGate("fast");
+      const writeStep = runtime.heap.writeStep.bind(runtime.heap);
+      const delay = new Gate();
+      vi.spyOn(runtime.heap, "writeStep").mockImplementation(async (params) => {
+        if (params.stepKey === "d") await delay.pass();
+        return writeStep(params);
+      });
+      await admit("delay-written-during-decision");
+      const delivery = deliver();
+      await Promise.all([fast.entered, delay.entered]);
+      fast.open();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      delay.open();
+      expect(await delivery).toEqual({ status: "suspended", wakeAt: START + DAY });
+      expect(await readStep("race")).toMatchObject({ decision: "won", index: 0, delays: ["d"] });
+
+      advance(DAY);
+      expect(await deliver()).toEqual({ status: "completed", result: "done" });
+      expect(observed).toEqual([]);
+      expect(ran).not.toContain("K");
+    });
+
+    test("a slow runtime call in one branch does not hold up a race in another", async () => {
+      const registerWaiter = runtime.stores.registerWaiter.bind(runtime.stores);
+      const slow = new Gate();
+      vi.spyOn(runtime.stores, "registerWaiter").mockImplementation(async (waiter) => {
+        await slow.pass();
+        return registerWaiter(waiter);
+      });
+      await admit("race-beside-slow-call");
+      const delivery = deliver();
+      await slow.entered;
+      await until(() => observed.includes("race returned"));
+      slow.open();
+      expect((await delivery)?.status).toBe("suspended");
     });
 
     test("a failed branch does not end the race: a later success wins", async () => {

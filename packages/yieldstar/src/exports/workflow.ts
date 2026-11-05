@@ -29,7 +29,6 @@ import {
   BranchesStepKey,
   CancellationBarrier,
   Combinator,
-  DecisionLock,
   DrivenBranch,
   STOPPED,
   StepBranches,
@@ -118,7 +117,6 @@ export function workflow<
     };
     // Shared by every branch, so a key repeated across branches is rejected.
     const stepKeys = new Set<string>();
-    const lock = new DecisionLock();
 
     /** Writes one attempt of a step. A lost lease or a conflicting record ends the delivery. */
     async function writeStep(params: {
@@ -282,13 +280,17 @@ export function workflow<
 
         const recorded = cached ? decodeStepRecord(cached.stepResponseJson) : null;
 
+        // A stopped branch stops at a recorded delay only if its decision
+        // lists it, so a clock that steps back does not stop it at a delay
+        // the first run passed.
+        const stopped = branch.stopped;
+        const needsWork = stopped
+          ? !cached?.meta.done || branch.stopsAt(stepKey)
+          : isUnfinishedStep(cached, recorded, clock());
         let thrown: { err: unknown } | undefined;
         if (cached?.meta.done && recorded instanceof StepCancelled) {
           thrown = { err: recorded.err };
-        } else if (
-          !isCombinator &&
-          (isUnfinishedStep(cached, recorded, clock()) || branch.stopsAt(stepKey))
-        ) {
+        } else if (!isCombinator && needsWork) {
           // A stopped branch replays its recorded steps and stops at the
           // first step that needs new work. A combinator is excluded: one
           // without a record is still driven so that replay reaches the keys
@@ -343,6 +345,7 @@ export function workflow<
             stepAttempt,
             cached,
             recorded,
+            passDelay: stopped && recorded instanceof StepDelay,
             cachedResponse: cached
               ? recorded
               : unfinished && cacheCheck instanceof UnfinishedCacheCheck
@@ -361,9 +364,6 @@ export function workflow<
           resumeWith = action.resume;
           continue;
         }
-        if (action.status === "suspended" && !isCombinator && action.response instanceof StepDelay) {
-          branch.suspendAtDelay(stepKey);
-        }
         return action;
       }
     }
@@ -379,6 +379,8 @@ export function workflow<
       stepAttempt: number;
       cached: HeapRecord | null;
       recorded: StepResponse | null;
+      /** Whether a stopped branch passes its recorded delay without reading the clock. */
+      passDelay: boolean;
       cachedResponse: StepResponse | null;
     }): Promise<StepAction> {
       const { branch, next, stepKey, cached, recorded } = params;
@@ -413,7 +415,7 @@ export function workflow<
             stepResponseJson: record.json,
           });
           // 2. Register the waiter.
-          const registered = await lock.shared(async () =>
+          const registered = await branch.shared(async () =>
             branch.stopped
               ? STOPPED
               : executeRuntimeCall(
@@ -435,7 +437,7 @@ export function workflow<
           continue;
         }
         const call = stepResponse;
-        const callResult = await lock.shared(async () => {
+        const callResult = await branch.shared(async () => {
           if (branch.stopped) return STOPPED;
           return call instanceof StepEffectCall
             ? executeEffectCall(call.request, {
@@ -502,13 +504,24 @@ export function workflow<
           stepResponse instanceof StepJoinWait ||
           stepResponse instanceof StepEffectWait);
 
+      // Whether a delay suspends, read from the clock once.
+      let delaySuspends: boolean | undefined;
       if (!cached && stepResponseJson !== undefined && !suspendedOnStore) {
-        await writeStep({
-          stepKey,
-          stepAttempt,
-          done: !needsRetry && !needsWake,
-          stepResponseJson,
-        });
+        const step = { stepKey, stepAttempt, done: !needsRetry && !needsWake, stepResponseJson };
+        if (stepResponse instanceof StepDelay) {
+          // A decision lists the delays its branches suspended at, so a new
+          // delay is written and listed under the decision locks.
+          const { wakeAt } = stepResponse;
+          const written = await branch.shared(async () => {
+            if (branch.stopped) return STOPPED;
+            await writeStep(step);
+            delaySuspends = wakeAt > clock();
+            if (delaySuspends) branch.suspendAtDelay(stepKey);
+          });
+          if (written === STOPPED) return { status: "stopped" };
+        } else {
+          await writeStep(step);
+        }
       }
 
       if (stepResponse instanceof StepInvalid) {
@@ -525,8 +538,14 @@ export function workflow<
         }
         return { throw: stepResponse.err };
       }
-      if (stepResponse instanceof StepDelay && stepResponse.wakeAt <= clock()) {
-        return { resume: undefined };
+      if (stepResponse instanceof StepDelay) {
+        if (delaySuspends === undefined) {
+          // A branch at a recorded delay is not caught up until it
+          // suspends, so it is listed before its combinator can decide.
+          delaySuspends = !params.passDelay && stepResponse.wakeAt > clock();
+          if (delaySuspends) branch.suspendAtDelay(stepKey);
+        }
+        if (!delaySuspends) return { resume: undefined };
       }
       if (stepResponse instanceof StepResult) {
         return { resume: stepResponse };
@@ -622,20 +641,20 @@ export function workflow<
           combinator.decision = decision;
           writing = true;
           barrier.enter();
-          const json = encodeStepRecord(
-            new StepBranchesDecision(decision, [...combinator.delays]),
-            stepKey
-          ).json;
           // Only these decisions stop branches. Under the others every branch
           // has finished, so its waiters are already deleted.
           const stops = decision.decision === "rejected" || decision.decision === "won";
-          lock
+          combinator.lock
             .exclusive(() =>
               writeStep({
                 stepKey,
                 stepAttempt,
                 done: true,
-                stepResponseJson: json,
+                // Encoded under the lock, after every delay write in flight.
+                stepResponseJson: encodeStepRecord(
+                  new StepBranchesDecision(decision, [...combinator.delays]),
+                  stepKey
+                ).json,
                 ...(stops ? { deleteWaitersOf: combinator.keys } : {}),
               })
             )
