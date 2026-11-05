@@ -36,8 +36,9 @@ const { executionId } = await sdk.trigger({
 
 | `code`                           | Cause                                                                     |
 | -------------------------------- | ------------------------------------------------------------------------- |
-| `EXECUTION_ID_CONFLICT`          | The supplied `executionId` is already in use. IDs are never reused, even after the execution fails |
+| `EXECUTION_ID_CONFLICT`          | The supplied `executionId` is already in use. IDs are never reused, even after the execution fails or is [pruned](./retention.md) |
 | `EXECUTION_REQUEST_MISMATCH`     | An idempotent trigger's `executionId` is in use by a different request    |
+| `EXECUTION_PRUNED`               | An idempotent trigger's `executionId` belongs to a [pruned](./retention.md) execution, whose params can no longer be compared |
 | `IDEMPOTENT_TRIGGER_REQUIRES_ID` | An idempotent trigger has no `executionId`                                |
 | `INVALID_EXECUTION_EVENT`        | `params` or `context` are not durable values (see below), or `idempotent` is not a boolean |
 
@@ -72,6 +73,7 @@ When the ID is not in use, the trigger is admitted as usual and returns `"accept
 
 - If `workflowId` and `params` match, the trigger admits nothing and returns `"existing"` with the same `executionId`. This is true whatever the execution's status, including `completed`, `failed` and `cancelled`, and also when the first trigger was not idempotent.
 - If either differs, the trigger throws `EXECUTION_REQUEST_MISMATCH`, and the record is unchanged.
+- If the execution was [pruned](./retention.md), its params are gone, so the trigger throws `EXECUTION_PRUNED`. It never returns `"existing"` and never admits a new execution for that ID.
 
 `params` match when they are equal after a round trip through the durable value codec, so the key order of plain objects does not matter. Missing `params` and `{}` do not match. `context` is not compared, because it carries per-request data such as an authentication token. Of two idempotent triggers with the same request that run at the same time, one returns `"accepted"` and the other `"existing"`.
 
@@ -92,11 +94,11 @@ const result = await sdk.triggerAndWait({
 });
 ```
 
-The promise settles from the execution record, not from an in-memory event, so it settles even if another process ran the execution or the worker restarted. It does not need an `invoker`. If the record is `failed`, the promise rejects with the recorded error. The error keeps its `name`, `message`, `stack`, a string `code`, its `cause` and its durable fields, and it is revived as its class when that class is registered with `registerErrorClass` (see [Errors in step records](./steps.md#errors-in-step-records)). If the record is `cancelled`, the promise rejects with a `WorkflowCancelledError` that carries the outcome's `reason` and `source`.
+The promise settles from the execution record, not from an in-memory event, so it settles even if another process ran the execution or the worker restarted. It does not need an `invoker`. If the record is `failed`, the promise rejects with the recorded error. The error keeps its `name`, `message`, `stack`, a string `code`, its `cause` and its durable fields, and it is revived as its class when that class is registered with `registerErrorClass` (see [Errors in step records](./steps.md#errors-in-step-records)). If the record is `cancelled`, the promise rejects with a `WorkflowCancelledError` that carries the outcome's `reason` and `source`. If the execution was [pruned](./retention.md) before the wait read its outcome, the promise rejects with an `ExecutionPrunedError` that carries the tombstone's `executionId`, `workflowId`, `terminalStatus` and `prunedAt`.
 
 ## `sdk.poll`
 
-Returns the current [view](#execution-views) of an execution, or `undefined` if no record has that ID.
+Returns the current [view](#execution-views) of an execution, the pruned view of a [pruned](./retention.md) execution, or `undefined` if no record has that ID.
 
 ```ts
 const execution = await sdk.poll("order-abc123");
@@ -120,6 +122,8 @@ if (!execution) {
   throw execution.error;
 } else if (execution.status === "cancelled") {
   // execution.reason and execution.source are the cancellation's
+} else if (execution.status === "pruned") {
+  // the execution ended execution.terminalStatus, and its outcome is no longer kept
 } else {
   return execution.result;
 }
@@ -129,6 +133,7 @@ if (!execution) {
 - It returns an outcome recorded by any process that shares the runtime's backend, and across a restart.
 - When `timeout` (in milliseconds) passes first, it resolves with `{ status: "timed-out", execution }`, where `execution` is the current view. It does not throw.
 - Without a `timeout`, it waits until the execution is terminal.
+- For a [pruned](./retention.md) execution it resolves with the pruned view at once.
 - For an unknown ID it resolves with `undefined` at once. It does not wait for a later admission.
 - A negative `timeout` throws a `RangeError`.
 
@@ -150,7 +155,7 @@ while (true) {
 | Field        | Type              | Description                                                                   |
 | ------------ | ----------------- | ----------------------------------------------------------------------------- |
 | `workflowId` | `string`          | Optional. Only executions of this workflow                                    |
-| `status`     | `ExecutionStatus` | Optional. Only executions with this status                                   |
+| `status`     | `ExecutionStatus \| "pruned"` | Optional. Only executions with this status. Without it, [pruned](./retention.md) executions are left out; `"pruned"` returns only them |
 | `diverged`   | `boolean`         | Optional. `true` returns only [diverged](./replay-stability.md#divergence) executions, and `false` only the others |
 | `cursor`     | `string`          | Optional. The `cursor` of the previous page                                   |
 | `limit`      | `number`          | Optional. Executions per page. Defaults to `50`; values above `1000` are lowered to `1000` |
@@ -161,7 +166,7 @@ The order is the order in which the backend admitted the executions, not `admitt
 
 - Paging never returns an execution twice.
 - Every matching execution admitted before the first page appears once. Executions admitted after the first page do not appear on later pages.
-- `status` is compared with the status at the runtime clock's current time, so `running` matches executions with a live lease. An execution whose status changes while you page through a `status` filter may appear or disappear on later pages.
+- `status` is compared with the status at the runtime clock's current time, so `running` matches executions with a live lease. An execution whose status changes while you page through a `status` filter may appear or disappear on later pages. An execution that is pruned while you page leaves every filter except `"pruned"`.
 
 `list` throws `ExecutionListRequestError` (`code: "INVALID_LIST_REQUEST"`) for a `workflowId` that is not a string, a `limit` that is not a positive integer, an unknown `status`, a `diverged` that is not a boolean, or a `cursor` that `list` did not return. A field set to `null` is treated as absent.
 
@@ -176,6 +181,8 @@ if (!result) {
   // no record has this ID
 } else if (result.status === "requested") {
   // result.execution is the current view, with result.execution.cancellation set
+} else if (result.status === "pruned") {
+  // the execution was pruned: nothing changed
 } else {
   // the execution is terminal: result is its terminal view
 }
@@ -191,12 +198,14 @@ if (!result) {
 ```ts
 type CancelResult =
   | { status: "requested"; execution: ActiveExecutionView }
-  | TerminalExecutionView;
+  | TerminalExecutionView
+  | PrunedExecutionView;
 ```
 
 - A graceful request on an active execution resolves with `requested` and the view read after the request was recorded.
 - A forced request resolves with the `cancelled` view.
 - An execution that is already terminal is not changed, and `cancel` resolves with its view. This includes an execution that reached a terminal status between recording the request and reading the view.
+- A [pruned](./retention.md) execution is not changed, and `cancel` resolves with its pruned view.
 
 `cancel` throws `ExecutionCancelRequestError`, a `TypeError`, for an empty execution ID, a `reason` that is not a string, or a `force` that is not a boolean. It records nothing in that case.
 
@@ -211,7 +220,7 @@ const result = await sdk.clearDivergence("order-42");
 | Result                       | Meaning                                                         |
 | ---------------------------- | --------------------------------------------------------------- |
 | `{ status: "cleared" }`      | The divergence was removed and the execution is due now         |
-| `{ status: "not-diverged" }` | The execution has no divergence, including a terminal execution. Nothing changed |
+| `{ status: "not-diverged" }` | The execution has no divergence, including a terminal or pruned execution. Nothing changed |
 | `undefined`                  | No record has this ID                                           |
 
 If the deployed code still diverges, the next delivery sets `divergence` again. `clearDivergence` throws a `TypeError` for an empty execution ID.
@@ -241,16 +250,27 @@ type TerminalExecutionView =
   | (ExecutionViewBase & { status: "failed"; error: Error })
   | (ExecutionViewBase & { status: "cancelled"; reason?: string; source?: string });
 
-type ExecutionView = ActiveExecutionView | TerminalExecutionView;
+type PrunedExecutionView = {
+  status: "pruned";
+  executionId: string;
+  workflowId: string;
+  terminalStatus: "completed" | "failed" | "cancelled";
+  prunedAt: number;
+};
+
+type ExecutionView = ActiveExecutionView | TerminalExecutionView | PrunedExecutionView;
 
 type WaitResult =
   | TerminalExecutionView
+  | PrunedExecutionView
   | { status: "timed-out"; execution: ActiveExecutionView };
 
 type ExecutionViewPage = { executions: ExecutionView[]; cursor?: string };
 ```
 
 `parent` is present on executions started by [`step.start`](./steps.md#stepstart) or [`step.call`](./steps.md#stepcall), and names the caller's execution ID and step key, and whether the child was started detached. `cancellation` is present once a cancellation request is recorded (see [Requesting cancellation](./cancellation.md#requesting-cancellation)). `workflowVersion` is present once a delivery has recorded the [workflow version](./replay-stability.md#workflow-versions), and `divergence` while the execution is parked after a [divergent replay](./replay-stability.md#divergence). A view leaves out `params`, `context`, lease and wake state and `unacknowledgedDeliveryCount`. Operators can read those with `runtime.executions.get`. `admittedAt` and `updatedAt` come from the clock of the process that wrote them, so use them for display only.
+
+A `PrunedExecutionView` is what is left of a [pruned](./retention.md) execution: its ID, its workflow ID, the terminal status it ended with and the time it was pruned. It has no result, error or `parent`.
 
 Both the local SDK and the [HTTP SDK](./sdk-http.md) implement the `ExecutionObserver` interface (`poll`, `wait` and `list`) and the `ExecutionControl` interface (`cancel` and `clearDivergence`), which `yieldstar` exports with these types. Code that only reads executions can take an `ExecutionObserver` and work with either SDK.
 
