@@ -159,19 +159,18 @@ export class ExecutionsDao {
   }
 
   /**
-   * Sets up the admission sequence, which orders `list`. Every insert,
-   * including one from a process still on a version from before `list`,
-   * leaves `admission_sequence` NULL, and an AFTER INSERT trigger sets it to
-   * the next value of a single-row counter in the same statement. The column
-   * has no default and allows NULL, so an older process's insert succeeds
+   * Sets up the admission sequence that orders `list`. Inserts leave
+   * `admission_sequence` NULL, and an AFTER INSERT trigger sets it from a
+   * single-row counter in the same statement. The column has no default and
+   * allows NULL, so inserts from processes on older versions still succeed
    * during a rolling upgrade. The counter only increases, so a sequence is
-   * never reissued after a row is deleted.
+   * never reused after a delete.
    *
-   * Rows from before `list` take their rowid, which SQLite assigns in
-   * insertion order while no row has been deleted, and the counter starts
-   * above them. The setup runs under the write lock and skips what exists, so
-   * processes that open the file together set it up once. The trigger is
-   * created last, so its presence means the setup is complete.
+   * Existing rows take their rowid, which follows insertion order if no row
+   * has been deleted, and the counter starts above them. The setup runs under
+   * the write lock and skips what already exists, so processes that open the
+   * file together set it up once. The trigger is created last, so its
+   * presence means the setup is complete.
    */
   private setupAdmissionSequence() {
     const isSetUp = () =>
@@ -273,7 +272,7 @@ export class ExecutionsDao {
 
   /**
    * Up to `limit + 1` executions that match the request, newest first. `now`
-   * decides which executions are `running`.
+   * is used to decide which executions are `running`.
    */
   listStates(
     request: PreparedExecutionListRequest,
@@ -320,10 +319,9 @@ export class ExecutionsDao {
   }
 
   /**
-   * Returns false when the execution ID is already in use. The admission
-   * sequence trigger gives a new execution the next sequence in the same
-   * statement. The insert is detected from its RETURNING row, not from
-   * `changes`: Bun before 1.4 counts the trigger's updates in `changes`.
+   * Returns false when the execution ID is already in use. The insert is
+   * detected from its RETURNING row, not from `changes`, because Bun before
+   * 1.4 counts the admission sequence trigger's updates in `changes`.
    */
   insertState(state: ExecutionState): boolean {
     const inserted = this.db

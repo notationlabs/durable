@@ -264,7 +264,6 @@ function admitted(executionId = "e", now = 0): ExecutionState {
   });
 }
 
-/** An execution whose admission delivery was acknowledged as suspended. */
 function suspended(executionId = "e"): ExecutionState {
   const { state, lease } = claimExecution(admitted(executionId), { now: 0, duration: 1_000 });
   return acknowledgeExecution(state, { lease, outcome: { status: "suspended" }, now: 1 }).state;

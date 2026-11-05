@@ -87,7 +87,6 @@ export function prepareExecutionListRequest(
   return prepared;
 }
 
-/** Whether a state matches the request's filters at `now`. */
 export function matchesExecutionListRequest(
   state: ExecutionState,
   request: PreparedExecutionListRequest,

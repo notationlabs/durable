@@ -106,7 +106,6 @@ export type BranchesDecision =
   | { decision: "failed" }
   | { decision: "cancelled"; err: unknown };
 
-/** A combinator's recorded decision. */
 export class StepBranchesDecision extends StepResponse {
   static type = "branches-decision";
   readonly type = "branches-decision";
@@ -115,7 +114,6 @@ export class StepBranchesDecision extends StepResponse {
   }
 }
 
-/** Limits how many holders run at once. */
 export class Limiter {
   private active = 0;
   private queue: (() => void)[] = [];
@@ -231,10 +229,10 @@ export class DrivenBranch {
   }
 
   /**
-   * Whether the branch is abandoned: a combinator above it settled with a
-   * decision other than `cancelled`, or failed with an error that ends the
-   * delivery. It replays recorded steps and stops at the first step that
-   * needs new work.
+   * Whether a combinator above this branch settled with a decision other than
+   * `cancelled`, or failed with an error that ends the delivery. A stopped
+   * branch replays recorded steps and stops at the first step that needs new
+   * work.
    */
   get stopped(): boolean {
     for (let combinator = this.parent; combinator; combinator = combinator.owner.parent) {

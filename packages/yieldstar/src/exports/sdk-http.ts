@@ -78,7 +78,6 @@ export function createHttpSdkFactory<W extends WorkflowRouter>() {
       throw error;
     };
 
-    /** One `/wait` request. The server caps how long it is held open. */
     const waitRequest = async (
       executionId: string,
       timeout: number | undefined
@@ -93,11 +92,11 @@ export function createHttpSdkFactory<W extends WorkflowRouter>() {
     const sdk = {
       /**
        * Admits an execution through the trigger route, and resolves once
-       * admission commits. The server chooses the ID when `executionId` is
-       * omitted, and the response carries it. With `idempotent: true`, a
-       * repeat of the same request resolves with `status: "existing"`. The
-       * body is encoded with the durable value codec, so params and context
-       * reach the runtime unchanged.
+       * admission commits. When `executionId` is omitted, the server chooses
+       * the ID and returns it. With `idempotent: true`, a repeat of the same
+       * request resolves with `status: "existing"`. The body is encoded with
+       * the durable value codec, so params and context reach the runtime
+       * unchanged.
        * @throws {ExecutionAdmissionError} when the route rejects the
        * admission, or before any request when the codec rejects params or
        * context

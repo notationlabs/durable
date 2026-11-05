@@ -159,7 +159,6 @@ export function registerCancellationClientConformance({
     return executionId;
   }
 
-  /** Admits an execution and acknowledges its admission delivery as suspended. */
   async function admitSuspended(runtime: Runtime, executionId: string) {
     await admit(runtime, executionId);
     await suspend(runtime, await claimOne(runtime, executionId));
@@ -172,7 +171,6 @@ export function registerCancellationClientConformance({
     ).toEqual({ status: "suspended" });
   }
 
-  /** Wakes a suspended execution and claims it. */
   async function lease(runtime: Runtime, executionId: string) {
     await runtime.executions.requestWake({ executionId, wakeAt: START });
     return claimOne(runtime, executionId);
@@ -1135,7 +1133,6 @@ export function registerCancellationClientConformance({
           steps: [cancelledStep("wait-payment")],
         });
 
-        // The cleanup step waits on the same store, then on a join.
         await waitOnPayment(runtime, "order-42", "wait-refund");
         await join(runtime, "order-42", "join:refund", "fulfil-42");
         await suspend(runtime, holder);
