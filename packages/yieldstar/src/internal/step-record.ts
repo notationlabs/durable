@@ -150,6 +150,15 @@ function decodeDecision(record: Record<string, unknown>): BranchesDecision {
   throw new Error(`Invalid step record: unknown combinator decision ${JSON.stringify(record.decision)}`);
 }
 
+/** Marks a step error record as raised after its branch was abandoned. */
+export function markAbandoned(json: string): string {
+  return JSON.stringify({ ...JSON.parse(json), abandoned: true });
+}
+
+export function isAbandonedRecord(json: string): boolean {
+  return JSON.parse(json).abandoned === true;
+}
+
 export function decodeStepRecord(json: string): StepResponse {
   const record = JSON.parse(json);
   try {

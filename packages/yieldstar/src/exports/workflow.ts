@@ -15,6 +15,8 @@ import {
   UnfinishedCacheCheck,
   decodeStepRecord,
   encodeStepRecord,
+  isAbandonedRecord,
+  markAbandoned,
 } from "../internal/step-record";
 import { createStepRunner } from "../internal/step-runner";
 import {
@@ -187,6 +189,11 @@ function createWorkflowGenerator<
     function diverge(code: ReplayDivergenceError["code"], message: string, stepKey?: string) {
       divergence ??= new ReplayDivergenceError(code, message, stepKey);
       return divergence;
+    }
+
+    /** Whether a branch must start no new work: it is abandoned, or replay has diverged. */
+    function stopped(branch: DrivenBranch) {
+      return branch.stopped || divergence !== undefined;
     }
 
     function firstUnconsumed(): string | undefined {
@@ -454,19 +461,27 @@ function createWorkflowGenerator<
         // to do new work must find the whole history consumed. Inside a
         // combinator, branches interleave differently on each delivery, and
         // the check waits for the end of the delivery.
-        if (!branch.parent && !isCombinator && isUnfinishedStep(cached, recorded, clock())) {
+        // A recorded delay followed by records the original run made after it
+        // was passed, even if this host's clock reads earlier than its wakeAt.
+        const passed =
+          !branch.parent &&
+          cached?.meta.done === true &&
+          recorded instanceof StepDelay &&
+          firstUnconsumed() !== undefined;
+        const unfinishedStep = !passed && isUnfinishedStep(cached, recorded, clock());
+        if (!branch.parent && !isCombinator && unfinishedStep) {
           assertConsumed(stepKey);
         }
 
         let thrown: { err: unknown } | undefined;
         if (cached?.meta.done && recorded instanceof StepCancelled) {
           thrown = { err: recorded.err };
-        } else if (!isCombinator && isUnfinishedStep(cached, recorded, clock())) {
+        } else if (!isCombinator && unfinishedStep) {
           // An abandoned branch replays its recorded steps and stops at the
           // first step that needs new work. A combinator without a record is
           // still driven, so that replay reaches the keys its branches
           // reached; it records nothing while the branch is abandoned.
-          if (branch.stopped) return { status: "stopped" };
+          if (stopped(branch)) return { status: "stopped" };
           // A combinator is not a cancellation point: its branches are.
           if (barrier.pending && !isCombinator) {
             // A delay is recorded done when it starts, so its cancellation
@@ -521,7 +536,7 @@ function createWorkflowGenerator<
         const live = !cached && !isCombinator;
         if (live) {
           await branch.acquireSlot();
-          if (branch.stopped) {
+          if (stopped(branch)) {
             branch.releaseSlot();
             return { status: "stopped" };
           }
@@ -535,6 +550,7 @@ function createWorkflowGenerator<
             stepAttempt,
             cached,
             recorded,
+            passed,
             cachedResponse: cached
               ? recorded
               : unfinished && cacheCheck instanceof UnfinishedCacheCheck
@@ -546,9 +562,13 @@ function createWorkflowGenerator<
         }
 
         if ("throw" in action) {
-          // An abandoned branch is resumed only with recorded values, never
-          // with an error, so its catch and finally blocks do not run.
-          if (branch.abandoned) return { status: "stopped" };
+          // An abandoned branch is not resumed with an error raised after it
+          // was abandoned, so its catch and finally blocks do not run. An
+          // error recorded before then is thrown again, so replay consumes
+          // the steps its catch block recorded.
+          if (branch.abandoned && (!cached || isAbandonedRecord(cached.stepResponseJson))) {
+            return { status: "stopped" };
+          }
           nextIteratorResult = await throwInto(action.throw);
           continue;
         }
@@ -571,6 +591,8 @@ function createWorkflowGenerator<
       stepAttempt: number;
       cached: HeapRecord | null;
       recorded: StepResponse | null;
+      /** A recorded delay that counts as elapsed whatever the clock reads. */
+      passed: boolean;
       cachedResponse: StepResponse | null;
     }): Promise<StepAction> {
       const { branch, next, stepKey, cached, recorded } = params;
@@ -593,7 +615,7 @@ function createWorkflowGenerator<
         stepResponse instanceof StepUnfinishedRecord
       ) {
         stopIfAborted(signal);
-        if (branch.stopped) return { status: "stopped" };
+        if (stopped(branch)) return { status: "stopped" };
         if (stepResponse instanceof StepUnfinishedRecord) {
           await writeStep({
             stepKey,
@@ -619,7 +641,7 @@ function createWorkflowGenerator<
           });
           // 2. Register the waiter.
           const registered = await lock.shared(async () =>
-            branch.stopped
+            stopped(branch)
               ? STOPPED
               : executeRuntimeCall(
                   new StepRuntimeCall(({ stores }) => stores.registerWaiter(waiter)),
@@ -641,7 +663,7 @@ function createWorkflowGenerator<
         }
         const call = stepResponse;
         const callResult = await lock.shared(async () => {
-          if (branch.stopped) return STOPPED;
+          if (stopped(branch)) return STOPPED;
           return call instanceof StepEffectCall
             ? executeEffectCall(call.request, {
                 effects: effectClient,
@@ -716,6 +738,11 @@ function createWorkflowGenerator<
           stepResponse instanceof StepEffectWait);
 
       if (!cached && stepResponseJson !== undefined && !suspendedOnStore) {
+        // An error raised after the branch was abandoned is never thrown into
+        // it, so the record says so and replay does not throw it either.
+        if (stepResponse instanceof StepError && !needsRetry && branch.abandoned) {
+          stepResponseJson = markAbandoned(stepResponseJson);
+        }
         await writeStep({
           stepKey,
           stepAttempt,
@@ -738,7 +765,7 @@ function createWorkflowGenerator<
         }
         return { throw: stepResponse.err };
       }
-      if (stepResponse instanceof StepDelay && stepResponse.wakeAt <= clock()) {
+      if (stepResponse instanceof StepDelay && (params.passed || stepResponse.wakeAt <= clock())) {
         return { resume: undefined };
       }
       if (stepResponse instanceof StepResult) {

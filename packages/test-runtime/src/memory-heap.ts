@@ -43,6 +43,9 @@ export class MemoryHeapClient implements HeapClient {
     this.recordWorkflowVersion = params.recordWorkflowVersion;
   }
 
+  /** Each execution's step keys, so listing does not parse the cache keys. */
+  private stepKeys = new Map<string, Set<string>>();
+
   getKey(params: { executionId: string; stepKey: string }) {
     return `${params.executionId}:${params.stepKey}`;
   }
@@ -54,12 +57,10 @@ export class MemoryHeapClient implements HeapClient {
   }
 
   async listSteps(params: { executionId: string }): Promise<HeapStep[]> {
-    const prefix = `${params.executionId}:`;
     const steps: HeapStep[] = [];
-    for (const [key, attempts] of Object.entries(this.cache)) {
-      if (!key.startsWith(prefix) || attempts.length === 0) continue;
-      const kind = attempts[0].meta.kind;
-      steps.push({ stepKey: key.slice(prefix.length), ...(kind !== undefined ? { kind } : {}) });
+    for (const stepKey of this.stepKeys.get(params.executionId) ?? []) {
+      const kind = this.cache[this.getKey({ executionId: params.executionId, stepKey })]?.[0]?.meta.kind;
+      steps.push({ stepKey, ...(kind !== undefined ? { kind } : {}) });
     }
     return steps;
   }
@@ -139,6 +140,9 @@ export class MemoryHeapClient implements HeapClient {
     const existing = this.read(step, attempt);
     if (existing) return { record: existing, inserted: false };
     const attempts = (this.cache[this.getKey(step)] ??= []);
+    let keys = this.stepKeys.get(step.executionId);
+    if (!keys) this.stepKeys.set(step.executionId, (keys = new Set()));
+    keys.add(step.stepKey);
     const record: HeapRecord = {
       stepResponseJson,
       meta: { attempt, done, ...(kind !== undefined ? { kind } : {}) },
