@@ -52,7 +52,7 @@ type TestContext = {
 };
 
 /**
- * Registers the runtime-adapter suite for RFC 012: `HeapClient.listSteps`,
+ * Registers the runtime-adapter suite for replay stability: `HeapClient.listSteps`,
  * step kinds, the recorded workflow version, the `diverged` acknowledgement,
  * `ExecutionClient.clearDivergence` and `list({ diverged })`.
  */

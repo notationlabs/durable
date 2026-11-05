@@ -102,7 +102,7 @@ type TestContext = {
 };
 
 /**
- * Registers the runtime-adapter suite for RFC 013: `ExecutionClient.prune`,
+ * Registers the runtime-adapter suite for retention: `ExecutionClient.prune`,
  * `listPendingPrunes` and `finishPrune`, the cleanup methods of the heap,
  * store, effect and join clients, and `Runtime.prune` over them.
  */
