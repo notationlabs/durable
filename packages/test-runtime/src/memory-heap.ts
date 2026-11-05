@@ -65,6 +65,13 @@ export class MemoryHeapClient implements HeapClient {
     return steps;
   }
 
+  async deleteSteps(params: { executionId: string }): Promise<void> {
+    for (const stepKey of this.stepKeys.get(params.executionId) ?? []) {
+      delete this.cache[this.getKey({ executionId: params.executionId, stepKey })];
+    }
+    this.stepKeys.delete(params.executionId);
+  }
+
   async writeStep(params: {
     lease: ExecutionLease;
     stepKey: string;

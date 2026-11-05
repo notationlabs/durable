@@ -6,7 +6,9 @@ import {
   createExecutionState,
   createStartedExecution,
   executionNotFound,
+  finishExecutionPrune,
   isExecutionClaimable,
+  isExecutionExpired,
   isTerminalExecutionStatus,
   matchExecutionAdmission,
   matchStartRequest,
@@ -15,12 +17,15 @@ import {
   prepareExecutionListRequest,
   prepareExecutionStart,
   propagatedCancellation,
+  pruneExecution,
+  prunesExecutionStores,
   releaseExecutionLease,
   renewExecutionLease,
   requestExecutionCancellation,
   requestExecutionWake,
   toExecutionListPage,
-  toExecutionRecord,
+  toExecutionRecordOrTombstone,
+  toPrunedExecutionRecord,
   type ExecutionAcknowledgeResult,
   type ExecutionAdmissionRequest,
   type ExecutionAdmissionResult,
@@ -34,6 +39,8 @@ import {
   type ExecutionListPage,
   type ExecutionListRequest,
   type ExecutionRecord,
+  type PrunedExecutionRecord,
+  type RetentionOptions,
   type ExecutionStartRequest,
   type ExecutionStartResult,
   type ExecutionReleaseResult,
@@ -147,9 +154,61 @@ export class SqliteExecutionClient implements ExecutionClient {
     });
   }
 
-  async get(executionId: string): Promise<ExecutionRecord | undefined> {
+  async get(executionId: string): Promise<ExecutionRecord | PrunedExecutionRecord | undefined> {
     const state = this.executionsDao.getState(executionId);
-    return state ? toExecutionRecord(state, this.clock()) : undefined;
+    return state ? toExecutionRecordOrTombstone(state, this.clock()) : undefined;
+  }
+
+  /**
+   * Selects and tombstones the batch in one IMMEDIATE transaction. The join
+   * waiter check is part of the selection, and `join` registers in its own
+   * IMMEDIATE transaction, so a join either registers before the tombstone
+   * and holds the target back, or reads the tombstone. Processes that prune
+   * together serialize on the write lock, and a later one finds the
+   * tombstones already written.
+   */
+  async prune(request: {
+    retain: RetentionOptions;
+    limit: number;
+  }): Promise<PrunedExecutionRecord[]> {
+    if (request.limit <= 0) return [];
+    return runTransaction(this.db, () => {
+      const now = this.clock();
+      const tombstones: PrunedExecutionRecord[] = [];
+      for (const executionId of this.executionsDao.getExpiredIds(
+        request.retain,
+        now,
+        request.limit
+      )) {
+        const state = this.executionsDao.getState(executionId);
+        if (!state || !isExecutionExpired(state, request.retain, now)) continue;
+        const tombstone = pruneExecution(state, {
+          now,
+          deleteExecutionStore: prunesExecutionStores(request.retain, state.workflowId),
+        });
+        this.executionsDao.replaceWithTombstone(tombstone);
+        this.joinWaitersDao.deleteTargetWaiters(executionId);
+        tombstones.push(toPrunedExecutionRecord(tombstone));
+      }
+      return tombstones;
+    });
+  }
+
+  async listPendingPrunes(request: {
+    limit: number;
+  }): Promise<{ executionId: string; deleteExecutionStore: boolean }[]> {
+    if (request.limit <= 0) return [];
+    return this.executionsDao.getPendingPrunes(request.limit);
+  }
+
+  async finishPrune(executionId: string): Promise<void> {
+    runTransaction(this.db, () => {
+      const state = this.executionsDao.getState(executionId);
+      if (!state?.pruned) return;
+      this.startRequestsDao.deleteForCaller(executionId);
+      const finished = finishExecutionPrune(state);
+      if (finished !== state) this.executionsDao.updateState(finished);
+    });
   }
 
   async list(request?: ExecutionListRequest): Promise<ExecutionListPage> {

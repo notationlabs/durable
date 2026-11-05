@@ -41,4 +41,8 @@ export class SqliteJoinClient implements JoinClient {
   async getWaiters(targetExecutionId: string): Promise<JoinWaiter[]> {
     return this.joinWaitersDao.getWaiters(targetExecutionId);
   }
+
+  async deleteWaitersForExecution(executionId: string): Promise<void> {
+    this.joinWaitersDao.deleteExecutionWaiters(executionId);
+  }
 }

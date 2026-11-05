@@ -90,9 +90,10 @@ export class MemoryEffectClient implements EffectClient {
 
   /**
    * Deletes every waiter an execution registered. Called synchronously by a
-   * forced cancel, so the waiters go with that write.
+   * forced cancel, so the waiters go with that write, and by the cleanup of
+   * a pruned execution. The deletion runs before the promise is returned.
    */
-  deleteWaitersForExecution(executionId: string) {
+  async deleteWaitersForExecution(executionId: string): Promise<void> {
     deleteExecutionWaiters(this.waiters, executionId);
   }
 }

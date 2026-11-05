@@ -6,7 +6,9 @@ import {
   createExecutionState,
   createStartedExecution,
   executionNotFound,
+  finishExecutionPrune,
   isExecutionClaimable,
+  isExecutionExpired,
   isLeaseCurrent,
   isTerminalExecutionStatus,
   markCancellationDelivered,
@@ -19,13 +21,16 @@ import {
   prepareExecutionListRequest,
   prepareExecutionStart,
   propagatedCancellation,
+  pruneExecution,
+  prunesExecutionStores,
   recordWorkflowVersion,
   releaseExecutionLease,
   renewExecutionLease,
   requestExecutionCancellation,
   requestExecutionWake,
   toExecutionListPage,
-  toExecutionRecord,
+  toExecutionRecordOrTombstone,
+  toPrunedExecutionRecord,
   type ExecutionAcknowledgeResult,
   type ExecutionAdmissionRequest,
   type ExecutionAdmissionResult,
@@ -39,6 +44,8 @@ import {
   type ExecutionListPage,
   type ExecutionListRequest,
   type ExecutionRecord,
+  type PrunedExecutionRecord,
+  type RetentionOptions,
   type ExecutionStartRequest,
   type ExecutionStartResult,
   type ExecutionReleaseResult,
@@ -64,6 +71,8 @@ export class MemoryExecutionClient implements ExecutionClient {
   private clock: () => number;
   private onTerminal?: (executionId: string) => void;
   private onForceCancelled?: (executionId: string) => void;
+  private isJoinTargetHeld?: (executionId: string) => boolean;
+  private onPruned?: (executionId: string) => void;
 
   constructor(options?: {
     clock?: () => number;
@@ -79,11 +88,24 @@ export class MemoryExecutionClient implements ExecutionClient {
      * the same write.
      */
     onForceCancelled?: (executionId: string) => void;
+    /**
+     * Whether a join waiter whose joiner is not terminal is registered on the
+     * execution, read synchronously in the same step as its tombstone write.
+     */
+    isJoinTargetHeld?: (executionId: string) => boolean;
+    /**
+     * Called synchronously when an execution is replaced with its tombstone,
+     * so the runtime deletes the join waiters registered on it in the same
+     * write.
+     */
+    onPruned?: (executionId: string) => void;
   }) {
     // Read Date.now lazily so fake timers installed later still apply.
     this.clock = options?.clock ?? (() => Date.now());
     this.onTerminal = options?.onTerminal;
     this.onForceCancelled = options?.onForceCancelled;
+    this.isJoinTargetHeld = options?.isJoinTargetHeld;
+    this.onPruned = options?.onPruned;
   }
 
   async admit(
@@ -134,9 +156,59 @@ export class MemoryExecutionClient implements ExecutionClient {
     return { status: "accepted", executionId: created.target.executionId };
   }
 
-  async get(executionId: string): Promise<ExecutionRecord | undefined> {
+  async get(executionId: string): Promise<ExecutionRecord | PrunedExecutionRecord | undefined> {
     const state = this.executions.get(executionId);
-    return state ? toExecutionRecord(state, this.clock()) : undefined;
+    return state ? toExecutionRecordOrTombstone(state, this.clock()) : undefined;
+  }
+
+  async prune(request: {
+    retain: RetentionOptions;
+    limit: number;
+  }): Promise<PrunedExecutionRecord[]> {
+    const now = this.clock();
+    const expired = [...this.executions.values()]
+      .filter(
+        (state) =>
+          isExecutionExpired(state, request.retain, now) &&
+          !this.isJoinTargetHeld?.(state.executionId)
+      )
+      .sort(
+        (a, b) =>
+          a.updatedAt - b.updatedAt || (a.executionId < b.executionId ? -1 : 1)
+      )
+      .slice(0, Math.max(0, request.limit));
+    return expired.map((state) => {
+      const tombstone = pruneExecution(state, {
+        now,
+        deleteExecutionStore: prunesExecutionStores(request.retain, state.workflowId),
+      });
+      this.executions.set(state.executionId, tombstone);
+      this.onPruned?.(state.executionId);
+      return toPrunedExecutionRecord(tombstone);
+    });
+  }
+
+  async listPendingPrunes(request: {
+    limit: number;
+  }): Promise<{ executionId: string; deleteExecutionStore: boolean }[]> {
+    const pending: { executionId: string; deleteExecutionStore: boolean }[] = [];
+    for (const executionId of this.admissionOrder) {
+      if (pending.length >= request.limit) break;
+      const pruned = this.executions.get(executionId)!.pruned;
+      if (pruned?.cleanupPending) {
+        pending.push({ executionId, deleteExecutionStore: pruned.deleteExecutionStore });
+      }
+    }
+    return pending;
+  }
+
+  async finishPrune(executionId: string): Promise<void> {
+    const state = this.executions.get(executionId);
+    if (!state?.pruned) return;
+    for (const [key, startRequest] of this.startRequests) {
+      if (startRequest.callerExecutionId === executionId) this.startRequests.delete(key);
+    }
+    this.executions.set(executionId, finishExecutionPrune(state));
   }
 
   async list(request?: ExecutionListRequest): Promise<ExecutionListPage> {

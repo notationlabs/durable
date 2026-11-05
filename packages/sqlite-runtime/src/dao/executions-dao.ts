@@ -2,6 +2,7 @@ import type {
   ExecutionDivergenceState,
   ExecutionState,
   PreparedExecutionListRequest,
+  RetentionOptions,
   SequencedExecutionState,
 } from "@yieldstar/core";
 import { nextClaimAt } from "@yieldstar/core";
@@ -38,6 +39,14 @@ class ExecutionRow {
   divergence_step_key!: string | null;
   divergence_workflow_version!: number | null;
   divergence_detected_at!: number | null;
+  pruned_at!: number | null;
+  prune_cleanup_pending!: number;
+  prune_execution_stores!: number;
+}
+
+class PendingPruneRow {
+  execution_id!: string;
+  prune_execution_stores!: number;
 }
 
 class ExecutionIdRow {
@@ -50,8 +59,9 @@ class ExecutionIdRow {
  * `admission_sequence`, which orders `list`. A cancellation request is stored
  * in the `cancellation_*` columns; `cancellation_requested_at` is NULL when
  * there is none. A divergence is stored in the `divergence_*` columns;
- * `divergence_code` is NULL when there is none. Callers own the surrounding
- * transaction.
+ * `divergence_code` is NULL when there is none. A tombstone has `pruned_at`
+ * set, and `prune_cleanup_pending` is 1 until its cleanup finishes. Callers
+ * own the surrounding transaction.
  */
 export class ExecutionsDao {
   private db: SqliteDriver;
@@ -89,6 +99,32 @@ export class ExecutionsDao {
     this.setupAdmissionSequence();
     this.setupCancellation();
     this.setupReplayStability();
+    this.setupRetention();
+  }
+
+  /**
+   * Adds the tombstone columns, and the indexes that find expired executions
+   * and tombstones pending cleanup. Rows from before them read as executions
+   * that are not pruned.
+   *
+   * Every process that shares the file must run a version with retention
+   * support before anything prunes. A process on an earlier version reads a
+   * tombstone as a terminal execution with an empty event and no outcome,
+   * and fails to decode it.
+   */
+  private setupRetention() {
+    this.addMissingColumns([
+      "pruned_at INTEGER",
+      "prune_cleanup_pending INTEGER NOT NULL DEFAULT 0",
+      "prune_execution_stores INTEGER NOT NULL DEFAULT 0",
+    ]);
+    this.db.run(`
+      CREATE INDEX IF NOT EXISTS idx_executions_unpruned_terminal
+      ON executions(updated_at)
+      WHERE pruned_at IS NULL AND status IN ('completed', 'failed', 'cancelled');
+      CREATE INDEX IF NOT EXISTS idx_executions_prune_cleanup_pending
+      ON executions(admission_sequence) WHERE prune_cleanup_pending = 1;
+    `);
   }
 
   /**
@@ -272,8 +308,68 @@ export class ExecutionsDao {
   }
 
   /**
+   * Up to `limit` IDs of unpruned terminal executions whose retention period
+   * has passed at `now`, oldest outcome first. Executions with a join waiter
+   * whose joiner exists and is not terminal are left out. Callers check each
+   * again with `isExecutionExpired` before writing its tombstone.
+   */
+  getExpiredIds(retain: RetentionOptions, now: number, limit: number): string[] {
+    const cutoffs = retentionCutoffs(retain, now);
+    if (cutoffs.latest === null) return [];
+    return this.db
+      .query<ExecutionIdRow>(
+        `SELECT execution_id FROM executions AS e
+         WHERE pruned_at IS NULL
+           AND status IN ('completed', 'failed', 'cancelled')
+           AND updated_at <= $latest
+           AND updated_at <= COALESCE(
+             (SELECT json_extract(c.value, '$[2]') FROM json_each($workflowCutoffs) AS c
+              WHERE json_extract(c.value, '$[0]') = e.workflow_id
+                AND json_extract(c.value, '$[1]') = e.status),
+             CASE
+               WHEN e.workflow_id IN (SELECT value FROM json_each($policyWorkflowIds)) THEN NULL
+               ELSE json_extract($defaultCutoffs, '$.' || e.status)
+             END
+           )
+           AND NOT EXISTS (
+             SELECT 1 FROM join_waiters AS w
+             JOIN executions AS j ON j.execution_id = w.execution_id
+             WHERE w.target_execution_id = e.execution_id
+               AND j.status NOT IN ('completed', 'failed', 'cancelled')
+           )
+         ORDER BY updated_at, execution_id
+         LIMIT $limit`
+      )
+      .all({
+        $latest: cutoffs.latest,
+        $workflowCutoffs: JSON.stringify(cutoffs.workflows),
+        $policyWorkflowIds: JSON.stringify(cutoffs.policyWorkflowIds),
+        $defaultCutoffs: JSON.stringify(cutoffs.default),
+        $limit: limit,
+      })
+      .map((row) => row.execution_id);
+  }
+
+  /** Up to `limit` tombstones pending cleanup, in admission order. */
+  getPendingPrunes(limit: number): { executionId: string; deleteExecutionStore: boolean }[] {
+    return this.db
+      .query<PendingPruneRow>(
+        `SELECT execution_id, prune_execution_stores FROM executions
+         WHERE prune_cleanup_pending = 1
+         ORDER BY admission_sequence
+         LIMIT $limit`
+      )
+      .all({ $limit: limit })
+      .map((row) => ({
+        executionId: row.execution_id,
+        deleteExecutionStore: Boolean(row.prune_execution_stores),
+      }));
+  }
+
+  /**
    * Up to `limit + 1` executions that match the request, newest first. `now`
-   * decides which executions are `running`.
+   * decides which executions are `running`. Tombstones match only
+   * `status: "pruned"`.
    */
   listStates(
     request: PreparedExecutionListRequest,
@@ -283,10 +379,12 @@ export class ExecutionsDao {
     // executions whose lease has not expired.
     const statusCondition =
       request.status === undefined
-        ? ""
-        : request.status === "running"
-          ? "AND lease_expires_at IS NOT NULL AND lease_expires_at > $now"
-          : "AND status = $status AND (lease_expires_at IS NULL OR lease_expires_at <= $now)";
+        ? "AND pruned_at IS NULL"
+        : request.status === "pruned"
+          ? "AND pruned_at IS NOT NULL"
+          : request.status === "running"
+            ? "AND pruned_at IS NULL AND lease_expires_at IS NOT NULL AND lease_expires_at > $now"
+            : "AND pruned_at IS NULL AND status = $status AND (lease_expires_at IS NULL OR lease_expires_at <= $now)";
     const divergedCondition =
       request.diverged === undefined
         ? ""
@@ -307,7 +405,7 @@ export class ExecutionsDao {
         $workflowId: request.workflowId ?? null,
         $before: request.beforeSequence ?? null,
         $limit: request.limit + 1,
-        ...(request.status === undefined
+        ...(request.status === undefined || request.status === "pruned"
           ? {}
           : request.status === "running"
             ? { $now: now }
@@ -337,7 +435,8 @@ export class ExecutionsDao {
            cancellation_forced, cancellation_requested_at,
            cancellation_delivered_at, workflow_version, divergence_code,
            divergence_step_key, divergence_workflow_version,
-           divergence_detected_at
+           divergence_detected_at, pruned_at, prune_cleanup_pending,
+           prune_execution_stores
          ) VALUES (
            $executionId, $workflowId, $params, $context, $status, $outcome,
            $admittedAt, $updatedAt, $dueAt, $claimedDueAt, $leaseToken,
@@ -347,7 +446,8 @@ export class ExecutionsDao {
            $cancellationForced, $cancellationRequestedAt,
            $cancellationDeliveredAt, $workflowVersion, $divergenceCode,
            $divergenceStepKey, $divergenceWorkflowVersion,
-           $divergenceDetectedAt
+           $divergenceDetectedAt, $prunedAt, $pruneCleanupPending,
+           $pruneExecutionStores
          )
          ON CONFLICT(execution_id) DO NOTHING
          RETURNING execution_id`
@@ -361,7 +461,27 @@ export class ExecutionsDao {
     return inserted !== undefined;
   }
 
-  /** Leaves the parent link as inserted: it is immutable. */
+  /**
+   * Writes a tombstone state over the row, and clears the parent link, which
+   * `updateState` leaves alone.
+   */
+  replaceWithTombstone(state: ExecutionState) {
+    if (state.pruned === null) {
+      throw new Error(`Execution "${state.executionId}" is not a tombstone`);
+    }
+    this.updateState(state);
+    this.db
+      .query(
+        `UPDATE executions SET
+           parent_execution_id = NULL,
+           parent_step_key = NULL,
+           parent_detached = 0
+         WHERE execution_id = $executionId`
+      )
+      .run({ $executionId: state.executionId });
+  }
+
+  /** Leaves the parent link as inserted: only a tombstone clears it. */
   updateState(state: ExecutionState) {
     this.db
       .query(
@@ -389,7 +509,10 @@ export class ExecutionsDao {
            divergence_code = $divergenceCode,
            divergence_step_key = $divergenceStepKey,
            divergence_workflow_version = $divergenceWorkflowVersion,
-           divergence_detected_at = $divergenceDetectedAt
+           divergence_detected_at = $divergenceDetectedAt,
+           pruned_at = $prunedAt,
+           prune_cleanup_pending = $pruneCleanupPending,
+           prune_execution_stores = $pruneExecutionStores
          WHERE execution_id = $executionId`
       )
       .run(toBindings(state));
@@ -440,6 +563,14 @@ function toState(row: ExecutionRow): ExecutionState {
             detectedAt: Number(row.divergence_detected_at ?? 0),
           }
         : null,
+    pruned:
+      row.pruned_at !== null
+        ? {
+            prunedAt: Number(row.pruned_at),
+            cleanupPending: Boolean(row.prune_cleanup_pending),
+            deleteExecutionStore: Boolean(row.prune_execution_stores),
+          }
+        : null,
   };
 }
 
@@ -471,6 +602,42 @@ function toBindings(state: ExecutionState) {
     $divergenceStepKey: state.divergence?.stepKey ?? null,
     $divergenceWorkflowVersion: state.divergence?.workflowVersion ?? null,
     $divergenceDetectedAt: state.divergence?.detectedAt ?? null,
+    $prunedAt: state.pruned?.prunedAt ?? null,
+    $pruneCleanupPending: state.pruned?.cleanupPending ? 1 : 0,
+    $pruneExecutionStores: state.pruned?.deleteExecutionStore ? 1 : 0,
+  };
+}
+
+const TERMINAL_STATUSES = ["completed", "failed", "cancelled"] as const;
+
+/**
+ * The latest `updated_at` at which each policy's executions have expired at
+ * `now`. `latest` is the latest of them, or null when no policy has a period.
+ */
+function retentionCutoffs(retain: RetentionOptions, now: number) {
+  let latest: number | null = null;
+  const cutoffsOf = (policy: RetentionOptions["default"]) => {
+    const cutoffs: Partial<Record<(typeof TERMINAL_STATUSES)[number], number>> = {};
+    for (const status of TERMINAL_STATUSES) {
+      const period = policy?.[status];
+      if (period === undefined) continue;
+      cutoffs[status] = now - period;
+      latest = latest === null ? now - period : Math.max(latest, now - period);
+    }
+    return cutoffs;
+  };
+  const workflows: [string, string, number][] = [];
+  const policyWorkflowIds = Object.keys(retain.workflows ?? {});
+  for (const workflowId of policyWorkflowIds) {
+    for (const [status, cutoff] of Object.entries(cutoffsOf(retain.workflows![workflowId]))) {
+      workflows.push([workflowId, status, cutoff]);
+    }
+  }
+  return {
+    default: cutoffsOf(retain.default),
+    workflows,
+    policyWorkflowIds,
+    latest: latest as number | null,
   };
 }
 

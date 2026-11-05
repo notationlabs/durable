@@ -1,5 +1,6 @@
 import {
   compareJoinWaiters,
+  isTerminalExecutionStatus,
   prepareJoinWaiter,
   readJoinTarget,
   type JoinClient,
@@ -65,9 +66,27 @@ export class MemoryJoinClient implements JoinClient {
 
   /**
    * Deletes every waiter an execution registered. Called synchronously by a
-   * forced cancel, so the waiters go with that write.
+   * forced cancel, so the waiters go with that write, and by the cleanup of
+   * a pruned execution. The deletion runs before the promise is returned.
    */
-  deleteWaitersForExecution(executionId: string) {
+  async deleteWaitersForExecution(executionId: string): Promise<void> {
     deleteExecutionWaiters(this.waiters, executionId);
+  }
+
+  /**
+   * Whether a waiter whose joiner exists and is not terminal is registered on
+   * the target. Read synchronously by the tombstone write.
+   */
+  isTargetHeld(targetExecutionId: string): boolean {
+    for (const waiter of this.waiters.get(targetExecutionId)?.values() ?? []) {
+      const joiner = this.executions.getState(waiter.executionId);
+      if (joiner && !isTerminalExecutionStatus(joiner.status)) return true;
+    }
+    return false;
+  }
+
+  /** Deletes the waiters registered on a target. Called synchronously by its tombstone write. */
+  deleteTargetWaiters(targetExecutionId: string) {
+    this.waiters.delete(targetExecutionId);
   }
 }

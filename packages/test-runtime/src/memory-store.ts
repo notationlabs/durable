@@ -18,6 +18,7 @@ import {
 import type { MemoryExecutionClient } from "./memory-execution";
 
 type StoreRecord = {
+  storeId: string;
   state: unknown;
   instanceId: string;
   version: number;
@@ -72,6 +73,7 @@ export class MemoryStoreClient extends CasStoreClient {
       const record = this.stores.get(key);
       if (record) return this.toSnapshot(record);
       this.stores.set(key, {
+        storeId: params.id,
         state: cloneStoreState(params.snapshot.state),
         instanceId: params.snapshot.instanceId,
         version: params.snapshot.version,
@@ -125,6 +127,7 @@ export class MemoryStoreClient extends CasStoreClient {
 
       const version = mutation.expected.version + 1;
       this.stores.set(key, {
+        storeId: mutation.id,
         state: cloneStoreState(mutation.nextState),
         instanceId: mutation.expected.instanceId,
         version,
@@ -217,6 +220,30 @@ export class MemoryStoreClient extends CasStoreClient {
         this.appliedSteps.set(ledgerKey, encodeStoreValue(deletion.result));
       }
       return { status: "committed" };
+    });
+  }
+
+  async deleteExecutionData(params: {
+    executionId: string;
+    deleteExecutionStore: boolean;
+  }): Promise<void> {
+    return this.enqueueWrite(async () => {
+      const { executionId } = params;
+      for (const key of [...this.appliedSteps.keys()]) {
+        if (JSON.parse(key)[2] === executionId) this.appliedSteps.delete(key);
+      }
+      for (const [key, waiter] of [...this.waiters.entries()]) {
+        if (
+          waiter.executionId === executionId ||
+          (params.deleteExecutionStore && waiter.storeId === executionId)
+        ) {
+          this.waiters.delete(key);
+        }
+      }
+      if (!params.deleteExecutionStore) return;
+      for (const [key, record] of [...this.stores.entries()]) {
+        if (record.storeId === executionId) this.stores.delete(key);
+      }
     });
   }
 

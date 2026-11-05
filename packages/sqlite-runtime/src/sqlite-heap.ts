@@ -45,6 +45,10 @@ export class SqliteHeapClient implements HeapClient {
     this.stepResponsesDao.deleteAll();
   }
 
+  async deleteSteps(params: { executionId: string }): Promise<void> {
+    this.stepResponsesDao.deleteExecutionSteps(params.executionId);
+  }
+
   async readStep(params: { executionId: string; stepKey: string }) {
     const result = this.stepResponsesDao.getLatestStepResponse(
       params.executionId,

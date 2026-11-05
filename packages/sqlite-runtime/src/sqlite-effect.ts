@@ -96,4 +96,8 @@ export class SqliteEffectClient implements EffectClient {
     const state = this.effectsDao.getState(effectId);
     return state ? toEffectRecord(state) : undefined;
   }
+
+  async deleteWaitersForExecution(executionId: string): Promise<void> {
+    this.effectWaitersDao.deleteExecutionWaiters(executionId);
+  }
 }

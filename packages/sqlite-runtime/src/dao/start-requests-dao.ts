@@ -77,6 +77,13 @@ export class StartRequestsDao {
       : undefined;
   }
 
+  /** Deletes the start requests a pruned caller recorded. */
+  deleteForCaller(callerExecutionId: string) {
+    this.db
+      .query(`DELETE FROM start_requests WHERE caller_execution_id = $callerExecutionId`)
+      .run({ $callerExecutionId: callerExecutionId });
+  }
+
   insert(request: StartRequestState) {
     this.db
       .query(

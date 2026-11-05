@@ -260,6 +260,24 @@ export class SqliteStoreClient extends CasStoreClient {
     });
   }
 
+  async deleteExecutionData(params: {
+    executionId: string;
+    deleteExecutionStore: boolean;
+  }): Promise<void> {
+    const { executionId } = params;
+    runTransaction(this.db, () => {
+      this.db
+        .query(`DELETE FROM store_applied_steps WHERE execution_id = $executionId`)
+        .run({ $executionId: executionId });
+      this.storeWaitersDao.deleteExecutionWaiters(executionId);
+      if (!params.deleteExecutionStore) return;
+      this.storeWaitersDao.deleteStoreIdWaiters(executionId);
+      this.db
+        .query(`DELETE FROM stores WHERE store_id = $storeId`)
+        .run({ $storeId: executionId });
+    });
+  }
+
   async registerWaiter(waiter: StoreWaiter): Promise<void> {
     runTransaction(this.db, () => {
       this.storeWaitersDao.upsertWaiter(waiter);
@@ -292,6 +310,9 @@ export class SqliteStoreClient extends CasStoreClient {
         result TEXT NOT NULL,
         PRIMARY KEY (store_name, store_id, execution_id, step_key)
       );
+      CREATE INDEX IF NOT EXISTS idx_store_applied_steps_execution
+      ON store_applied_steps(execution_id);
+      CREATE INDEX IF NOT EXISTS idx_stores_store_id ON stores(store_id);
     `);
   }
 

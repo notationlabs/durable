@@ -80,6 +80,13 @@ export class JoinWaitersDao {
       .run({ $executionId: executionId, $stepKey: stepKey });
   }
 
+  /** Deletes the waiters registered on a target, in its tombstone write. */
+  deleteTargetWaiters(targetExecutionId: string) {
+    this.db
+      .query(`DELETE FROM join_waiters WHERE target_execution_id = $targetExecutionId`)
+      .run({ $targetExecutionId: targetExecutionId });
+  }
+
   deleteExecutionWaiters(executionId: string) {
     this.db
       .query(`DELETE FROM join_waiters WHERE execution_id = $executionId`)
