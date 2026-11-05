@@ -1,6 +1,6 @@
 # @yieldstar/runtime-conformance
 
-Vitest qualification suites for Yieldstar runtimes. `registerStoreClientConformance` verifies a `StoreClient`'s store lifecycle, concurrency, replay idempotency, waiter wake-up, wake collapsing, and crash-recovery behavior. `registerExecutionClientConformance` verifies a runtime's `ExecutionClient` and fenced heap writes against RFC 001, RFC 002 and RFC 003. `registerEffectClientConformance` verifies its `EffectClient` against RFC 005.
+Vitest qualification suites for Yieldstar runtimes. `registerStoreClientConformance` verifies a `StoreClient`'s store lifecycle, concurrency, replay idempotency, waiter wake-up, wake collapsing, and crash-recovery behavior. `registerExecutionClientConformance` verifies a runtime's `ExecutionClient` and fenced heap writes: admission, claims, leases, fencing, acknowledgement, `start` and `list`. `registerEffectClientConformance` verifies its `EffectClient`: effect begin, settlement, conflicts and watches.
 
 ## Install
 
@@ -59,7 +59,7 @@ create() {
 
 ## Execution client suite
 
-`registerExecutionClientConformance` checks a runtime's `ExecutionClient` and fenced heap writes against RFC 001, RFC 002, RFC 003, RFC 007 and RFC 008: admission, wake merging, claims, acknowledgement and terminal outcomes; a waiter combined with a suspended `wakeAt`, as a timed `when` leaves them; leases, renewal, release and the `running` status; the redelivery delay and `unacknowledgedDeliveryCount`; fencing of heap writes, renewals, releases and acknowledgements against a stale holder; `start`, its idempotency by request ID, parameter validation, mismatches and the target's parent link; idempotent admission, its matching on `workflowId` and canonical `params` but not `context`, mismatches, terminal and non-idempotent originals, and concurrent repeats; and `list`, its order by admission rather than `admittedAt`, page sizes and cursors, filters, invalid requests, and paging while new executions are admitted. The suite passes a `clock` to `create`; build every runtime on it so the suite controls time, including lease expiry.
+`registerExecutionClientConformance` checks a runtime's `ExecutionClient` and fenced heap writes: admission, wake merging, claims, acknowledgement and terminal outcomes; a waiter combined with a suspended `wakeAt`, as a timed `when` leaves them; leases, renewal, release and the `running` status; the redelivery delay and `unacknowledgedDeliveryCount`; fencing of heap writes, renewals, releases and acknowledgements against a stale holder; `start`, its idempotency by request ID, parameter validation, mismatches and the target's parent link; idempotent admission, its matching on `workflowId` and canonical `params` but not `context`, mismatches, terminal and non-idempotent originals, and concurrent repeats; and `list`, its order by admission rather than `admittedAt`, page sizes and cursors, filters, invalid requests, and paging while new executions are admitted. The suite passes a `clock` to `create`; build every runtime on it so the suite controls time, including lease expiry.
 
 The harness has three optional capabilities:
 
@@ -88,7 +88,7 @@ registerExecutionClientConformance({
 
 ## Effect client suite
 
-`registerEffectClientConformance` checks a runtime's `EffectClient` against RFC 005: `begin` creating or reading one effect, mismatched operations and inputs, concurrent equal and different settlements and their conflict reports, failed effects and conflicts between a result and a failure, `watch` registration and immediate wakes, settlement racing `watch`, waiter deletion with the step's result and its rejection for a stale holder, value encoding, and durability across a restart. Its harness takes the same `clock`, `createPeer` and `restart` as the execution client suite, plus `failEffectWatches`, which makes every `watch` on `runtime` fail before it commits and returns a function that stops the failures. Without it the case for a failed watch is skipped; the SQLite harness installs a temporary trigger that aborts the waiter insert.
+`registerEffectClientConformance` checks a runtime's `EffectClient`: `begin` creating or reading one effect, mismatched operations and inputs, concurrent equal and different settlements and their conflict reports, failed effects and conflicts between a result and a failure, `watch` registration and immediate wakes, settlement racing `watch`, waiter deletion with the step's result and its rejection for a stale holder, value encoding, and durability across a restart. Its harness takes the same `clock`, `createPeer` and `restart` as the execution client suite, plus `failEffectWatches`, which makes every `watch` on `runtime` fail before it commits and returns a function that stops the failures. Without it the case for a failed watch is skipped; the SQLite harness installs a temporary trigger that aborts the waiter insert.
 
 ```ts
 import { registerEffectClientConformance } from "@yieldstar/runtime-conformance";
@@ -107,6 +107,6 @@ registerEffectClientConformance({
 });
 ```
 
-The suite covers the runtime adapter. RFC 003's workflow-driver and delivery cases for `step.start`, RFC 005's for `step.effect`, and RFC 007's for a timed `when`, are tested in the repository rather than here (`test/start.test.ts`, `test/effect.test.ts`, `test/effect-delivery.test.ts` and `test/timed-when.test.ts`). RFC 002's dispatcher and worker cases, such as concurrency, releasing on a retry reply, a worker that exits without replying, and a worker whose runtime process dies, are properties of `ExecutionDispatcher` and the invoker rather than of an adapter; the repository tests them in `test/dispatcher.test.ts` and `test/worker-invoker.test.ts`.
+The suite covers the runtime adapter. The workflow-driver and delivery cases for `step.start`, `step.effect` and a timed `when` are tested in the repository rather than here (`test/start.test.ts`, `test/effect.test.ts`, `test/effect-delivery.test.ts` and `test/timed-when.test.ts`). The dispatcher and worker cases, such as concurrency, releasing on a retry reply, a worker that exits without replying, and a worker whose runtime process dies, are properties of `ExecutionDispatcher` and the invoker rather than of an adapter; the repository tests them in `test/dispatcher.test.ts` and `test/worker-invoker.test.ts`.
 
 The normative contract is in the repository's [store connector conformance specification](https://github.com/notationlabs/yieldstar/blob/main/docs/store-connector-spec.md).
