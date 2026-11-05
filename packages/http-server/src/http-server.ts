@@ -260,10 +260,7 @@ export const createListHandler = (params: ObservationParams): RouteHandler =>
       const request = body as ExecutionListRequest;
       try {
         const { workflowId, status } = prepareExecutionListRequest(request);
-        const filter: { workflowId?: string; status?: ExecutionStatus } = {};
-        if (workflowId !== undefined) filter.workflowId = workflowId;
-        if (status !== undefined) filter.status = status;
-        return { request: { operation: "list", filter }, value: request };
+        return { request: { operation: "list", filter: { workflowId, status } }, value: request };
       } catch (err) {
         if (!(err instanceof ExecutionListRequestError)) throw err;
         return errorResponse(400, "INVALID_LIST_REQUEST", err.message);
@@ -397,6 +394,13 @@ export function createRoutes(params: {
   maxWait?: number;
 }): Routes {
   const { logger, runtime, invoker, middleware = [], basePath = "" } = params;
+  // A deployment that already guards /trigger gains open observation routes on
+  // upgrade, including /list, which returns every execution's outcome.
+  if (middleware.length > 0 && params.observationMiddleware === undefined) {
+    logger.warn(
+      "createRoutes has trigger middleware but no observationMiddleware, so /poll, /wait, /list and /events accept every request. Pass observationMiddleware, or [] to allow every request on purpose."
+    );
+  }
   const { executions } = runtime;
   const maxWait = params.maxWait ?? DEFAULT_MAX_WAIT;
   if (!isPositiveInterval(maxWait)) {

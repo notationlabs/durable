@@ -38,8 +38,7 @@ export type SequencedExecutionState = {
 
 /**
  * Validates a list request and decodes its cursor. A limit above
- * `MAX_EXECUTION_LIST_LIMIT` is lowered to it. A `null` field is treated as
- * absent, since JSON clients send `null` for a field they leave out.
+ * `MAX_EXECUTION_LIST_LIMIT` is lowered to it.
  * @throws {ExecutionListRequestError} for an invalid filter, limit or cursor
  */
 export function prepareExecutionListRequest(
@@ -49,11 +48,7 @@ export function prepareExecutionListRequest(
   if (!isPlainObject(request)) {
     throw new ExecutionListRequestError("A list request must be an object");
   }
-  const fields = request as Record<string, unknown>;
-  const workflowId = fields.workflowId ?? undefined;
-  const status = fields.status ?? undefined;
-  const cursor = fields.cursor ?? undefined;
-  const limit = fields.limit ?? undefined;
+  const { workflowId, status, cursor, limit } = request as Record<string, unknown>;
   if (workflowId !== undefined && typeof workflowId !== "string") {
     throw new ExecutionListRequestError("workflowId must be a string");
   }
@@ -68,16 +63,15 @@ export function prepareExecutionListRequest(
   ) {
     throw new ExecutionListRequestError("limit must be a positive integer");
   }
-  const prepared: PreparedExecutionListRequest = {
+  return {
+    workflowId,
+    status: status as ExecutionStatus | undefined,
+    beforeSequence: cursor === undefined ? undefined : decodeExecutionListCursor(cursor),
     limit: Math.min(
       (limit as number | undefined) ?? DEFAULT_EXECUTION_LIST_LIMIT,
       MAX_EXECUTION_LIST_LIMIT
     ),
   };
-  if (workflowId !== undefined) prepared.workflowId = workflowId;
-  if (status !== undefined) prepared.status = status as ExecutionStatus;
-  if (cursor !== undefined) prepared.beforeSequence = decodeExecutionListCursor(cursor);
-  return prepared;
 }
 
 export function matchesExecutionListRequest(

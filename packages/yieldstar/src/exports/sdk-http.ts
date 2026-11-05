@@ -129,13 +129,7 @@ export function createHttpSdkFactory<W extends WorkflowRouter>() {
           throw error;
         }
 
-        const body = (await res.json()) as Pick<TriggerAck, "executionId">;
-        // A server from before idempotent trigger sends no status, so it is
-        // read from the response code.
-        const ack: TriggerAck = {
-          executionId: body.executionId,
-          status: res.status === 200 ? "existing" : "accepted",
-        };
+        const ack = (await res.json()) as TriggerAck;
         return {
           ...ack,
           ack: async () => ack,

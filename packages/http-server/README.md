@@ -164,7 +164,7 @@ Options:
 - `invoker`: Optional. When the dispatcher runs in this process, lets `/wait` and `/events` respond as soon as it records an outcome
 - `logger`: A Pino logger instance
 - `middleware`: Optional array of middleware functions for `/trigger`
-- `observationMiddleware`: Optional array of functions that allow or deny `/poll`, `/wait`, `/list` and `/events` requests
+- `observationMiddleware`: Optional array of functions that allow or deny `/poll`, `/wait`, `/list` and `/events` requests. Without it they accept every request, and `createRoutes` logs a warning if `middleware` is set
 - `pollInterval`: Optional. How often each open `/wait` and `/events` request reads the record, in milliseconds. Defaults to 25. It must be a finite number greater than zero. Each open request reads on its own, so many concurrent waits multiply the reads of the backend
 - `maxWait`: Optional. The longest the server holds a `/wait` request open, in milliseconds. Defaults to 8000. It must be a finite number greater than zero
 - `basePath`: Optional path to mount the routes on

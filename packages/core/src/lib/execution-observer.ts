@@ -52,7 +52,9 @@ export function createExecutionObserver(
 
     async wait(executionId, waitOptions?: ExecutionWaitOptions) {
       const timeout = waitOptions?.timeout ?? Infinity;
-      assertDuration("timeout", timeout);
+      if (!isDuration(timeout)) {
+        throw new RangeError("timeout must be a non-negative number of milliseconds");
+      }
       const deadline = Date.now() + timeout;
       const { notifier } = options;
       const signal = waitOptions?.signal;
@@ -112,10 +114,4 @@ export function isDuration(value: unknown): value is number {
 /** Whether `value` is a positive, finite number of milliseconds, as a poll interval or wait cap must be. */
 export function isPositiveInterval(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value) && value > 0;
-}
-
-function assertDuration(name: string, value: unknown) {
-  if (!isDuration(value)) {
-    throw new RangeError(`${name} must be a non-negative number of milliseconds`);
-  }
 }

@@ -80,7 +80,7 @@ A `404` without the code `EXECUTION_NOT_FOUND`, for example from a wrong `url` o
 
 A negative `timeout` throws a `RangeError` before any request. When `signal` aborts, `sdk.wait` aborts its current request, sends no more, and rejects with the signal's reason.
 
-`sdk.trigger` reads the ack's `status` from the response code: `202` is `"accepted"` and `200` is `"existing"`. A server from an earlier release, which sends no `status` in its body, still gives a valid ack.
+`sdk.trigger` reads the ack, `{ executionId, status }`, from the response body. `status` is `"accepted"` for a `202` and `"existing"` for a `200`.
 
 ## `HttpRouteError`
 

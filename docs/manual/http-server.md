@@ -120,7 +120,7 @@ Trigger middleware does not run for the observation routes.
 
 ## Observation middleware
 
-`/poll`, `/wait`, `/list` and `/events` return results and errors, which are often derived from `params`, to anyone who can call them. Without observation middleware, any caller that can reach the server can read every execution. Configure observation middleware to decide who may read them:
+`/poll`, `/wait`, `/list` and `/events` return results and errors, which are often derived from `params`, to anyone who can call them. Without observation middleware, any caller that can reach the server can read every execution, and `/list` returns every execution's ID with its result or error. When `createRoutes` has trigger `middleware` but no `observationMiddleware`, it logs a warning, because a deployment that guards `/trigger` would otherwise gain open observation routes on upgrade. Pass `observationMiddleware: []` to allow every request on purpose and silence the warning. Configure observation middleware to decide who may read them:
 
 ```ts
 import type { ObservationMiddlewareFunction } from "@yieldstar/http-server";

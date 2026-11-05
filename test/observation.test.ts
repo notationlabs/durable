@@ -433,18 +433,3 @@ test("aborting the HTTP SDK's wait aborts its request and sends no more", async 
   await sleep(60);
   expect(sdk.responses.length).toBe(requestsAtAbort);
 });
-
-describe("HTTP SDK trigger status", () => {
-  test("the ack's status comes from the response code, so a server that sends no status still gives one", async () => {
-    for (const [code, status] of [
-      [202, "accepted"],
-      [200, "existing"],
-    ] as const) {
-      vi.stubGlobal("fetch", async () => Response.json({ executionId: "order-42" }, { status: code }));
-      const sdk = createHttpSdkFactory<any>()({ url: "http://older-server.test" });
-      expect(
-        await sdk.trigger({ workflowId: "charge-order", executionId: "order-42", params: {} })
-      ).toMatchObject({ executionId: "order-42", status });
-    }
-  });
-});

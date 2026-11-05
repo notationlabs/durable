@@ -290,31 +290,6 @@ for (const backendKind of backendKinds) {
         expect(requests[0]).not.toHaveProperty("load");
       });
 
-      test("/list treats null fields as absent", async () => {
-        const { runtime } = openBackend(backendKind);
-        await admit(runtime, "a");
-        await admit(runtime, "b");
-        const requests: ObservationRequest[] = [];
-        const { url } = serveRoutes(runtime, {
-          observationMiddleware: [
-            async (_req, request) => {
-              requests.push(request);
-              return { allow: true };
-            },
-          ],
-        });
-        const response = await post(url, "list", {
-          workflowId: null,
-          status: null,
-          cursor: null,
-          limit: null,
-        });
-        expect(response.status).toBe(200);
-        const page = (await response.json()) as { executions: { executionId: string }[] };
-        expect(page.executions.map((view) => view.executionId)).toEqual(["b", "a"]);
-        expect(requests).toEqual([{ operation: "list", filter: {} }]);
-      });
-
       test("middleware runs in array order, and the first denial wins", async () => {
         const { runtime } = openBackend(backendKind);
         const calls: string[] = [];
@@ -484,6 +459,21 @@ test("createRoutes rejects a pollInterval or maxWait that is not a positive, fin
     expect(() => createRoutes({ runtime, logger, maxWait: value })).toThrow(
       new RangeError("maxWait must be a positive, finite number of milliseconds")
     );
+  }
+});
+
+test("createRoutes warns when trigger middleware is set without observationMiddleware", () => {
+  const runtime = new MemoryRuntime();
+  const guard = async () => new Response("Unauthorized", { status: 401 });
+  const warned = vi.spyOn(logger, "warn").mockImplementation(() => {});
+  try {
+    createRoutes({ runtime, logger, middleware: [guard] });
+    expect(warned).toHaveBeenCalledTimes(1);
+    createRoutes({ runtime, logger, middleware: [guard], observationMiddleware: [] });
+    createRoutes({ runtime, logger });
+    expect(warned).toHaveBeenCalledTimes(1);
+  } finally {
+    warned.mockRestore();
   }
 });
 
