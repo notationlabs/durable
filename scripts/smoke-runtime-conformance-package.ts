@@ -46,6 +46,7 @@ try {
   await writeFile(
     join(directory, "runtime-conformance.test.ts"),
     `import {
+  registerCancellationClientConformance,
   registerEffectClientConformance,
   registerExecutionClientConformance,
   registerJoinClientConformance,
@@ -75,6 +76,13 @@ registerEffectClientConformance({
 });
 
 registerJoinClientConformance({
+  name: "installed-memory",
+  create(options) {
+    return { runtime: new MemoryRuntime(options) };
+  },
+});
+
+registerCancellationClientConformance({
   name: "installed-memory",
   create(options) {
     return { runtime: new MemoryRuntime(options) };

@@ -22,6 +22,12 @@ export {
   type JoinConformanceOptions,
 } from "./join";
 export {
+  registerCancellationClientConformance,
+  type CancellationConformanceHarness,
+  type CancellationConformanceHarnessOptions,
+  type CancellationConformanceOptions,
+} from "./cancellation";
+export {
   registerExecutionClientConformance,
   type ExecutionConformanceHarness,
   type ExecutionConformanceHarnessOptions,

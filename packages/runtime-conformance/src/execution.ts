@@ -1918,7 +1918,7 @@ export function registerExecutionClientConformance({
           params: { orderId: 42, items: [{ sku: "a", qty: 1 }] },
           status: "admitted",
           admittedAt: clock.now,
-          parent: { executionId: "caller", stepKey: "ship" },
+          parent: { executionId: "caller", stepKey: "ship", detached: false },
         });
         expect(await claimedIds(runtime)).toEqual([targetId]);
 
@@ -2136,7 +2136,11 @@ export function registerExecutionClientConformance({
 
         const restarted = await restart();
         expect(await restarted.executions.get(first)).toEqual(record);
-        expect(record!.parent).toEqual({ executionId: "caller", stepKey: "ship" });
+        expect(record!.parent).toEqual({
+          executionId: "caller",
+          stepKey: "ship",
+          detached: false,
+        });
         expect(await startFrom(restarted, "caller", "ship")).toEqual({
           status: "accepted",
           executionId: first,
@@ -2569,6 +2573,8 @@ export function registerExecutionClientConformance({
           lease: await claimOne(runtime, "failed"),
           outcome: { status: "failed", error: new Error("card declined") },
         });
+        await admitSuspended(runtime, "cancelled");
+        await runtime.executions.cancel({ executionId: "cancelled", force: true });
         await admit(runtime, "expired", "refund-order");
         await claimOne(runtime, "expired");
         advance(LEASE);
@@ -2592,6 +2598,7 @@ export function registerExecutionClientConformance({
           suspended: ["suspended"],
           completed: ["completed"],
           failed: ["failed"],
+          cancelled: ["cancelled"],
         });
         expect(
           await listAll(runtime, { workflowId: "refund-order", status: "admitted" })
@@ -2607,6 +2614,7 @@ export function registerExecutionClientConformance({
           suspended: ["suspended"],
           completed: ["completed"],
           failed: ["failed"],
+          cancelled: ["cancelled"],
         });
       });
 
@@ -2615,7 +2623,7 @@ export function registerExecutionClientConformance({
         ["a negative limit", { limit: -1 }],
         ["a fractional limit", { limit: 1.5 }],
         ["a string limit", { limit: "10" }],
-        ["an unknown status", { status: "cancelled" }],
+        ["an unknown status", { status: "aborted" }],
         ["a non-string workflow ID", { workflowId: 7 }],
         ["a malformed cursor", { cursor: "not a cursor" }],
         ["a cursor that is not one this runtime issued", { cursor: "e30" }],
