@@ -29,12 +29,15 @@ export function createLocalSdk<W extends WorkflowRouter>(
   runtime: { executions: ExecutionClient },
   options?: {
     /**
-     * Optional. When the dispatcher runs in this process, its
-     * `workflowEndEmitter` lets `wait` read the record as soon as an outcome
-     * is recorded. No result depends on it.
+     * Optional. When the dispatcher runs in this process, `wait` listens to
+     * its `workflowEndEmitter` and reads the record as soon as an outcome is
+     * recorded. Results do not depend on it.
      */
     invoker?: Pick<WorkflowInvoker, "workflowEndEmitter">;
-    /** Milliseconds between reads of the execution record in `wait`. @default 25 */
+    /**
+     * Milliseconds between reads of the execution record in `wait`.
+     * @default 25
+     */
     pollInterval?: number;
   }
 ) {
@@ -51,8 +54,8 @@ export function createLocalSdk<W extends WorkflowRouter>(
      * delivers it; this does not wait for a worker to start. With
      * `idempotent: true`, a repeat of the same request resolves with
      * `status: "existing"` and admits nothing.
-     * @throws {ExecutionAdmissionError} when the ID is in use (by a different
-     * request, in idempotent mode), an idempotent trigger names a pruned
+     * @throws {ExecutionAdmissionError} when the ID is in use (in idempotent
+     * mode, by a different request), an idempotent trigger names a pruned
      * execution (`EXECUTION_PRUNED`) or has no ID, or the event cannot be
      * stored without loss
      */

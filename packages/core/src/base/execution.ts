@@ -308,12 +308,11 @@ export interface ExecutionClient {
   get(executionId: string): Promise<ExecutionRecord | PrunedExecutionRecord | undefined>;
 
   /**
-   * Pages through execution records, newest first by the admission sequence
-   * the backend assigned. The sequence increases with every admission across
-   * every client sharing the backend, whatever their clocks. A cursor resumes
-   * after the last execution of its page, so paging never returns an
-   * execution twice, and executions admitted after the first page do not
-   * appear on later ones.
+   * Pages through execution records, newest first by admission sequence. The
+   * backend assigns the sequence, so it increases across all clients whatever
+   * their clocks. A cursor resumes after the last execution of its page, so no
+   * execution is returned twice, and executions admitted after the first page
+   * do not appear on later pages.
    * @throws {ExecutionListRequestError} for an invalid filter, limit or cursor
    */
   list(request?: ExecutionListRequest): Promise<ExecutionListPage>;

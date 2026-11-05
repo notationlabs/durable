@@ -28,7 +28,7 @@ export type JoinResult =
  * step's join waiters in the same write. A forced cancel deletes the waiters
  * its execution holds.
  *
- * So a waiter can stay registered for good when no step result follows it:
+ * So a waiter stays registered indefinitely when no step result follows it:
  * a stale holder registers after the step was recorded, or a deploy removes a
  * join step that was still waiting. The only effect is one extra delivery of
  * the joiner when the target finishes, and `getWaiters` may list the waiter.

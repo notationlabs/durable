@@ -376,7 +376,6 @@ describe.each(runtimes)("cancellation on $name", ({ create }) => {
     );
   }
 
-  /** Claims the execution if it is due, runs it and acknowledges the outcome. */
   async function deliver(executionId = ORDER) {
     const lease = await claim(executionId);
     if (!lease) return undefined;

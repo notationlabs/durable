@@ -249,7 +249,7 @@ for (const sdkKind of sdkKinds) {
         const waiting = sdk.wait("nudged");
         await sleep(20);
         await complete(peer, "nudged", "receipt");
-        // No event is emitted: the record alone settles the wait.
+        // No event is emitted, so the wait can only end by reading the record.
         expect(await waiting).toMatchObject({ status: "completed", result: "receipt" });
       });
     });

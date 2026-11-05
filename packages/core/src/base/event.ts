@@ -30,9 +30,9 @@ type TriggerIdempotency =
     };
 
 /**
- * The answer to a trigger once admission commits. `existing` means an
- * idempotent trigger matched an execution already admitted with the same
- * request, and admitted nothing.
+ * The response to a trigger after admission commits. `existing` means an
+ * idempotent trigger matched an earlier execution with the same request, and
+ * nothing was admitted.
  */
 export type TriggerAck = {
   executionId: string;

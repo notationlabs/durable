@@ -96,10 +96,7 @@ export function prepareExecutionListRequest(
   return prepared;
 }
 
-/**
- * Whether a state matches the request's filters at `now`. A pruned execution
- * matches only `status: "pruned"`.
- */
+/** A pruned execution matches only `status: "pruned"`. */
 export function matchesExecutionListRequest(
   state: ExecutionState,
   request: PreparedExecutionListRequest,

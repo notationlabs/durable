@@ -75,14 +75,12 @@ export abstract class HeapClient {
    * steps' store, effect and join waiters, and sets the request's
    * `deliveredAt`. Throws if the execution has no request recorded.
    *
-   * The results list the records as stored, in the order of `steps`. A
-   * record that already exists at its attempt and equals the requested one
-   * (the same JSON, and done) counts as written, as in `writeStep`. When an
-   * existing record differs, nothing changes: no records are written, no
-   * waiters are deleted and `deliveredAt` is not set. The results then hold
-   * each step's existing record, or `null` for a step without one, and callers
-   * compare them to detect the conflict. `workflowVersion` is recorded as
-   * in `writeStep`, in the same write.
+   * The results list the records as stored, in the order of `steps`. An
+   * existing record with the same JSON, done, counts as written, as in
+   * `writeStep`. When an existing record differs, nothing changes, and the
+   * results hold each step's existing record or `null`. Callers compare them
+   * to detect the conflict. `workflowVersion` is recorded as in `writeStep`, in
+   * the same write.
    */
   abstract recordCancellation(params: {
     lease: ExecutionLease;
