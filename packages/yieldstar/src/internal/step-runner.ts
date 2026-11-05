@@ -185,10 +185,13 @@ export function createStepRunner(params: {
    * The start is identified by this execution's ID and `stepKey`, so every
    * replay of the step names the same target. A rejected start throws a
    * `WorkflowStartError`.
+   * @param options.detached the target receives no cancellation propagated
+   * from this execution. A repeat that changes it is a different request.
    */
   function start<Params extends Record<string, any>>(
     stepKey: string,
-    target: { workflowId: string; params?: Params & Durable<Params> }
+    target: { workflowId: string; params?: Params & Durable<Params> },
+    options?: StartOptions
   ): AsyncGenerator<
     StepResponse,
     { executionId: string },
@@ -205,6 +208,8 @@ export function createStepRunner(params: {
     if (target.params !== undefined) {
       request.params = target.params as DurableObject;
     }
+    const detached = startDetached("step.start", options);
+    if (detached !== undefined) request.detached = detached;
     return startStep(stepKey, request);
   }
 
@@ -229,8 +234,9 @@ export function createStepRunner(params: {
 
   /**
    * Waits until the execution `executionId` is terminal. Returns its result,
-   * or throws a `WorkflowJoinError` with code `JOINED_EXECUTION_FAILED` and
-   * its recorded error as `cause`. The outcome is recorded under `stepKey`,
+   * or throws a `WorkflowJoinError`: `JOINED_EXECUTION_FAILED` with its
+   * recorded error as `cause`, or `JOINED_EXECUTION_CANCELLED` with its
+   * `reason` and `source`. The outcome is recorded under `stepKey`,
    * so replay returns or throws it without reading the target again.
    */
   function join<R = DurableValue>(
@@ -240,7 +246,7 @@ export function createStepRunner(params: {
   /**
    * Waits until the execution is terminal or the deadline passes, and returns
    * the first result recorded. The target is read first, so a terminal target
-   * wins even after the deadline. A failed target still throws.
+   * wins even after the deadline. A failed or cancelled target still throws.
    * @param options.deadline absolute time in milliseconds, compared with the
    * runtime clock. The first evaluation records it and later evaluations
    * ignore the argument.
@@ -272,10 +278,12 @@ export function createStepRunner(params: {
    * `stepKey`. Until the step is recorded, each replay repeats the start,
    * which returns the same child, and joins it. `W` checks `params` and types
    * the result; it does not check that `workflowId` names that workflow.
+   * `options.detached` is as in `step.start`.
    */
   function call<W extends WorkflowGenerator<any, any, any>>(
     stepKey: string,
-    target: CallTarget<W>
+    target: CallTarget<W>,
+    options?: StartOptions
   ): AsyncGenerator<StepResponse, WorkflowGeneratorReturnType<W>, StepResult | StepError>;
   /**
    * `step.call` with the deadline rules of the timed `step.join`.
@@ -285,7 +293,7 @@ export function createStepRunner(params: {
   function call<W extends WorkflowGenerator<any, any, any>>(
     stepKey: string,
     target: CallTarget<W>,
-    options: { deadline: number }
+    options: StartOptions & { deadline: number }
   ): AsyncGenerator<
     StepResponse,
     TimedJoinResult<WorkflowGeneratorReturnType<W>>,
@@ -294,7 +302,7 @@ export function createStepRunner(params: {
   function call(
     stepKey: string,
     target: { workflowId: string; params?: unknown },
-    options?: { deadline: number }
+    options?: StartOptions & { deadline?: number }
   ): AsyncGenerator<StepResponse, unknown, StepResult | StepError> {
     assertNonEmpty("step.call", "step key", stepKey);
     const request: ExecutionStartRequest = {
@@ -305,11 +313,17 @@ export function createStepRunner(params: {
     if (target.params !== undefined) {
       request.params = target.params as DurableObject;
     }
+    const detached = startDetached("step.call", options);
+    if (detached !== undefined) request.detached = detached;
     return joinStep({
       stepKey,
       event,
       clock,
-      deadline: joinDeadline("step.call", options),
+      // `detached` alone does not make the call timed.
+      deadline: joinDeadline(
+        "step.call",
+        options && "deadline" in options ? { deadline: options.deadline! } : undefined
+      ),
       target: { start: request },
     });
   }
@@ -326,6 +340,24 @@ function assertNonEmpty(method: string, name: string, value: unknown) {
   if (value === "") {
     throw new Error(`${method} requires a non-empty ${name}`);
   }
+}
+
+export type StartOptions = {
+  /**
+   * Records the target's parent link as detached, so the target receives no
+   * cancellation propagated from this execution.
+   * @default false
+   */
+  detached?: boolean;
+};
+
+function startDetached(method: string, options: StartOptions | undefined) {
+  if (options === undefined) return undefined;
+  const { detached } = options;
+  if (detached !== undefined && typeof detached !== "boolean") {
+    throw new TypeError(`${method} detached must be a boolean`);
+  }
+  return detached;
 }
 
 function joinDeadline(method: string, options: { deadline: number } | undefined) {
@@ -414,6 +446,21 @@ async function* joinStep(params: {
           targetId,
           `Joined execution "${targetId}" failed: ${outcome.error?.message}`,
           { cause: outcome.error }
+        );
+        yield new StepError(err);
+        throw err;
+      }
+      if (outcome.status === "cancelled") {
+        const err = new WorkflowJoinError(
+          "JOINED_EXECUTION_CANCELLED",
+          targetId,
+          outcome.reason === undefined
+            ? `Joined execution "${targetId}" was cancelled`
+            : `Joined execution "${targetId}" was cancelled: ${outcome.reason}`,
+          {
+            ...(outcome.reason !== undefined ? { reason: outcome.reason } : {}),
+            ...(outcome.source !== undefined ? { source: outcome.source } : {}),
+          }
         );
         yield new StepError(err);
         throw err;

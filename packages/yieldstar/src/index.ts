@@ -25,6 +25,7 @@ export type {
   EffectLookup,
   StepRunner,
   StepRunOptions,
+  StartOptions,
   TimedJoinResult,
   TimedWhenResult,
   WorkflowStore,

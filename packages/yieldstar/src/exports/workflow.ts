@@ -10,6 +10,7 @@ import type {
 import type { StepRunner } from "../internal/step-runner";
 import { isIterable } from "../internal/utils";
 import {
+  StepCancelled,
   StepUnfinished,
   UnfinishedCacheCheck,
   decodeStepRecord,
@@ -40,8 +41,10 @@ import {
   InfrastructureError,
   LeaseLostError,
   StepConflictError,
+  WorkflowCancelledError,
   isLeaseLost,
   WORKFLOW_RESULT_STEP_KEY,
+  type ExecutionCancellation,
 } from "@yieldstar/core";
 
 export type WorkflowFn<
@@ -84,6 +87,7 @@ export function workflow<
     event,
     lease,
     signal,
+    cancellation,
     heapClient,
     storeClient,
     executionClient,
@@ -126,6 +130,45 @@ export function workflow<
         );
       }
     }
+
+    /**
+     * Records the delivery of `request` at one step, with its waiters deleted
+     * and `deliveredAt` set in the same write, and returns the error to throw
+     * into workflow code there. A lost lease or a conflicting record ends the
+     * delivery, as in `writeStep`.
+     */
+    async function deliverCancellation(
+      request: ExecutionCancellation,
+      stepKey: string,
+      stepAttempt: number
+    ) {
+      const record = encodeStepRecord(
+        new StepCancelled(
+          new WorkflowCancelledError({ reason: request.reason, source: request.source })
+        ),
+        stepKey
+      );
+      stopIfAborted(signal);
+      const written = await infrastructure(() =>
+        heapClient.recordCancellation({
+          lease,
+          steps: [{ stepKey, stepAttempt, stepResponseJson: record.json }],
+        })
+      );
+      if (isLeaseLost(written)) {
+        throw new InfrastructureError(new LeaseLostError(executionId));
+      }
+      const [stored] = written;
+      if (stored?.stepResponseJson !== record.json || stored.meta.done !== true) {
+        throw new InfrastructureError(new StepConflictError(executionId, stepKey));
+      }
+      return (record.response as StepCancelled).err;
+    }
+
+    // A request is delivered once. Replay of a delivered request reads the
+    // recorded throw instead of the request.
+    let pendingCancellation =
+      cancellation && cancellation.deliveredAt === undefined ? cancellation : undefined;
 
     let iteratorResult: IteratorResult<any> | null = null;
     let nextIteratorResult: IteratorResult<any> | null = null;
@@ -171,6 +214,35 @@ export function workflow<
         stepAttempt = cached.meta.attempt + 1;
       }
 
+      // Decoded once: the cancellation checks and the step's cache check
+      // both read it.
+      const recorded =
+        cached && !iteratorResult.done ? decodeStepRecord(cached.stepResponseJson) : null;
+
+      if (!iteratorResult.done) {
+        let thrown: { err: unknown } | undefined;
+        if (cached?.meta.done && recorded instanceof StepCancelled) {
+          thrown = { err: recorded.err };
+        } else if (
+          pendingCancellation &&
+          isUnfinishedStep(cached, recorded, clock())
+        ) {
+          // A delay is recorded done when it starts, so its cancellation is
+          // written as the step's next attempt, which replay reads.
+          thrown = {
+            err: await deliverCancellation(pendingCancellation, stepKey, stepAttempt),
+          };
+          pendingCancellation = undefined;
+        }
+        if (thrown) {
+          // The step is suspended at its StepKey, so the throw reaches
+          // workflow code without running the step.
+          stopIfAborted(signal);
+          nextIteratorResult = await workflowIterator.throw(thrown.err);
+          continue;
+        }
+      }
+
       // A step with an unfinished record runs again. A step that yields an
       // UnfinishedCacheCheck receives the record.
       let unfinished: typeof cached = null;
@@ -194,9 +266,9 @@ export function workflow<
 
       if (stepResponse instanceof StepCacheCheck) {
         const cachedResponse = cached
-          ? decodeStepRecord(cached.stepResponseJson)
+          ? recorded
           : unfinished && stepResponse instanceof UnfinishedCacheCheck
-            ? new StepUnfinished(decodeStepRecord(unfinished.stepResponseJson))
+            ? new StepUnfinished(recorded!)
             : null;
         // Resuming the step runs the step function unless it is cached.
         stopIfAborted(signal);
@@ -362,6 +434,20 @@ export function workflow<
 }
 
 export const createWorkflow = workflow;
+
+/**
+ * Whether a cancellation is delivered at this step: it has no record, an
+ * unfinished record (a store, join or effect wait, or a retry backoff), or a
+ * delay that has not elapsed.
+ */
+function isUnfinishedStep(
+  cached: { meta: { done: boolean } } | null,
+  recorded: StepResponse | null,
+  now: number
+) {
+  if (!cached || !cached.meta.done) return true;
+  return recorded instanceof StepDelay && recorded.wakeAt > now;
+}
 
 /**
  * Ends the delivery once its signal has aborted, before it runs more workflow

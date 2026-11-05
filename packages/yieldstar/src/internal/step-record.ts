@@ -31,6 +31,22 @@ export class StepUnfinished extends StepResponse {
 }
 
 /**
+ * A cancellation delivered at this step. It is recorded as the step's result
+ * and is a different record type from a `StepError`, so a
+ * `WorkflowCancelledError` that a step function throws stays a step error.
+ * The driver throws `err` into workflow code at the step.
+ */
+export class StepCancelled extends StepResponse {
+  static type = "step-cancelled";
+  readonly type = "step-cancelled";
+  readonly err: unknown;
+  constructor(err: unknown) {
+    super();
+    this.err = err;
+  }
+}
+
+/**
  * Encodes a step response for its step record, and returns the response that
  * workflow code must see: the record decoded again, so that a first run sees
  * exactly what replay reads. A result the codec rejects is recorded as a step
@@ -76,6 +92,9 @@ function encodeResponse(response: StepResponse, stepKey: string): string {
       `,"type":"step-error"}`
     );
   }
+  if (response instanceof StepCancelled) {
+    return `{"err":${encodeThrownValue(response.err)},"type":"step-cancelled"}`;
+  }
   if (response instanceof StepDelay) {
     return `{"type":"step-delay","wakeAt":${JSON.stringify(response.wakeAt)}}`;
   }
@@ -117,6 +136,8 @@ export function decodeStepRecord(json: string): StepResponse {
           retryInterval: record.retryInterval,
           backoffStrategy: record.backOffStrategy,
         });
+      case "step-cancelled":
+        return new StepCancelled(decodeParsedValue(record.err, "err"));
       case "step-delay":
         return new StepDelay(record.wakeAt);
       case "effect-wait":
