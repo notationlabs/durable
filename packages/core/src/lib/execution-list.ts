@@ -105,41 +105,18 @@ export function toExecutionListPage(
     executions: page.map(({ state }) => toExecutionRecord(state, now)),
   };
   if (matches.length > request.limit) {
-    result.cursor = encodeExecutionListCursor(page[page.length - 1].admissionSequence);
+    result.cursor = String(page[page.length - 1].admissionSequence);
   }
   return result;
-}
-
-const CURSOR_PREFIX = "v1:";
-
-function encodeExecutionListCursor(admissionSequence: number): string {
-  return toBase64Url(`${CURSOR_PREFIX}${admissionSequence}`);
 }
 
 function decodeExecutionListCursor(cursor: unknown): number {
   if (typeof cursor !== "string") {
     throw new ExecutionListRequestError("cursor must be a string");
   }
-  const decoded = fromBase64Url(cursor);
-  const match = decoded?.startsWith(CURSOR_PREFIX)
-    ? /^\d+$/.exec(decoded.slice(CURSOR_PREFIX.length))
-    : null;
-  const sequence = match ? Number(match[0]) : NaN;
+  const sequence = /^\d+$/.test(cursor) ? Number(cursor) : NaN;
   if (!Number.isSafeInteger(sequence)) {
     throw new ExecutionListRequestError("cursor is not a list cursor");
   }
   return sequence;
-}
-
-function toBase64Url(text: string): string {
-  return btoa(text).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-}
-
-function fromBase64Url(value: string): string | undefined {
-  if (!/^[A-Za-z0-9_-]*$/.test(value)) return undefined;
-  try {
-    return atob(value.replace(/-/g, "+").replace(/_/g, "/"));
-  } catch {
-    return undefined;
-  }
 }
