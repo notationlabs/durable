@@ -288,9 +288,11 @@ export function workflow<
         let thrown: { err: unknown } | undefined;
         if (cached?.meta.done && recorded instanceof StepCancelled) {
           thrown = { err: recorded.err };
-        } else if (isCombinator ? !cached : isUnfinishedStep(cached, recorded, clock())) {
+        } else if (!isCombinator && isUnfinishedStep(cached, recorded, clock())) {
           // An abandoned branch replays its recorded steps and stops at the
-          // first step that needs new work.
+          // first step that needs new work. A combinator without a record is
+          // still driven, so that replay reaches the keys its branches
+          // reached; it records nothing while the branch is abandoned.
           if (branch.stopped) return { status: "stopped" };
           // A combinator is not a cancellation point: its branches are.
           if (barrier.pending && !isCombinator) {
@@ -350,6 +352,9 @@ export function workflow<
         }
 
         if ("throw" in action) {
+          // An abandoned branch is resumed only with recorded values, never
+          // with an error, so its catch and finally blocks do not run.
+          if (branch.abandoned) return { status: "stopped" };
           nextIteratorResult = await throwInto(action.throw);
           continue;
         }
@@ -394,6 +399,7 @@ export function workflow<
         stepResponse instanceof StepUnfinishedRecord
       ) {
         stopIfAborted(signal);
+        if (branch.stopped) return { status: "stopped" };
         if (stepResponse instanceof StepUnfinishedRecord) {
           await writeStep({
             stepKey,
@@ -563,7 +569,7 @@ export function workflow<
       const { combinator: kind, mode, concurrency, branches } = request.request;
       const combinator = new Combinator(owner, stepKey, stepAttempt, concurrency);
       combinator.decision = recorded;
-      const children = branches.map(() => new DrivenBranch(combinator));
+      const children = branches.map((_, i) => new DrivenBranch(combinator, i));
       const states: BranchState[] = branches.map(() => ({ status: "running" }));
       // Indexes of branches that returned or threw, in the order they did.
       const finished: number[] = [];
@@ -595,7 +601,7 @@ export function workflow<
           }
           // While a cancellation is pending, a combinator with a branch still
           // replaying waits: the delivery may land in that branch.
-          if (!combinator.decision && !(barrier.pending && running)) {
+          if (!combinator.decision && !owner.stopped && !(barrier.pending && running)) {
             const decision = decide(kind, mode, states, finished);
             if (decision) {
               recordDecision(decision);

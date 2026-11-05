@@ -161,6 +161,20 @@ export class Combinator {
     this.limiter = new Limiter(concurrency);
   }
 
+  /**
+   * Whether the outcome no longer uses branch `index`: a losing race branch,
+   * an unfinished branch after a fail-fast failure, or any branch once a
+   * branch failed with an error that ends the delivery.
+   */
+  abandons(index: number): boolean {
+    if (this.fatal) return true;
+    const { decision } = this;
+    if (decision?.decision === "won" || decision?.decision === "rejected") {
+      return decision.index !== index;
+    }
+    return false;
+  }
+
   /** Whether its branches must start no new work. */
   get stopsBranches(): boolean {
     if (this.fatal) return true;
@@ -175,7 +189,18 @@ export class DrivenBranch {
   private holding = 0;
   private acquired: Promise<void> = Promise.resolve();
 
-  constructor(readonly parent?: Combinator) {}
+  constructor(
+    readonly parent?: Combinator,
+    readonly index = 0
+  ) {}
+
+  /** Whether a combinator above this branch no longer uses its outcome. */
+  get abandoned(): boolean {
+    for (let branch: DrivenBranch | undefined = this; branch?.parent; branch = branch.parent.owner) {
+      if (branch.parent.abandons(branch.index)) return true;
+    }
+    return false;
+  }
 
   /**
    * Whether the branch is abandoned: a combinator above it settled with a
