@@ -45,11 +45,11 @@ await exec.ack();
 const result = await exec.waitForResult();
 ```
 
-`waitForResult` posts to `/wait`. See [HTTP SDK](./sdk-http.md) for `poll`, `wait` and `list`.
+`waitForResult` posts to `/wait`. See [HTTP SDK](./sdk-http.md) for `poll`, `wait`, `list` and `cancel`.
 
 ## Routes
 
-`createRoutes` registers five POST endpoints:
+`createRoutes` registers six POST endpoints:
 
 | Endpoint        | Body                                                           | Responses                                                                                                     |
 | --------------- | -------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
@@ -57,9 +57,12 @@ const result = await exec.waitForResult();
 | `POST /poll`    | `{ executionId }`                                              | `200` with the execution's view; `404` `EXECUTION_NOT_FOUND`                                                  |
 | `POST /wait`    | `{ executionId, timeout? }`                                    | `200` with a `WaitResult`; `404` `EXECUTION_NOT_FOUND`                                                        |
 | `POST /list`    | `{ workflowId?, status?, cursor?, limit? }`                    | `200 { executions, cursor? }`                                                                                 |
+| `POST /cancel`  | `{ executionId, reason?, force? }`                             | `202 { status: "requested", execution }` while the execution is active; `200` with the terminal view when it is terminal, including after a forced cancel; `404` `EXECUTION_NOT_FOUND`; `400` `INVALID_CANCEL_REQUEST` |
 | `POST /events`  | `{ executionId }`                                              | Deprecated. Blocks until the record is terminal. `200` with the encoded result, `500` with the encoded recorded error, `404` `EXECUTION_NOT_FOUND` |
 
-The views, wait results and pages are the same as the [local SDK](./sdk-local.md#execution-views) returns. A failed execution is a `200` response from `/poll` and `/wait`, with the error in the view.
+The views, wait results and pages are the same as the [local SDK](./sdk-local.md#execution-views) returns. A failed or cancelled execution is a `200` response from `/poll` and `/wait`, with the error or the cancellation's `reason` and `source` in the view. `/events` responds `500` with an encoded `WorkflowCancelledError` for a cancelled execution.
+
+`/cancel` records the [cancellation](./cancellation.md) request and responds. It does not wait for the workflow to stop.
 
 `/wait` holds the request open for at most 8 seconds, below Bun's default 10-second idle timeout. When the execution is not terminal by then, or by `timeout` if that is shorter, it responds `200` with `{ status: "timed-out", execution }`. The [HTTP SDK](./sdk-http.md) repeats the request until the execution is terminal. `/events` has no cap; use `/wait` instead.
 
@@ -75,6 +78,7 @@ Error responses carry `{ code, message }`. Besides the codes in the table above,
 | ------------------------------------------------------------ | --------------------------------------- |
 | A `/poll`, `/wait`, `/list` or `/events` body that is not a JSON object, a missing or empty `executionId`, or a `timeout` that is negative or not a number | `400` `INVALID_OBSERVATION_REQUEST` |
 | A `/list` `workflowId` that is not a string, a `limit` that is not a positive integer, an unknown `status`, or a `cursor` that `/list` did not return | `400` `INVALID_LIST_REQUEST` |
+| A `/cancel` body that is not a JSON object, a missing or empty `executionId`, a `reason` that is not a string, or a `force` that is not a boolean | `400` `INVALID_CANCEL_REQUEST` |
 | Observation middleware denies the request                    | `401` `UNAUTHORIZED` or `403` `FORBIDDEN` |
 | Middleware throws, or the runtime fails                      | `500` `INTERNAL_ERROR`                  |
 
@@ -90,6 +94,7 @@ createRoutes({ runtime, logger, basePath: "/api/workflows" });
 // → POST /api/workflows/poll
 // → POST /api/workflows/wait
 // → POST /api/workflows/list
+// → POST /api/workflows/cancel
 // → POST /api/workflows/events
 ```
 
@@ -114,11 +119,11 @@ Each middleware receives four arguments: `req` (the incoming `Request`), `event`
 
 Once every middleware has run, the context map is frozen and admitted with the event. Every delivery reads it back from the execution record as a read-only `Map` available through `event.context`, so context values must be durable values (see [Step values](./steps.md#step-values)).
 
-Trigger middleware does not run for the observation routes.
+Trigger middleware does not run for the observation routes or `/cancel`.
 
 ## Observation middleware
 
-`/poll`, `/wait`, `/list` and `/events` return results and errors, which are often derived from `params`, to anyone who can call them. Without observation middleware, any caller that can reach the server can read every execution. Configure observation middleware to decide who may read them:
+`/poll`, `/wait`, `/list` and `/events` return results and errors, which are often derived from `params`, to anyone who can call them, and `/cancel` lets anyone who can call it stop any execution. Without observation middleware, any caller that can reach the server can read and cancel every execution. Configure observation middleware to decide who may read and cancel them:
 
 ```ts
 import type { ObservationMiddlewareFunction } from "@yieldstar/http-server";
@@ -137,7 +142,7 @@ const tenantOnly: ObservationMiddlewareFunction = async (req, request, logger) =
 createRoutes({ runtime, logger, observationMiddleware: [tenantOnly] });
 ```
 
-Each function receives three arguments: `req` (the incoming `Request`), `request` (an `ObservationRequest` that describes what the caller asks to read) and `logger`. `ObservationRequest` is one of:
+Each function receives three arguments: `req` (the incoming `Request`), `request` (an `ObservationRequest` that describes what the caller asks to read or cancel) and `logger`. `ObservationRequest` is one of:
 
 ```ts
 type ObservationRequest =
@@ -149,6 +154,12 @@ type ObservationRequest =
   | {
       operation: "list";
       filter: { workflowId?: string; status?: ExecutionStatus };
+    }
+  | {
+      operation: "cancel";
+      executionId: string;
+      force: boolean;
+      load(): Promise<ExecutionRecord | undefined>;
     };
 ```
 
@@ -158,6 +169,7 @@ Each function resolves with `{ allow: true }` or `{ allow: false, status: 401 | 
 - A denial responds `401` `UNAUTHORIZED` or `403` `FORBIDDEN`, never `404`. So a denied caller cannot tell whether an execution exists.
 - `load` reads the full execution record, including `params` and `context`, for a policy that needs them. It resolves `undefined` for an unknown ID. A policy that denies only when the record exists reveals whether it exists. The example above denies an unknown ID as well, so it reveals nothing.
 - A `list` request carries its filter and no `load`.
+- A `cancel` request carries the `executionId`, whether the request is forced, and `load`. The same functions authorize reads and cancels, so a policy that should allow reads but not cancels, or not forced cancels, must check `operation` and `force`.
 - A function that throws responds `500` `INTERNAL_ERROR`.
 - Observation middleware does not run for `/trigger`.
 
