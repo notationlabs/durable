@@ -96,7 +96,7 @@ export async function waitForExecutionRecord(
     wake?.();
   };
   const onAbort = () => wake?.();
-  const unsubscribe = notifier && subscribe(notifier, executionId, onNotify);
+  notifier?.on(executionId, onNotify);
   signal?.addEventListener("abort", onAbort);
   try {
     while (true) {
@@ -118,51 +118,9 @@ export async function waitForExecutionRecord(
       });
     }
   } finally {
-    unsubscribe?.();
+    notifier?.off(executionId, onNotify);
     signal?.removeEventListener("abort", onAbort);
   }
-}
-
-type Subscription = { listener: () => void; waiters: Set<() => void> };
-
-const subscriptions = new WeakMap<ExecutionNotifier, Map<string, Subscription>>();
-
-/**
- * Returns a function that removes `waiter`. All waits on one notifier and ID
- * share one listener, so many waits on one ID stay under an `EventEmitter`'s
- * listener limit. The listener is removed when the last waiter leaves.
- */
-function subscribe(
-  notifier: ExecutionNotifier,
-  executionId: string,
-  waiter: () => void
-): () => void {
-  let byId = subscriptions.get(notifier);
-  if (!byId) {
-    byId = new Map();
-    subscriptions.set(notifier, byId);
-  }
-  let subscription = byId.get(executionId);
-  if (!subscription) {
-    const waiters = new Set<() => void>();
-    subscription = {
-      waiters,
-      listener: () => {
-        for (const notify of [...waiters]) notify();
-      },
-    };
-    byId.set(executionId, subscription);
-    notifier.on(executionId, subscription.listener);
-  }
-  const { waiters, listener } = subscription;
-  waiters.add(waiter);
-  return () => {
-    waiters.delete(waiter);
-    if (waiters.size === 0 && byId.get(executionId) === subscription) {
-      byId.delete(executionId);
-      notifier.off(executionId, listener);
-    }
-  };
 }
 
 function assertDuration(name: string, value: unknown) {
