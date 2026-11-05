@@ -161,4 +161,6 @@ Each function resolves with `{ allow: true }` or `{ allow: false, status: 401 | 
 - A function that throws responds `500` `INTERNAL_ERROR`.
 - Observation middleware does not run for `/trigger`.
 
+`/trigger` also reveals something about existing executions. A caller that trigger middleware allows can send `idempotent: true` with another execution's ID and a guess at its `params`. The response is `200` `existing` when the guess matches and `409` `EXECUTION_REQUEST_MISMATCH` when it does not, so the caller can test guesses at that execution's `params`. Any trigger with a used ID also shows that the ID exists. Observation middleware cannot prevent this. Limit who may trigger with trigger middleware, or use execution IDs that other callers cannot guess.
+
 This package does not choose an authorization policy.

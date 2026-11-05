@@ -73,6 +73,8 @@ Deprecated: use `/wait`. Accepts `{ executionId }`. Blocks until the execution r
 
 An `ObservationMiddlewareFunction` receives `(req, request, logger)`, where `request` is an `ObservationRequest`, and resolves with `{ allow: true }` or `{ allow: false, status: 401 | 403 }`. The functions run in array order before the route reads any record, and the first denial responds `401` `UNAUTHORIZED` or `403` `FORBIDDEN`. For `poll`, `wait` and `events`, `request` carries the `executionId` and a `load()` function that reads the full `ExecutionRecord`. For `list`, it carries the `filter` and no `load`. See [Observation middleware](../manual/http-server.md#observation-middleware).
 
+Observation middleware does not run for `/trigger`. A caller that trigger middleware allows can tell `existing` from `EXECUTION_REQUEST_MISMATCH` for another execution's ID, and so test guesses at that execution's `params`. Limit who may trigger with trigger middleware, or use execution IDs that other callers cannot guess.
+
 ## `createMiddleware(fn)`
 
 Wraps a trigger middleware function for use with `createRoutes`. Middleware receives `(req, event, next, logger)`. It runs only for `/trigger`.
