@@ -316,7 +316,6 @@ export function registerJoinClientConformance({
           waiter("charge-42"),
         ]);
 
-        // Both joiners now see the same outcome.
         for (const joiner of ["charge-42", "audit-42"]) {
           expect(await join(peer, joiner)).toEqual({
             status: "terminal",

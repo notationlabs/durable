@@ -72,7 +72,8 @@ export class StepStoreWait extends StepResponse {
 
 /**
  * An unresolved `step.join` or `step.call`, recorded as an unfinished step.
- * @param wakeAt the deadline of a timed join. The execution is also due then.
+ * For a timed join, `wakeAt` is the deadline, and the execution is also due
+ * then.
  */
 export class StepJoinWait extends StepResponse {
   static type = "join-wait";
