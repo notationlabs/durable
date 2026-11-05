@@ -46,7 +46,10 @@ export type ObservationErrorCode =
   | "FORBIDDEN"
   | "INTERNAL_ERROR";
 
-/** What an observation route or `/cancel` passes to observation middleware. */
+/**
+ * What an observation route, `/cancel` or `/clear-divergence` passes to
+ * observation middleware.
+ */
 export type ObservationRequest =
   | {
       operation: "poll" | "wait" | "events";
@@ -59,7 +62,7 @@ export type ObservationRequest =
     }
   | {
       operation: "list";
-      filter: { workflowId?: string; status?: ExecutionStatus };
+      filter: { workflowId?: string; status?: ExecutionStatus; diverged?: boolean };
     }
   | {
       operation: "cancel";
@@ -70,10 +73,19 @@ export type ObservationRequest =
        * policy that calls it can reveal whether the execution exists.
        */
       load(): Promise<ExecutionRecord | undefined>;
+    }
+  | {
+      operation: "clear-divergence";
+      executionId: string;
+      /**
+       * Reads the record. It resolves `undefined` for an unknown ID, so a
+       * policy that calls it can reveal whether the execution exists.
+       */
+      load(): Promise<ExecutionRecord | undefined>;
     };
 
 /**
- * Allows or denies an observation or cancel request. It runs before the
+ * Allows or denies an observation, cancel or clear-divergence request. It runs before the
  * route reads any record. A denial responds `401` or `403`, never `404`.
  */
 export type ObservationMiddlewareFunction = (
@@ -273,13 +285,13 @@ export const createWaitHandler = (params: ObservationParams): RouteHandler =>
     }
   );
 
-/** `{ workflowId?, status?, cursor?, limit? }`: `200` with a page. */
+/** `{ workflowId?, status?, diverged?, cursor?, limit? }`: `200` with a page. */
 export const createListHandler = (params: ObservationParams): RouteHandler =>
   observationRoute(
     params,
     (body) => {
       const request: ExecutionListRequest = {};
-      for (const key of ["workflowId", "status", "cursor", "limit"] as const) {
+      for (const key of ["workflowId", "status", "diverged", "cursor", "limit"] as const) {
         if (body[key] !== undefined) (request as Record<string, unknown>)[key] = body[key];
       }
       let prepared: PreparedExecutionListRequest;
@@ -289,9 +301,10 @@ export const createListHandler = (params: ObservationParams): RouteHandler =>
         if (!(err instanceof ExecutionListRequestError)) throw err;
         return errorResponse(400, "INVALID_LIST_REQUEST", err.message);
       }
-      const filter: { workflowId?: string; status?: ExecutionStatus } = {};
+      const filter: { workflowId?: string; status?: ExecutionStatus; diverged?: boolean } = {};
       if (prepared.workflowId !== undefined) filter.workflowId = prepared.workflowId;
       if (prepared.status !== undefined) filter.status = prepared.status;
+      if (prepared.diverged !== undefined) filter.diverged = prepared.diverged;
       return { request: { operation: "list", filter }, value: request };
     },
     async (_req, request) => durableResponse(await params.observer.list(request), 200)
@@ -364,6 +377,34 @@ export const createCancelHandler = (params: ObservationParams): RouteHandler =>
       return durableResponse(result, result.status === "requested" ? 202 : 200);
     },
     "INVALID_CANCEL_REQUEST"
+  );
+
+/**
+ * `{ executionId }`: removes the execution's divergence and makes it due
+ * now. Responds `200` with `{ status: "cleared" }` or `{ status:
+ * "not-diverged" }`, `404` for an unknown ID, and `400`
+ * `INVALID_OBSERVATION_REQUEST` for a missing `executionId`.
+ */
+export const createClearDivergenceHandler = (params: ObservationParams): RouteHandler =>
+  observationRoute(
+    params,
+    (body) => {
+      const { executionId } = body;
+      if (typeof executionId !== "string" || executionId === "") {
+        return invalidObservationRequest("executionId must be a non-empty string");
+      }
+      const request: ObservationRequest = {
+        operation: "clear-divergence",
+        executionId,
+        load: () => params.executions.get(executionId),
+      };
+      return { request, value: executionId };
+    },
+    async (_req, executionId) => {
+      const result = await params.control.clearDivergence(executionId);
+      if (!result) return executionNotFound(executionId);
+      return durableResponse(result, 200);
+    }
   );
 
 function errorResponse(
@@ -444,8 +485,8 @@ export function createRoutes(params: {
   /** Runs before admission on `/trigger`. It does not apply to other routes. */
   middleware?: MiddlewareFunction[];
   /**
-   * Runs, in array order, before `/poll`, `/wait`, `/list`, `/events` and
-   * `/cancel` read any record. The first denial wins.
+   * Runs, in array order, before `/poll`, `/wait`, `/list`, `/events`,
+   * `/cancel` and `/clear-divergence` read any record. The first denial wins.
    */
   observationMiddleware?: ObservationMiddlewareFunction[];
   /**
@@ -484,5 +525,6 @@ export function createRoutes(params: {
     [`${basePath}/list`]: { POST: createListHandler(observation) },
     [`${basePath}/events`]: { POST: createEventsHandler(observation) },
     [`${basePath}/cancel`]: { POST: createCancelHandler(observation) },
+    [`${basePath}/clear-divergence`]: { POST: createClearDivergenceHandler(observation) },
   };
 }
