@@ -10,6 +10,7 @@ import {
   type ExecutionStartRequest,
   type ExecutionStartResult,
   type WorkflowRouter,
+  type ExecutionRecord,
 } from "@yieldstar/core";
 import { createWorkflowInvoker } from "@yieldstar/test-invoker";
 import { MemoryRuntime } from "@yieldstar/test-runtime";
@@ -333,7 +334,7 @@ test("a throwing ExecutionClient.start rejects the delivery, and the dispatcher 
 
   expect(caught).toBe(false);
   expect(await readStep(executionId, "ship")).toBeNull();
-  const record = await runtime.executions.get(executionId);
+  const record = (await runtime.executions.get(executionId) as ExecutionRecord | undefined);
   expect(record).toMatchObject({
     status: "admitted",
     unacknowledgedDeliveryCount: 1,
@@ -343,7 +344,7 @@ test("a throwing ExecutionClient.start rejects the delivery, and the dispatcher 
   advance(redeliveryDelay(1));
   await dispatcher.tick();
   await dispatcher.drain();
-  expect((await runtime.executions.get(executionId))?.outcome).toEqual({
+  expect(((await runtime.executions.get(executionId) as ExecutionRecord | undefined))?.outcome).toEqual({
     status: "completed",
     result: { executionId: "target-1" },
   });

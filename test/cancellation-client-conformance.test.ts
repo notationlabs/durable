@@ -1,3 +1,4 @@
+import type { ExecutionRecord } from "@yieldstar/core";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -120,7 +121,7 @@ test("a database created before cancellation reads its rows as attached, with no
     // A second runtime on the same database finds the columns already added.
     const peer = new SqliteRuntime(db);
     expect(await peer.executions.get("order-42")).not.toHaveProperty("cancellation");
-    expect((await peer.executions.get("fulfil-42"))!.parent).toEqual({
+    expect(((await peer.executions.get("fulfil-42") as ExecutionRecord | undefined))!.parent).toEqual({
       executionId: "order-42",
       stepKey: "start:fulfil",
       detached: false,
@@ -133,7 +134,7 @@ test("a database created before cancellation reads its rows as attached, with no
     ).toEqual({ status: "accepted", executionId: "fulfil-42" });
 
     await runtime.executions.cancel({ executionId: "order-42", reason: "abandoned" });
-    expect((await peer.executions.get("fulfil-42"))!.cancellation).toMatchObject({
+    expect(((await peer.executions.get("fulfil-42") as ExecutionRecord | undefined))!.cancellation).toMatchObject({
       reason: "abandoned",
       source: "order-42",
     });

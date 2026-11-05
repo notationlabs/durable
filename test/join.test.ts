@@ -9,6 +9,7 @@ import {
   type ExecutionLease,
   type Runtime,
   type WorkflowEvent,
+  type ExecutionRecord,
 } from "@yieldstar/core";
 import { MemoryRuntime } from "@yieldstar/test-runtime";
 import { SqliteRuntime } from "@yieldstar/sqlite-runtime";
@@ -232,7 +233,7 @@ describe.each(runtimes)("step.join and step.call on $name", ({ create }) => {
 
   /** Runs one delivery under `lease` without acknowledging it. */
   async function run(lease: ExecutionLease) {
-    const record = await runtime.executions.get(lease.executionId);
+    const record = (await runtime.executions.get(lease.executionId) as ExecutionRecord | undefined);
     return withoutVersion(
       await runner.run(
         {
@@ -276,7 +277,9 @@ describe.each(runtimes)("step.join and step.call on $name", ({ create }) => {
 
   async function childOf(caller = JOINER, workflowId = "ship-order") {
     const page = await runtime.executions.list({ workflowId });
-    return page.executions.filter((record) => record.parent?.executionId === caller);
+    return (page.executions as ExecutionRecord[]).filter(
+      (record) => record.parent?.executionId === caller
+    );
   }
 
   const waiters = (target = TARGET) => runtime.joins.getWaiters(target);
@@ -783,7 +786,7 @@ describe.each(runtimes)("step.join and step.call on $name", ({ create }) => {
 
     test("an execution admitted by trigger has no parent", async () => {
       await admit(JOINER, "call-ship");
-      expect((await runtime.executions.get(JOINER))?.parent).toBeUndefined();
+      expect(((await runtime.executions.get(JOINER) as ExecutionRecord | undefined))?.parent).toBeUndefined();
       const observer = createExecutionObserver(runtime.executions);
       expect(await observer.poll(JOINER)).not.toHaveProperty("parent");
     });

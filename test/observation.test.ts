@@ -1,3 +1,4 @@
+import type { ExecutionRecord, ExecutionViewBase } from "@yieldstar/core";
 import { EventEmitter } from "node:events";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { MemoryRuntime } from "@yieldstar/test-runtime";
@@ -90,7 +91,7 @@ for (const sdkKind of sdkKinds) {
         await fail(runtime, "failed", new CardDeclinedError("card declined"));
 
         for (const status of ["admitted", "running", "suspended"] as const) {
-          const record = (await runtime.executions.get(status))!;
+          const record = ((await runtime.executions.get(status) as ExecutionRecord | undefined))!;
           expect(await sdk.poll(status)).toEqual({
             executionId: status,
             workflowId: "charge-order",
@@ -333,7 +334,7 @@ for (const sdkKind of sdkKinds) {
         order.push(executionId);
       }
       for (const sdk of sdks) {
-        const { executions } = await sdk.list();
+        const executions = (await sdk.list()).executions as ExecutionViewBase[];
         expect(executions.map((view) => view.executionId)).toEqual([...order].reverse());
         expect(executions[0].admittedAt).toBeLessThan(executions[1].admittedAt);
       }

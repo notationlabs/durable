@@ -9,6 +9,7 @@ import {
   type ExecutionLease,
   type Runtime,
   type StoreWaiter,
+  type ExecutionRecord,
 } from "@yieldstar/core";
 import { MemoryRuntime } from "@yieldstar/test-runtime";
 import { SqliteRuntime } from "@yieldstar/sqlite-runtime";
@@ -172,7 +173,7 @@ describe.each(runtimes)("timed store.when on $name", ({ create }) => {
 
   /** Runs one delivery under `lease` without acknowledging it. */
   async function run(lease: ExecutionLease) {
-    const record = await runtime.executions.get(lease.executionId);
+    const record = (await runtime.executions.get(lease.executionId) as ExecutionRecord | undefined);
     return withoutVersion(
       await runner.run(
         {

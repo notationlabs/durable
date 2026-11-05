@@ -11,6 +11,7 @@ import {
   redeliveryDelay,
   waitForExecutionOutcome,
   type WorkflowInvoker,
+  type ExecutionRecord,
 } from "@yieldstar/core";
 import { createWorkflowInvoker } from "@yieldstar/test-invoker";
 import { createWorkflowInvoker as createWorkerInvoker } from "@yieldstar/worker-invoker";
@@ -195,7 +196,7 @@ test("after a delivery crashes at the pause, a later delivery's wakeAt decides w
   advance(wakeAt - now());
   expect(await tick()).toBe(1);
   expect(deliveries).toHaveLength(3);
-  expect((await runtime.executions.get("order-42"))?.outcome).toEqual({
+  expect(((await runtime.executions.get("order-42") as ExecutionRecord | undefined))?.outcome).toEqual({
     status: "completed",
     result: { chargeId: "ch-1" },
   });
@@ -219,7 +220,7 @@ test("a worker that fails after the unfinished step record, before replying, lea
 
   advance(DEFAULT_LEASE_DURATION + redeliveryDelay(1));
   expect(await tick()).toBe(1);
-  expect((await runtime.executions.get("order-42"))?.outcome).toEqual({
+  expect(((await runtime.executions.get("order-42") as ExecutionRecord | undefined))?.outcome).toEqual({
     status: "completed",
     result: { chargeId: "ch-1" },
   });
@@ -276,7 +277,7 @@ test("a settlement wakes every watching execution, and each reads the settled re
 
   expect(await tick()).toBe(2);
   for (const executionId of ["order-42", "support-check"]) {
-    expect((await runtime.executions.get(executionId))?.outcome).toEqual({
+    expect(((await runtime.executions.get(executionId) as ExecutionRecord | undefined))?.outcome).toEqual({
       status: "completed",
       result: { chargeId: "ch-settled" },
     });

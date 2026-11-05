@@ -7,6 +7,7 @@ import {
   type Runtime,
   type StandardSchemaV1,
   type StoreWaiter,
+  type ExecutionRecord,
 } from "@yieldstar/core";
 import { describe, expect, test } from "vitest";
 
@@ -215,7 +216,7 @@ export function registerCancellationClientConformance({
   }
 
   async function cancellationOf(runtime: Runtime, executionId: string) {
-    return (await runtime.executions.get(executionId))?.cancellation;
+    return ((await runtime.executions.get(executionId) as ExecutionRecord | undefined))?.cancellation;
   }
 
   function cancel(runtime: Runtime, request: ExecutionCancelRequest) {
@@ -306,7 +307,7 @@ export function registerCancellationClientConformance({
         expect(await cancel(peer, { executionId: "order-42", reason: "abandoned" })).toEqual({
           status: "requested",
         });
-        const record = await runtime.executions.get("order-42");
+        const record = (await runtime.executions.get("order-42") as ExecutionRecord | undefined);
         expect(record).toMatchObject({ status: "suspended", updatedAt: clock.now });
         expect(record!.cancellation).toEqual({
           reason: "abandoned",
@@ -458,7 +459,7 @@ export function registerCancellationClientConformance({
         expect(
           await cancel(peer, { executionId: "order-42", reason: "stuck", force: true })
         ).toEqual({ status: "cancelled", reason: "stuck" });
-        const record = await runtime.executions.get("order-42");
+        const record = (await runtime.executions.get("order-42") as ExecutionRecord | undefined);
         expect(record).toMatchObject({
           status: "cancelled",
           outcome: { status: "cancelled", reason: "stuck" },
@@ -525,7 +526,7 @@ export function registerCancellationClientConformance({
         expect(
           await cancel(runtime, { executionId: "order-42", reason: "stuck", force: true })
         ).toEqual({ status: "cancelled", reason: "abandoned" });
-        const record = await runtime.executions.get("order-42");
+        const record = (await runtime.executions.get("order-42") as ExecutionRecord | undefined);
         expect(record).toMatchObject({ status: "cancelled", updatedAt: clock.now });
         expect(record!.cancellation).toEqual({
           reason: "abandoned",
@@ -645,7 +646,7 @@ export function registerCancellationClientConformance({
 
         await cancel(runtime, { executionId: "order-42", reason: "stuck", force: true });
         for (const descendant of [child, grandchild]) {
-          const record = await runtime.executions.get(descendant);
+          const record = (await runtime.executions.get(descendant) as ExecutionRecord | undefined);
           expect(record).toMatchObject({
             status: "cancelled",
             outcome: { status: "cancelled", reason: "stuck", source: "order-42" },
@@ -697,12 +698,12 @@ export function registerCancellationClientConformance({
         });
         const underReceipt = await startChild(runtime, receipt, "start:email");
 
-        expect((await peer.executions.get(receipt))!.parent).toEqual({
+        expect(((await peer.executions.get(receipt) as ExecutionRecord | undefined))!.parent).toEqual({
           executionId: "order-42",
           stepKey: "start:receipt",
           detached: true,
         });
-        expect((await peer.executions.get(attached))!.parent).toEqual({
+        expect(((await peer.executions.get(attached) as ExecutionRecord | undefined))!.parent).toEqual({
           executionId: "order-42",
           stepKey: "start:fulfil",
           detached: false,
@@ -1170,9 +1171,9 @@ export function registerCancellationClientConformance({
         });
         await suspend(runtime, holder);
         const before = {
-          order: await runtime.executions.get("order-42"),
-          child: await runtime.executions.get(child),
-          receipt: await runtime.executions.get(receipt),
+          order: (await runtime.executions.get("order-42")) as ExecutionRecord | undefined,
+          child: (await runtime.executions.get(child)) as ExecutionRecord | undefined,
+          receipt: (await runtime.executions.get(receipt)) as ExecutionRecord | undefined,
         };
 
         const restarted = await restart();

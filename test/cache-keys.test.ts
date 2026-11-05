@@ -1,6 +1,6 @@
 import { afterEach, expect, test, vi } from "vitest";
 import type { Logger } from "pino";
-import { ExecutionDispatcher, WorkflowRunner, type WorkflowRouter } from "@yieldstar/core";
+import { ExecutionDispatcher, WorkflowRunner, type WorkflowRouter, type ExecutionRecord } from "@yieldstar/core";
 import { createWorkflowInvoker } from "@yieldstar/test-invoker";
 import { MemoryRuntime } from "@yieldstar/test-runtime";
 import { createLocalSdk, createWorkflow } from "yieldstar";
@@ -31,7 +31,7 @@ function start(router: WorkflowRouter) {
 /** Waits until the execution is parked with a divergence, and returns it. */
 async function divergence(runtime: MemoryRuntime, executionId: string) {
   return vi.waitFor(async () => {
-    const record = await runtime.executions.get(executionId);
+    const record = (await runtime.executions.get(executionId) as ExecutionRecord | undefined);
     if (!record?.divergence) throw new Error("not diverged yet");
     return record.divergence;
   });

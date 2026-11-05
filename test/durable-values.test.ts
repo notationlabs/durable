@@ -5,6 +5,7 @@ import {
   ReadOnlyMap,
   StoreValidationError,
   WorkflowRunner,
+  type ExecutionRecord,
 } from "@yieldstar/core";
 import { createRoutes } from "@yieldstar/http-server";
 import { createWorkflowInvoker } from "@yieldstar/test-invoker";
@@ -857,7 +858,7 @@ describe("HTTP transport", () => {
       expect(response.status).toBe(202);
       const { executionId } = (await response.json()) as { executionId: string };
       await vi.waitFor(async () =>
-        expect((await runtime.executions.get(executionId))?.outcome).toEqual({
+        expect(((await runtime.executions.get(executionId) as ExecutionRecord | undefined))?.outcome).toEqual({
           status: "completed",
           result: { params: { n: 1 }, tenant: "t" },
         })

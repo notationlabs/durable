@@ -356,7 +356,7 @@ describe.each(runtimes)("cancellation on $name", ({ create }) => {
 
   /** Runs one delivery under `lease` as the dispatcher would, without acknowledging it. */
   async function run(lease: ExecutionLease) {
-    const record = (await runtime.executions.get(lease.executionId))!;
+    const record = ((await runtime.executions.get(lease.executionId) as ExecutionRecord | undefined))!;
     return withoutVersion(
       await runner.run(
         {
@@ -383,7 +383,8 @@ describe.each(runtimes)("cancellation on $name", ({ create }) => {
     return outcome;
   }
 
-  const get = async (executionId = ORDER) => (await runtime.executions.get(executionId))!;
+  const get = async (executionId = ORDER) =>
+    (await runtime.executions.get(executionId)) as ExecutionRecord;
 
   async function readStep(stepKey = "wait", executionId = ORDER) {
     const record = await runtime.heap.readStep({ executionId, stepKey });
@@ -396,7 +397,9 @@ describe.each(runtimes)("cancellation on $name", ({ create }) => {
 
   async function childrenOf(caller: string): Promise<ExecutionRecord[]> {
     const page = await runtime.executions.list({ limit: 100 });
-    return page.executions.filter((record) => record.parent?.executionId === caller);
+    return (page.executions as ExecutionRecord[]).filter(
+      (record) => record.parent?.executionId === caller
+    );
   }
 
   async function childOf(caller: string, stepKey: string) {

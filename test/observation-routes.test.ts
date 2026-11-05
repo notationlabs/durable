@@ -252,7 +252,7 @@ for (const backendKind of backendKinds) {
           observationMiddleware: [
             async (_req, request) => {
               requests.push(request);
-              if (request.operation !== "list") loaded.push(await request.load());
+              if (request.operation !== "list") loaded.push((await request.load()) as ExecutionRecord | undefined);
               return { allow: true };
             },
           ],

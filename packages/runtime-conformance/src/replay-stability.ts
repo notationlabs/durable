@@ -7,6 +7,7 @@ import {
   type HeapStep,
   type Runtime,
   type WorkflowRunOutcome,
+  type ExecutionRecord,
 } from "@yieldstar/core";
 import { describe, expect, test } from "vitest";
 
@@ -184,11 +185,11 @@ export function registerReplayStabilityClientConformance({
   }
 
   async function versionOf(runtime: Runtime, executionId: string) {
-    return (await runtime.executions.get(executionId))?.workflowVersion;
+    return ((await runtime.executions.get(executionId) as ExecutionRecord | undefined))?.workflowVersion;
   }
 
   async function divergenceOf(runtime: Runtime, executionId: string) {
-    return (await runtime.executions.get(executionId))?.divergence;
+    return ((await runtime.executions.get(executionId) as ExecutionRecord | undefined))?.divergence;
   }
 
   async function listIds(runtime: Runtime, request: ExecutionListRequest) {
@@ -431,7 +432,7 @@ export function registerReplayStabilityClientConformance({
           })
         ).toEqual({ status: "diverged" });
 
-        const record = await peer.executions.get("order-42");
+        const record = (await peer.executions.get("order-42") as ExecutionRecord | undefined);
         expect(record).toMatchObject({
           status: "suspended",
           updatedAt: clock.now,
@@ -469,7 +470,7 @@ export function registerReplayStabilityClientConformance({
             code: "STEP_SCHEMA_CHANGED",
           })
         ).toEqual({ status: "diverged" });
-        const record = await runtime.executions.get("order-42");
+        const record = (await runtime.executions.get("order-42") as ExecutionRecord | undefined);
         expect(record).toMatchObject({ status: "admitted" });
         expect(record).not.toHaveProperty("workflowVersion");
         expect(record!.divergence).toEqual({
