@@ -264,7 +264,7 @@ So `{ a: undefined }` and `{}` stay distinct, and only a tagged value decodes as
 
 An error keeps its `name`, `message`, a string `stack` and `code`, its own `cause` (encoded recursively), a non-enumerable `errors` array such as `AggregateError`'s, and its own enumerable properties whose values are durable, under `fields`. Properties that are not durable are left out rather than rejecting the error. `encodeThrownValue(value)` encodes a thrown value as thrown when it is durable, and as `Error(String(value))` otherwise.
 
-`decode` revives an error as the class registered under its `name` with `registerErrorClass(name, errorClass)`, setting its prototype and fields without calling the constructor, and as an `Error` with the same name, message, code, cause and fields when no class is registered. Registration is per process. `TypeError`, `RangeError`, `SyntaxError`, `ReferenceError`, `EvalError`, `URIError`, `AggregateError`, `WorkflowStartError`, `WorkflowJoinError`, `WorkflowCancelledError`, `WorkflowValueError`, `WorkflowEffectError`, `EffectDeliveryError`, `EffectClientInvariantError` and `StoreValidationError` are registered by default, and `yieldstar` registers `RetryableError`.
+`decode` revives an error as the class registered under its `name` with `registerErrorClass(name, errorClass)`, setting its prototype and fields without calling the constructor, and as an `Error` with the same name, message, code, cause and fields when no class is registered. Registration is per process. `TypeError`, `RangeError`, `SyntaxError`, `ReferenceError`, `EvalError`, `URIError`, `AggregateError`, `WorkflowStartError`, `WorkflowJoinError`, `WorkflowCancelledError`, `WorkflowRaceError`, `WorkflowValueError`, `WorkflowEffectError`, `EffectDeliveryError`, `EffectClientInvariantError` and `StoreValidationError` are registered by default, and `yieldstar` registers `RetryableError`.
 
 `WorkflowValueError` (`code: "INVALID_STEP_VALUE" | "STEP_SCHEMA_INVALID"`, `stepKey`) reports a value the codec or a step's schema rejects. A completed outcome whose result the codec rejects is recorded as `failed` with `INVALID_STEP_VALUE` and `stepKey` `WORKFLOW_RESULT_STEP_KEY` (`"$$workflow-result$$"`).
 
@@ -363,6 +363,7 @@ abstract writeStep(params: {
   stepAttempt: number;
   done: boolean;
   stepResponseJson: string;
+  deleteWaitersOf?: readonly string[];
 }): Promise<HeapRecord | LeaseLost>;
 
 abstract recordCancellation(params: {
@@ -371,7 +372,7 @@ abstract recordCancellation(params: {
 }): Promise<(HeapRecord | null)[] | LeaseLost>;
 ```
 
-`readStep` returns the latest attempt. `writeStep` is fenced by `lease`: if the lease is not current, nothing changes and it returns `lost`. A `done` record deletes the step's store, effect and join waiters in the same write. Records are keyed by execution, step key and attempt, and never change once written. Rewriting an existing record succeeds without changing it and resolves with the record as stored, so the caller can compare it with the value it wrote.
+`readStep` returns the latest attempt. `writeStep` is fenced by `lease`: if the lease is not current, nothing changes and it returns `lost`. A `done` record deletes the step's store, effect and join waiters in the same write, and also deletes the waiters of every step named in `deleteWaitersOf`. The driver passes `deleteWaitersOf` when it records a `step.all` or `step.race` decision, with the steps that the combinator's branches reached, so the waiters of abandoned branches go in the same write. `deleteWaitersOf` is ignored for a record that is not done or already exists. Records are keyed by execution, step key and attempt, and never change once written. Rewriting an existing record succeeds without changing it and resolves with the record as stored, so the caller can compare it with the value it wrote.
 
 `recordCancellation` records the delivery of the execution's cancellation request, fenced by `lease`, all-or-nothing. It writes each step's `done` record, deletes those steps' store, effect and join waiters, and sets the request's `deliveredAt`. An existing record at a step's attempt that is identical to the one requested is kept, as in `writeStep`. If any existing record differs, or is not done, the write changes nothing: no records, no waiter deletions and no `deliveredAt`. Either way the results list the records as stored, in the order of `steps`, with `null` for a step that has no record. The driver compares them with the records it wrote and ends the delivery with a `StepConflictError` on a difference. It throws if the execution has no request recorded. Waiters registered after it, by cleanup steps, wake the execution as usual.
 

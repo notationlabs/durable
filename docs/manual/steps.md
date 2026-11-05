@@ -118,7 +118,7 @@ if (err instanceof CourierError) {
 
 Revival sets the prototype and fields without calling the constructor, so a constructor with required arguments is fine. Registration is per process: a worker process must register the class too, or it revives the error as a plain `Error` with the same `name`, `message`, `code`, `cause` and fields.
 
-These classes are registered by default: `RetryableError`, `WorkflowStartError`, `WorkflowJoinError`, `WorkflowCancelledError`, `WorkflowValueError`, `WorkflowEffectError`, `EffectDeliveryError`, `EffectClientInvariantError`, `StoreValidationError`, `TypeError`, `RangeError`, `SyntaxError`, `ReferenceError`, `EvalError`, `URIError` and `AggregateError`.
+These classes are registered by default: `RetryableError`, `WorkflowStartError`, `WorkflowJoinError`, `WorkflowCancelledError`, `WorkflowRaceError`, `WorkflowValueError`, `WorkflowEffectError`, `EffectDeliveryError`, `EffectClientInvariantError`, `StoreValidationError`, `TypeError`, `RangeError`, `SyntaxError`, `ReferenceError`, `EvalError`, `URIError` and `AggregateError`.
 
 A thrown value that is not an error, such as a string or a plain object, is rethrown as it was thrown. A thrown value that is not durable, such as a class instance, is recorded and rethrown as `Error(String(value))`.
 
@@ -146,6 +146,17 @@ yield* step.poll({ retryInterval: 1000, maxAttempts: 10 }, async () => {
 ```
 
 If the predicate returns `false` on every attempt, the step throws after `maxAttempts`. If the predicate throws a non-retryable error, execution stops immediately.
+
+## `step.all` and `step.race`
+
+`step.all` and `step.race` run several branches of steps concurrently within one delivery and record their outcome under their own key. `step.all` returns every branch's result in order; `step.race` returns the index and value of the first branch to succeed. See [Concurrent Steps](./concurrent-steps.md).
+
+```ts
+const [stock, quote] = yield* step.all("check-order", [
+  step.run("check-stock", () => warehouse.inStock(sku)),
+  step.run("quote-shipping", () => courier.quote(address)),
+]);
+```
 
 ## `step.start`
 

@@ -16,6 +16,7 @@ import { createWorkflowRouter } from "yieldstar";
 import { RetryableError, ExecutionAdmissionError, WorkflowStartError, WorkflowJoinError } from "yieldstar";
 import { ExecutionListRequestError, HttpRouteError } from "yieldstar";
 import { WorkflowCancelledError, ExecutionCancelRequestError } from "yieldstar";
+import { WorkflowRaceError } from "yieldstar";
 import { WorkflowValueError, registerErrorClass, WORKFLOW_RESULT_STEP_KEY } from "yieldstar";
 import { WorkflowEffectError, EffectDeliveryError, EffectClientInvariantError } from "yieldstar";
 import { defineStore } from "yieldstar";
@@ -30,6 +31,12 @@ import type {
   WorkflowStore,
   TimedWhenResult,
   TimedJoinResult,
+  Branch,
+  BranchResults,
+  SettledResult,
+  SettledResults,
+  RaceResult,
+  AllOptions,
   ExecutionRecord,
   ExecutionStatus,
   ExecutionParent,
@@ -140,6 +147,10 @@ Thrown to workflow code by `step.join` and `step.call`. `err.code` is `"JOINED_E
 
 Thrown into workflow code at the first unfinished step once a cancellation request is delivered. `err.reason` is the request's reason, and `err.source` is the execution where the cancellation began, when it was propagated from a parent. The throw is recorded as the step's result, so replay throws the same error at the same step. A workflow that lets it escape ends `cancelled`; one that catches it and returns ends `completed`. `triggerAndWait` and `waitForResult` also throw it for a cancelled execution. It is registered by default. See [Cancellation](../manual/cancellation.md).
 
+## `WorkflowRaceError`
+
+Thrown by `step.race` when every branch fails, and by an empty race. `code` is `ALL_BRANCHES_FAILED`, and `errors` holds each branch's error in branch order. `errors` is a non-enumerable array, as on `AggregateError`, so a `failed` outcome keeps it – see [Concurrent Steps](../manual/concurrent-steps.md#steprace).
+
 ## `WorkflowEffectError`
 
 Thrown to workflow code by `step.effect`. `err.code` is `"INVALID_EFFECT_REQUEST"` (the `effectId`, `operation`, `input`, `retryIn`, `maxAttempts`, `lookup`, `perform` or `failsOn` is invalid), `"EFFECT_REQUEST_MISMATCH"` (the effect already exists with a different `operation` or `input`) or `"EFFECT_OUTCOME_UNKNOWN"` (the outcome is still unknown after `maxAttempts` attempts). It is recorded as the step's error, so replay throws the same class and code. See [`step.effect`](../manual/steps.md#stepeffect).
@@ -202,6 +213,12 @@ yield* step.call<typeof childWorkflow>("key", { workflowId, params }, { deadline
 yield* step.call<typeof childWorkflow>("key", { workflowId, params }, { detached: true, deadline });
 
 yield* step.effect("key", { effectId, operation, input, lookup, perform, retryIn, failsOn, maxAttempts });
+
+yield* step.all("key", branches);
+yield* step.all("key", branches, { concurrency, mode: "fail-fast" });
+yield* step.all("key", branches, { concurrency, mode: "settle" });
+
+yield* step.race("key", branches);
 ```
 
 `step.store` returns a `WorkflowStore` handle synchronously and records no step, so a loop or helper can request the same store again. `id` defaults to `event.executionId`. The handle has the readonly properties `definition`, `id` and `key`, and the durable operations `get`, `select`, `update`, `updateFrom`, `deleteFrom`, `when` and `take`, each of which creates a missing store from the definition's `initial` – see [Durable Stores](../manual/stores.md) and [Waiting on State](../manual/store-waiting.md). Helpers that take the step runner can type it as `StepRunner`.
@@ -211,6 +228,8 @@ yield* step.effect("key", { effectId, operation, input, lookup, perform, retryIn
 `step.start` starts another workflow as its own execution, once per step key, and returns `{ executionId }` – see [Steps](../manual/steps.md#stepstart). Its `StartOptions` has `detached`, which records the target's parent link as detached so that the target receives no cancellation propagated from the caller – see [Detached children](../manual/cancellation.md#detached-children). `step.call` takes `detached` in the same options object as `deadline`.
 
 `step.join` waits until the execution `executionId` is terminal and returns its result, or throws a `WorkflowJoinError` – see [Steps](../manual/steps.md#stepjoin). `step.call` starts a child as `step.start` does and joins it, under one step key; its type parameter checks `params` and types the result – see [Steps](../manual/steps.md#stepcall). `step.join`'s `R` defaults to `DurableValue`. With `{ deadline }`, both return a `TimedJoinResult<R>`: `{ status: "completed", result }` or `{ status: "timed-out" }`.
+
+`step.all` and `step.race` drive their branches concurrently and record their decision under their key – see [Concurrent Steps](../manual/concurrent-steps.md). A branch is any step generator, typed `Branch<T>` (`AsyncGenerator<StepResponse, T, any>`). `step.all` returns `BranchResults<B>`, a tuple of the branches' results, or with `mode: "settle"` a `SettledResults<B>` of `{ status: "fulfilled", value }` and `{ status: "rejected", error }`. `step.race` returns a `RaceResult<B>`, `{ index, value }`, which narrows `value` by `index`. `AllOptions` has `concurrency`, a positive integer, and `mode`. `step.delay` and `step.poll` are typed `AsyncGenerator<StepResponse, void, any>`, so they can be branches.
 
 `step.effect` calls an external system under a stable `effectId`, looking up an uncertain earlier attempt before performing it again, and returns the operation's result – see [Steps](../manual/steps.md#stepeffect). Its descriptor is typed `EffectDescriptor<T, Input>`, and `lookup` resolves with an `EffectLookup<T>`:
 
