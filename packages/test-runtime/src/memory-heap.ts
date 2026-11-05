@@ -64,12 +64,21 @@ export class MemoryHeapClient implements HeapClient {
   async recordCancellation(params: {
     lease: ExecutionLease;
     steps: readonly { stepKey: string; stepAttempt: number; stepResponseJson: string }[];
-  }): Promise<HeapRecord[] | LeaseLost> {
+  }): Promise<(HeapRecord | null)[] | LeaseLost> {
     const { lease, steps } = params;
     if (!this.isLeaseCurrent(lease)) return { status: "lost" };
     if (!this.markCancellationDelivered) {
       throw new Error("This heap cannot record a cancellation: no execution client is attached");
     }
+    const stored = steps.map(({ stepKey, stepAttempt }) =>
+      this.read({ executionId: lease.executionId, stepKey }, stepAttempt)
+    );
+    const conflicting = stored.some(
+      (record, i) =>
+        record !== undefined &&
+        (record.stepResponseJson !== steps[i].stepResponseJson || !record.meta.done)
+    );
+    if (conflicting) return stored.map((record) => (record ? clone(record) : null));
     // Throws before any record is written when no request is recorded.
     this.markCancellationDelivered(lease.executionId);
     return steps.map(({ stepKey, stepAttempt, stepResponseJson }) => {
@@ -80,6 +89,10 @@ export class MemoryHeapClient implements HeapClient {
     });
   }
 
+  private read(step: { executionId: string; stepKey: string }, attempt: number) {
+    return this.cache[this.getKey(step)]?.find((record) => record.meta.attempt === attempt);
+  }
+
   /** A record never changes once written: an existing one is returned as stored. */
   private insert(
     step: { executionId: string; stepKey: string },
@@ -87,9 +100,9 @@ export class MemoryHeapClient implements HeapClient {
     done: boolean,
     stepResponseJson: string
   ): { record: HeapRecord; inserted: boolean } {
-    const attempts = (this.cache[this.getKey(step)] ??= []);
-    const existing = attempts.find((record) => record.meta.attempt === attempt);
+    const existing = this.read(step, attempt);
     if (existing) return { record: existing, inserted: false };
+    const attempts = (this.cache[this.getKey(step)] ??= []);
     const record: HeapRecord = { stepResponseJson, meta: { attempt, done } };
     attempts.unshift(record);
     attempts.sort((a, b) => b.meta.attempt - a.meta.attempt);

@@ -908,13 +908,13 @@ export function registerCancellationClientConformance({
         await cancel(runtime, { executionId: "order-42", reason: "abandoned" });
         const requestedAt = clock.now;
         const holder = await claimOne(runtime, "order-42");
-        // An unfinished record at the same attempt is kept, as in writeStep.
+        // An equal record at the same attempt counts as written, as in writeStep.
         await runtime.heap.writeStep({
           lease: holder,
           stepKey: "branch-b",
           stepAttempt: 2,
-          done: false,
-          stepResponseJson: JSON.stringify({ pending: true }),
+          done: true,
+          stepResponseJson: cancelledStep("branch-b", 2).stepResponseJson,
         });
         advance(500);
 
@@ -929,8 +929,8 @@ export function registerCancellationClientConformance({
             meta: { attempt: 1, done: true },
           },
           {
-            stepResponseJson: JSON.stringify({ pending: true }),
-            meta: { attempt: 2, done: false },
+            stepResponseJson: JSON.stringify({ cancelled: "branch-b" }),
+            meta: { attempt: 2, done: true },
           },
         ]);
         expect(
@@ -946,6 +946,76 @@ export function registerCancellationClientConformance({
           deliveredAt: clock.now,
         });
         expect(await runtime.executions.get("order-42")).toMatchObject({ status: "running" });
+      });
+
+      it("writes nothing and returns the stored records when a step has a different record", async ({
+        runtime,
+        peer,
+      }) => {
+        await admitSuspended(runtime, "order-42");
+        await waitOnPayment(runtime, "order-42", "branch-a");
+        await cancel(runtime, { executionId: "order-42", reason: "abandoned" });
+        const holder = await claimOne(runtime, "order-42");
+        await runtime.heap.writeStep({
+          lease: holder,
+          stepKey: "branch-b",
+          stepAttempt: 2,
+          done: false,
+          stepResponseJson: JSON.stringify({ pending: true }),
+        });
+
+        expect(
+          await peer.heap.recordCancellation({
+            lease: holder,
+            steps: [cancelledStep("branch-a"), cancelledStep("branch-b", 2)],
+          })
+        ).toEqual([
+          null,
+          {
+            stepResponseJson: JSON.stringify({ pending: true }),
+            meta: { attempt: 2, done: false },
+          },
+        ]);
+        expect(
+          await runtime.heap.readStep({ executionId: "order-42", stepKey: "branch-a" })
+        ).toBeNull();
+        expect(await cancellationOf(runtime, "order-42")).not.toHaveProperty("deliveredAt");
+        await suspend(runtime, holder);
+        await markPaid(peer, "order-42");
+        expect(await claimedIds(runtime)).toEqual(["order-42"]);
+      });
+
+      it("writes the step records, deletes the waiters and sets deliveredAt together, or none of them", async (
+        { runtime, harness },
+        testContext
+      ) => {
+        if (!harness.failExecutionWrites) {
+          testContext.skip();
+          return;
+        }
+        await admitSuspended(runtime, "order-42");
+        await waitOnPayment(runtime, "order-42", "wait-payment");
+        await cancel(runtime, { executionId: "order-42", reason: "abandoned" });
+        const holder = await claimOne(runtime, "order-42");
+
+        const restore = await harness.failExecutionWrites("order-42");
+        try {
+          await expect(
+            runtime.heap.recordCancellation({
+              lease: holder,
+              steps: [cancelledStep("wait-payment")],
+            })
+          ).rejects.toThrow();
+        } finally {
+          await restore();
+        }
+        expect(
+          await runtime.heap.readStep({ executionId: "order-42", stepKey: "wait-payment" })
+        ).toBeNull();
+        expect(await cancellationOf(runtime, "order-42")).not.toHaveProperty("deliveredAt");
+        await suspend(runtime, holder);
+        await markPaid(runtime, "order-42");
+        expect(await claimedIds(runtime)).toEqual(["order-42"]);
       });
 
       it("returns lost for a stale lease and writes nothing", async (ctx) => {

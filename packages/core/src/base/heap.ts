@@ -36,8 +36,13 @@ export abstract class HeapClient {
    * steps' store, effect and join waiters, and sets the request's
    * `deliveredAt`. Throws if the execution has no request recorded.
    *
-   * A record that already exists at its attempt is kept, as in `writeStep`,
-   * and the results list the records as stored, in the order of `steps`.
+   * The results list the records as stored, in the order of `steps`. A
+   * record that already exists at its attempt and equals the requested one
+   * (the same JSON, and done) counts as written, as in `writeStep`. When an
+   * existing record differs, nothing changes: no records are written, no
+   * waiters are deleted and `deliveredAt` is not set. The results then hold
+   * each step's existing record, or `null` for a step without one, and callers
+   * compare them to detect the conflict.
    */
   abstract recordCancellation(params: {
     lease: ExecutionLease;
@@ -46,5 +51,5 @@ export abstract class HeapClient {
       stepAttempt: number;
       stepResponseJson: string;
     }[];
-  }): Promise<HeapRecord[] | LeaseLost>;
+  }): Promise<(HeapRecord | null)[] | LeaseLost>;
 }

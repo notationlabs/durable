@@ -97,12 +97,13 @@ export class SqliteHeapClient implements HeapClient {
 
   /**
    * Checks the lease, writes the step records, deletes those steps' waiters
-   * and sets `deliveredAt` in one IMMEDIATE transaction.
+   * and sets `deliveredAt` in one IMMEDIATE transaction. `deliveredAt` is set
+   * last, so a failure there rolls back the records and the deletions.
    */
   async recordCancellation(params: {
     lease: ExecutionLease;
     steps: readonly { stepKey: string; stepAttempt: number; stepResponseJson: string }[];
-  }): Promise<HeapRecord[] | LeaseLost> {
+  }): Promise<(HeapRecord | null)[] | LeaseLost> {
     const { lease, steps } = params;
     const { executionId } = lease;
     return runTransaction(this.db, () => {
@@ -110,20 +111,33 @@ export class SqliteHeapClient implements HeapClient {
       if (!state || !isLeaseCurrent(state, lease)) {
         return { status: "lost" as const };
       }
-      // Throws, and so rolls back, when no request is recorded.
-      this.executionsDao.updateState(markCancellationDelivered(state, this.clock()));
-      return steps.map(({ stepKey, stepAttempt, stepResponseJson }) => {
-        const { record } = this.insert(
-          executionId,
-          stepKey,
-          stepAttempt,
-          true,
-          stepResponseJson
-        );
+      const stored = steps.map(({ stepKey, stepAttempt }) =>
+        this.read(executionId, stepKey, stepAttempt)
+      );
+      const conflicting = stored.some(
+        (record, i) =>
+          record !== null &&
+          (record.stepResponseJson !== steps[i].stepResponseJson || !record.meta.done)
+      );
+      if (conflicting) return stored;
+      const records = steps.map(({ stepKey, stepAttempt, stepResponseJson }) => {
+        const { record } = this.insert(executionId, stepKey, stepAttempt, true, stepResponseJson);
         this.deleteStepWaiters(executionId, stepKey);
         return record;
       });
+      // Throws, and so rolls back, when no request is recorded.
+      this.executionsDao.updateState(markCancellationDelivered(state, this.clock()));
+      return records;
     });
+  }
+
+  private read(executionId: string, stepKey: string, stepAttempt: number): HeapRecord | null {
+    const existing = this.stepResponsesDao.getStepResponse(executionId, stepKey, stepAttempt);
+    if (!existing) return null;
+    return {
+      stepResponseJson: existing.step_response,
+      meta: { attempt: existing.step_attempt, done: Boolean(existing.step_done) },
+    };
   }
 
   /** A record never changes once written: an existing one is returned as stored. */
@@ -134,20 +148,8 @@ export class SqliteHeapClient implements HeapClient {
     done: boolean,
     stepResponseJson: string
   ): { record: HeapRecord; inserted: boolean } {
-    const existing = this.stepResponsesDao.getStepResponse(
-      executionId,
-      stepKey,
-      stepAttempt
-    );
-    if (existing) {
-      return {
-        record: {
-          stepResponseJson: existing.step_response,
-          meta: { attempt: existing.step_attempt, done: Boolean(existing.step_done) },
-        },
-        inserted: false,
-      };
-    }
+    const existing = this.read(executionId, stepKey, stepAttempt);
+    if (existing) return { record: existing, inserted: false };
     this.stepResponsesDao.insertStepResponse(
       executionId,
       stepKey,
