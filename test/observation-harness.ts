@@ -10,6 +10,7 @@ import {
   type ExecutionControl,
   type ExecutionObserver,
   type MiddlewareFunction,
+  type RetentionOptions,
   type Runtime,
   type TriggerAck,
   type WorkflowInvoker,
@@ -57,9 +58,10 @@ export type Backend = {
   path?: string;
 };
 
-export function openBackend(kind: BackendKind): Backend {
+/** `retain` applies to every client the backend opens. */
+export function openBackend(kind: BackendKind, retain?: RetentionOptions): Backend {
   if (kind === "memory") {
-    const runtime = new MemoryRuntime();
+    const runtime = new MemoryRuntime({ retain });
     return { kind, runtime, peer: runtime, open: () => runtime };
   }
   const dir = mkdtempSync(join(tmpdir(), "yieldstar-observation-"));
@@ -68,7 +70,7 @@ export function openBackend(kind: BackendKind): Backend {
   const open = (options?: { clock?: () => number }) => {
     const db = createSqliteDb({ path, wal: true });
     dbs.push(db);
-    return new SqliteRuntime(db, options);
+    return new SqliteRuntime(db, { ...options, retain });
   };
   cleanups.push(() => {
     for (const db of dbs) db.close();
