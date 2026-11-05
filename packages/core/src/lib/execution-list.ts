@@ -28,8 +28,8 @@ export type PreparedExecutionListRequest = {
 
 /**
  * An execution with the admission sequence its adapter assigned. Adapters
- * assign each new execution a sequence greater than every earlier one,
- * including executions since deleted, in the same atomic write as its insert.
+ * assign each new execution a sequence greater than that of every execution
+ * in the backend, in the same atomic write as its insert.
  */
 export type SequencedExecutionState = {
   state: ExecutionState;
