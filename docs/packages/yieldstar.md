@@ -109,7 +109,7 @@ See [Idempotent trigger](../manual/sdk-local.md#idempotent-trigger).
 
 ## `ExecutionListRequestError`
 
-Thrown by both SDKs' `list`, and by `ExecutionClient.list`, for a `workflowId` that is not a string, a `limit` that is not a positive integer, an unknown `status`, or a `cursor` that `list` did not return. `err.code` is `"INVALID_LIST_REQUEST"`.
+Thrown by both SDKs' `list`, and by `ExecutionClient.list`, for a `workflowId` that is not a string, a `limit` that is not a positive integer, an unknown `status`, or a malformed `cursor`. `err.code` is `"INVALID_LIST_REQUEST"`.
 
 ## `HttpRouteError`
 

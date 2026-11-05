@@ -128,6 +128,7 @@ if (!execution) {
 - When `timeout` (in milliseconds) passes first, it resolves with `{ status: "timed-out", execution }`, where `execution` is the current view. It does not throw.
 - Without a `timeout`, it waits until the execution is terminal.
 - For an unknown ID it resolves with `undefined` at once. It does not wait for a later admission.
+- When `signal` (an `AbortSignal`) aborts, it stops reading the record and rejects with the signal's reason.
 - A negative `timeout` throws a `RangeError`.
 
 A failed execution returns the same error, with the same `name` and `message`, every time it is read.
@@ -160,13 +161,14 @@ The order is the order in which the backend admitted the executions, not `admitt
 - Every matching execution admitted before the first page appears once. Executions admitted after the first page do not appear on later pages.
 - `status` is compared with the status at the runtime clock's current time, so `running` matches executions with a live lease. An execution whose status changes while you page through a `status` filter may appear or disappear on later pages.
 
-`list` throws `ExecutionListRequestError` (`code: "INVALID_LIST_REQUEST"`) for a `workflowId` that is not a string, a `limit` that is not a positive integer, an unknown `status`, or a `cursor` that `list` did not return. A field set to `null` is treated as absent.
+`list` throws `ExecutionListRequestError` (`code: "INVALID_LIST_REQUEST"`) for a `workflowId` that is not a string, a `limit` that is not a positive integer, an unknown `status`, or a malformed `cursor`. A field set to `null` is treated as absent.
 
 ## Execution views
 
 `poll`, `wait` and `list` return views of the execution record:
 
 ```ts
+// Not exported: the fields every view has.
 type ExecutionViewBase = {
   executionId: string;
   workflowId: string;

@@ -278,13 +278,16 @@ dispatcher.start();
 ```ts
 interface ExecutionObserver {
   poll(executionId: string): Promise<ExecutionView | undefined>;
-  wait(executionId: string, options?: { timeout?: number }): Promise<WaitResult | undefined>;
+  wait(
+    executionId: string,
+    options?: { timeout?: number; signal?: AbortSignal }
+  ): Promise<WaitResult | undefined>;
   list(request?: ExecutionListRequest): Promise<ExecutionViewPage>;
 }
 ```
 
 - `poll` returns the record's view, or `undefined` when no record exists.
-- `wait` reads the record, and then reads it again every `pollInterval` ms (default `25`, `DEFAULT_OBSERVER_POLL_INTERVAL`) until it is terminal or `timeout` passes. It resolves with the terminal view, with `{ status: "timed-out", execution }`, or with `undefined` at once for an unknown ID. A negative `timeout` or `pollInterval` throws a `RangeError`.
+- `wait` reads the record, and then reads it again every `pollInterval` ms (default `25`) until it is terminal or `timeout` passes. It resolves with the terminal view, with `{ status: "timed-out", execution }`, or with `undefined` at once for an unknown ID. When `signal` aborts, it stops reading and rejects with the signal's reason. A negative `timeout` or `pollInterval` throws a `RangeError`. `isDuration(value)` is the check it applies: a number that is not `NaN` and not negative.
 - `list` returns `executions.list`'s page with each record turned into a view.
 - `notifier` is an optional fast path, such as the invoker's `workflowEndEmitter`: an event for the execution ID makes `wait` read the record early. No result depends on it. Each open wait adds one listener for its execution ID and removes it when it settles. An `EventEmitter` prints `MaxListenersExceededWarning` when more than 10 waits on one ID are open at once; raise its limit with `setMaxListeners` if you expect more.
 
@@ -292,7 +295,7 @@ The views leave out `params`, `context`, lease and wake state and `unacknowledge
 
 ## `waitForExecutionOutcome`
 
-`waitForExecutionOutcome(executions, executionId, { emitter?, pollInterval?, signal? })` polls `executions.get` until the record is terminal and resolves with its `ExecutionOutcome`, or with `undefined` when no record exists. `pollInterval` defaults to `25` ms. The deprecated `/events` route uses it; passing the invoker's `workflowEndEmitter` as `emitter` triggers an early re-read when the dispatcher records an outcome.
+`waitForExecutionOutcome(executions, executionId, { emitter?, pollInterval?, signal? })` polls `executions.get` until the record is terminal and resolves with its `ExecutionOutcome`, or with `undefined` when no record exists. `pollInterval` defaults to `25` ms. It reads the record the same way as an observer's `wait` without a timeout; passing the invoker's `workflowEndEmitter` as `emitter` triggers an early re-read when the dispatcher records an outcome.
 
 ## `HeapClient` (abstract class)
 
