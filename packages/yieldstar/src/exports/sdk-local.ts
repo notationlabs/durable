@@ -1,6 +1,9 @@
 import type {
+  CancelOptions,
+  CancelResult,
   EventParamsOf,
   ExecutionClient,
+  ExecutionControl,
   ExecutionListRequest,
   ExecutionObserver,
   ExecutionView,
@@ -13,7 +16,12 @@ import type {
   WorkflowInvoker,
   WorkflowRouter,
 } from "@yieldstar/core";
-import { ExecutionAdmissionError, createExecutionObserver } from "@yieldstar/core";
+import {
+  ExecutionAdmissionError,
+  WorkflowCancelledError,
+  createExecutionControl,
+  createExecutionObserver,
+} from "@yieldstar/core";
 
 export function createLocalSdk<W extends WorkflowRouter>(
   runtime: { executions: ExecutionClient },
@@ -33,6 +41,7 @@ export function createLocalSdk<W extends WorkflowRouter>(
     pollInterval: options?.pollInterval,
     notifier: options?.invoker?.workflowEndEmitter,
   });
+  const control = createExecutionControl(executions);
 
   const sdk = {
     /**
@@ -64,6 +73,8 @@ export function createLocalSdk<W extends WorkflowRouter>(
      * Admits an execution and waits, without a timeout, for its record to
      * reach a terminal status. Resolves with the result, or rejects with the
      * recorded error.
+     * @throws {WorkflowCancelledError} with the outcome's `reason` and
+     * `source` when the execution ends `cancelled`
      */
     async triggerAndWait<K extends string & keyof W>(
       event: TriggerEvent<K, EventParamsOf<W[K]>>
@@ -74,6 +85,9 @@ export function createLocalSdk<W extends WorkflowRouter>(
         throw new Error(`Execution "${executionId}" has no record`);
       }
       if (result.status === "failed") throw result.error;
+      if (result.status === "cancelled") {
+        throw new WorkflowCancelledError({ reason: result.reason, source: result.source });
+      }
       if (result.status === "timed-out") {
         throw new Error(`Execution "${executionId}" is still ${result.execution.status}`);
       }
@@ -105,6 +119,18 @@ export function createLocalSdk<W extends WorkflowRouter>(
     list(request?: ExecutionListRequest): Promise<ExecutionViewPage> {
       return observer.list(request);
     },
+
+    /**
+     * Records a cancellation request and returns without waiting for the
+     * workflow to stop. Resolves with `requested` and the current view, with
+     * the terminal view when the execution is terminal (including after a
+     * forced cancel), and with `undefined` for an unknown ID.
+     * @throws {ExecutionCancelRequestError} for an empty ID, or a `reason` or
+     * `force` of the wrong type
+     */
+    cancel(executionId: string, options?: CancelOptions): Promise<CancelResult | undefined> {
+      return control.cancel(executionId, options);
+    },
   };
-  return sdk satisfies ExecutionObserver;
+  return sdk satisfies ExecutionObserver & ExecutionControl;
 }

@@ -160,6 +160,10 @@ export {
   ExecutionDispatcher,
 } from "./lib/execution-dispatcher";
 export { waitForExecutionOutcome } from "./lib/wait-for-outcome";
+export {
+  ExecutionCancelRequestError,
+  createExecutionControl,
+} from "./lib/execution-control";
 export type {
   ActiveExecutionView,
   CancelOptions,
