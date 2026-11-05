@@ -266,7 +266,7 @@ snapshot.state
 snapshot.version
 ```
 
-If the key is omitted, YieldStar uses the call-site hash as the step key. The keyless form is deprecated, as it is for other step helpers: editing the workflow file changes the hash, and the execution's next delivery then diverges from its recorded history (RFC 012). Pass an explicit key, and make it unique when a workflow can reach the same call site more than once.
+If the key is omitted, YieldStar uses the call-site hash as the step key. The keyless form is deprecated, as it is for other step helpers: editing the workflow file changes the hash, and the execution's next delivery then diverges from its recorded history. Pass an explicit key, and make it unique when a workflow can reach the same call site more than once.
 
 ## `select`
 
@@ -320,7 +320,7 @@ const message = yield* store.when("next-message", s =>
 )
 ```
 
-The selector-only form uses the call-site hash as the durable step key, and is deprecated for the same reason as other keyless steps (RFC 012). Pass a key, and make it unique when the same workflow can reach the same `when` call site more than once:
+The selector-only form uses the call-site hash as the durable step key, and is deprecated for the same reason as other keyless steps. Pass a key, and make it unique when the same workflow can reach the same `when` call site more than once:
 
 ```ts
 const message = yield* store.when(`next-message:${turn}`, s =>
