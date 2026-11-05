@@ -1,6 +1,7 @@
 import type { EventContext, EventParams } from "../base/event";
 import type {
   ExecutionAcknowledgeResult,
+  ExecutionAdmissionResult,
   ExecutionLease,
   ExecutionOutcome,
   ExecutionParent,
@@ -468,17 +469,28 @@ function earliest(a: number | null, b: number | null): number | null {
 
 /**
  * Validates an admission request and encodes its event. Adapters call this
- * before their atomic insert, then reject with `EXECUTION_ID_CONFLICT` if the
- * ID is already in use.
+ * before their atomic insert. If the ID is already in use, they answer with
+ * `matchExecutionAdmission` in the same atomic step.
  */
 export function prepareExecutionAdmission(request: {
   executionId?: string;
   workflowId: string;
   params: EventParams;
   context: EventContext;
+  idempotent?: boolean;
 }):
-  | { ok: true; executionId: string; encoded: { params: string; context: string } }
-  | { ok: false; code: "INVALID_EXECUTION_EVENT"; message: string } {
+  | {
+      ok: true;
+      executionId: string;
+      workflowId: string;
+      encoded: { params: string; context: string };
+      idempotent: boolean;
+    }
+  | {
+      ok: false;
+      code: "INVALID_EXECUTION_EVENT" | "IDEMPOTENT_TRIGGER_REQUIRES_ID";
+      message: string;
+    } {
   if (typeof request.workflowId !== "string" || request.workflowId === "") {
     return {
       ok: false,
@@ -496,11 +508,28 @@ export function prepareExecutionAdmission(request: {
       message: "executionId must be a non-empty string",
     };
   }
+  if (request.idempotent !== undefined && typeof request.idempotent !== "boolean") {
+    return {
+      ok: false,
+      code: "INVALID_EXECUTION_EVENT",
+      message: "idempotent must be a boolean",
+    };
+  }
+  const idempotent = request.idempotent === true;
+  if (idempotent && request.executionId === undefined) {
+    return {
+      ok: false,
+      code: "IDEMPOTENT_TRIGGER_REQUIRES_ID",
+      message: "An idempotent admission requires an executionId",
+    };
+  }
   try {
     return {
       ok: true,
       executionId: request.executionId ?? crypto.randomUUID(),
+      workflowId: request.workflowId,
       encoded: encodeExecutionEvent(request),
+      idempotent,
     };
   } catch (err) {
     if (!(err instanceof ExecutionEventEncodingError)) throw err;
@@ -513,6 +542,36 @@ export function executionIdConflict(executionId: string) {
     status: "rejected" as const,
     code: "EXECUTION_ID_CONFLICT" as const,
     message: `Execution "${executionId}" already exists`,
+  };
+}
+
+/**
+ * Answers an admission whose ID is already in use by `existing`, whatever its
+ * status. Without idempotent mode it is `EXECUTION_ID_CONFLICT`. In
+ * idempotent mode it is `existing` when the workflow IDs and the canonical
+ * params encodings are equal, and `EXECUTION_REQUEST_MISMATCH` otherwise. Context is not compared. The
+ * existing record is never changed.
+ */
+export function matchExecutionAdmission(
+  existing: ExecutionState,
+  prepared: {
+    executionId: string;
+    workflowId: string;
+    encoded: { params: string };
+    idempotent: boolean;
+  }
+): Exclude<ExecutionAdmissionResult, { status: "accepted" }> {
+  if (!prepared.idempotent) return executionIdConflict(prepared.executionId);
+  if (
+    existing.workflowId === prepared.workflowId &&
+    existing.params === prepared.encoded.params
+  ) {
+    return { status: "existing", executionId: existing.executionId };
+  }
+  return {
+    status: "rejected",
+    code: "EXECUTION_REQUEST_MISMATCH",
+    message: `Execution "${prepared.executionId}" was admitted with a different workflow ID or params`,
   };
 }
 

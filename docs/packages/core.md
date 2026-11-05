@@ -16,7 +16,7 @@ A runtime bundles the four clients that hold durable state, and the clock they a
 abstract class Runtime {
   abstract readonly clock: () => number; // shared by every client and by delay and retry steps
   abstract readonly executions: ExecutionClient;
-  abstract readonly effects: EffectClient; // step.effect's effect records (RFC 005)
+  abstract readonly effects: EffectClient; // step.effect's effect records
   abstract readonly heap: HeapClient;
   abstract readonly stores: StoreClient;
 }
@@ -95,7 +95,7 @@ type ExecutionParent = { executionId: string; stepKey: string };
 
 ## `ExecutionClient` (interface)
 
-Admits executions, holds their pending wakes, leases due executions to dispatchers, and records delivery outcomes.
+Admits executions, lists them, holds their pending wakes, leases due executions to dispatchers, and records delivery outcomes.
 
 ```ts
 interface ExecutionClient {
@@ -104,12 +104,21 @@ interface ExecutionClient {
     workflowId: string;
     params: EventParams;
     context: EventContext;
+    idempotent?: boolean;
   }): Promise<
     | { status: "accepted"; executionId: string }
+    | { status: "existing"; executionId: string } // an idempotent repeat; nothing was admitted
     | { status: "rejected"; code: ExecutionAdmissionErrorCode; message: string }
   >;
 
   get(executionId: string): Promise<ExecutionRecord | undefined>;
+
+  list(request?: {
+    workflowId?: string;
+    status?: ExecutionStatus;
+    cursor?: string;
+    limit?: number; // default 50, at most 1000
+  }): Promise<{ executions: ExecutionRecord[]; cursor?: string }>;
 
   start(request: {
     requestId: { executionId: string; stepKey: string }; // the calling execution and its step
@@ -147,11 +156,18 @@ interface ExecutionClient {
 
 type ExecutionLease = { executionId: string; token: number; expiresAt: number };
 type LeaseLost = { status: "lost" };
+
+type ExecutionAdmissionErrorCode =
+  | "EXECUTION_ID_CONFLICT"
+  | "INVALID_EXECUTION_EVENT"
+  | "EXECUTION_REQUEST_MISMATCH"
+  | "IDEMPOTENT_TRIGGER_REQUIRES_ID";
 ```
 
 | Method        | Contract                                                                                                                                                                  |
 | ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `admit`       | Creates the record as `admitted` and makes it due now, all-or-nothing. Reserves a supplied ID unchanged or chooses one. Rejects a used ID with `EXECUTION_ID_CONFLICT`, and `params` or `context` values that `durableValueCodec` cannot encode, or `context` keys that are not strings, with `INVALID_EXECUTION_EVENT` |
+| `admit`       | Creates the record as `admitted` and makes it due now, all-or-nothing, and assigns it the next admission sequence number. Reserves a supplied ID unchanged or chooses one. Rejects a used ID with `EXECUTION_ID_CONFLICT`, and `params` or `context` values that `durableValueCodec` cannot encode, `context` keys that are not strings, or an `idempotent` value that is not a boolean, with `INVALID_EXECUTION_EVENT`. With `idempotent: true`, it requires an `executionId` (`IDEMPOTENT_TRIGGER_REQUIRES_ID`), and a used ID returns `existing` if the record's `workflowId` and canonical `params` match, whatever its status, and `EXECUTION_REQUEST_MISMATCH` otherwise. `context` is not compared, and the existing record is never changed. Of two concurrent idempotent admissions with the same request, one is `accepted` and the other `existing` |
+| `list`        | Pages through records, newest first by admission sequence. The sequence increases with every admission, including targets of `start`, across every client sharing the backend, whatever their clocks. `status` is matched at the runtime clock's current time. A cursor resumes after the last execution of its page, so paging never returns an execution twice, and executions admitted after the first page do not appear on later ones. Cursors are opaque. An invalid filter, `limit` or `cursor` throws `ExecutionListRequestError` (`INVALID_LIST_REQUEST`); a `limit` above 1000 is lowered to 1000 |
 | `start`       | Admits a target execution on behalf of the step named by `requestId`, idempotently by that ID. A new start admits the target due now, with the caller's `context` and `parent` set to `requestId`, and records the start request, all-or-nothing. A repeated request ID returns the first target's ID if its `workflowId` and canonical `params` match, and `START_REQUEST_MISMATCH` otherwise, whatever the target's status. Missing `params` and `{}` do not match. An empty `workflowId`, or `params` that are not a plain object or that `durableValueCodec` cannot encode, return `INVALID_START_PARAMETERS` and admit nothing |
 | `requestWake` | Carries wakes from outside a delivery, such as a store commit. Pending wakes merge into one due time: the earliest                                                       |
 | `claimDue`    | Leases up to `limit` executions that are due at or before the runtime clock and have no live lease, earliest due first. Each lease lasts `duration` ms and carries a token greater than every earlier token for that execution. An execution has at most one live lease at a time, across every client sharing the backend. With `filter.executionIds`, only executions with those IDs are claimed, in the same atomic claim, and an empty list claims nothing |
@@ -163,13 +179,13 @@ type LeaseLost = { status: "lost" };
 
 A lease ends without an acknowledgement when it is released, or when it expires and another claim takes over. Each such delivery adds one to `unacknowledgedDeliveryCount`, and any acknowledgement resets it to zero. While it is above zero, the execution waits a redelivery delay after the delivery ended before it can be claimed. The delay starts at 1 second and doubles with each unacknowledged delivery, up to 5 minutes (`redeliveryDelay(n)`).
 
-`ExecutionAdmissionError` (`code: "EXECUTION_ID_CONFLICT" | "INVALID_EXECUTION_EVENT"`) is what the SDKs throw for a rejected admission. `WorkflowStartError` (`code: "INVALID_START_PARAMETERS" | "START_REQUEST_MISMATCH"`) is what `step.start` throws to workflow code for a rejected start; the rejection is recorded as the step's result, so replay throws the same class and code. `InfrastructureError` wraps a runtime failure; `InfrastructureError.is(err)` recognises one even when several copies of `@yieldstar/core` are loaded. `isLeaseLost(value)` recognises a `LeaseLost` result.
+`ExecutionAdmissionError` (`code: ExecutionAdmissionErrorCode`) is what the SDKs throw for a rejected admission. `WorkflowStartError` (`code: "INVALID_START_PARAMETERS" | "START_REQUEST_MISMATCH"`) is what `step.start` throws to workflow code for a rejected start; the rejection is recorded as the step's result, so replay throws the same class and code. `InfrastructureError` wraps a runtime failure; `InfrastructureError.is(err)` recognises one even when several copies of `@yieldstar/core` are loaded. `isLeaseLost(value)` recognises a `LeaseLost` result.
 
-Runtime adapter authors can import the storage-neutral state machine that `SqliteRuntime` and `MemoryRuntime` share: `prepareExecutionAdmission`, `createExecutionState`, `prepareExecutionStart`, `matchStartRequest`, `createStartedExecution`, `requestExecutionWake`, `claimExecution`, `renewExecutionLease`, `releaseExecutionLease`, `acknowledgeExecution`, `isLeaseCurrent`, `nextClaimAt`, `isExecutionClaimable`, `toExecutionRecord`, and the event and outcome codecs. An adapter persists `ExecutionState` however it likes and applies each transition inside one atomic write. A fenced heap write checks `isLeaseCurrent` in the same write. For `start`, an adapter validates the request with `prepareExecutionStart`, looks up the request ID, answers a recorded request with `matchStartRequest`, and otherwise inserts the target and the `StartRequestState` from `createStartedExecution` in one atomic write, choosing another ID if the target's is in use. `DEFAULT_LEASE_DURATION` (30 seconds), `REDELIVERY_DELAY_BASE` and `REDELIVERY_DELAY_MAX` are the defaults.
+Runtime adapter authors can import the storage-neutral state machine that `SqliteRuntime` and `MemoryRuntime` share: `prepareExecutionAdmission`, `createExecutionState`, `prepareExecutionStart`, `matchStartRequest`, `createStartedExecution`, `requestExecutionWake`, `claimExecution`, `renewExecutionLease`, `releaseExecutionLease`, `acknowledgeExecution`, `isLeaseCurrent`, `nextClaimAt`, `isExecutionClaimable`, `toExecutionRecord`, and the event and outcome codecs. An adapter persists `ExecutionState` however it likes and applies each transition inside one atomic write. A fenced heap write checks `isLeaseCurrent` in the same write. For `admit`, an adapter validates the request with `prepareExecutionAdmission`, and when the ID is in use answers with `matchExecutionAdmission` in the same atomic step as its insert. For `list`, an adapter assigns each new execution an admission sequence greater than that of every execution in the backend, in the same atomic write as its insert, validates the request and decodes its cursor with `prepareExecutionListRequest`, fetches up to `limit + 1` matching executions below the cursor's sequence (`matchesExecutionListRequest` applies the filters to an `ExecutionState`), and builds the page with `toExecutionListPage`, whose cursor is the last execution's admission sequence as a decimal string. For `start`, an adapter validates the request with `prepareExecutionStart`, looks up the request ID, answers a recorded request with `matchStartRequest`, and otherwise inserts the target and the `StartRequestState` from `createStartedExecution` in one atomic write, choosing another ID if the target's is in use. `DEFAULT_LEASE_DURATION` (30 seconds), `REDELIVERY_DELAY_BASE`, `REDELIVERY_DELAY_MAX`, `DEFAULT_EXECUTION_LIST_LIMIT` (50) and `MAX_EXECUTION_LIST_LIMIT` (1000) are the defaults.
 
 ## `durableValueCodec`
 
-The one codec for every durable value (RFC 004). It validates values, encodes them as canonical JSON and decodes them back unchanged. Execution `params`, `context` and outcomes are stored with it, and `ExecutionClient.start` compares params by their canonical encoding.
+The one codec for every durable value. It validates values, encodes them as canonical JSON and decodes them back unchanged. Execution `params`, `context` and outcomes are stored with it, and `ExecutionClient.start` compares params by their canonical encoding.
 
 ```ts
 type DurableValue =
@@ -255,9 +271,27 @@ dispatcher.start();
 | `tick()`  | Claims once, up to the free slots, and starts those deliveries; resolves with the number claimed, without waiting |
 | `drain()` | Waits for every delivery started so far to settle                                          |
 
-## `waitForExecutionOutcome`
+## `createExecutionObserver`
 
-`waitForExecutionOutcome(executions, executionId, { emitter?, pollInterval?, signal? })` polls `executions.get` until the record is terminal and resolves with its `ExecutionOutcome`, or with `undefined` when no record exists. `pollInterval` defaults to `25` ms. The local SDK and the `/events` route use it; passing the invoker's `workflowEndEmitter` as `emitter` triggers an early re-read when the dispatcher acknowledges.
+`createExecutionObserver(executions, { pollInterval?, notifier? })` returns an `ExecutionObserver` that reads through `executions.get` and `executions.list`. The local SDK and the HTTP routes build theirs with it.
+
+```ts
+interface ExecutionObserver {
+  poll(executionId: string): Promise<ExecutionView | undefined>;
+  wait(
+    executionId: string,
+    options?: { timeout?: number; signal?: AbortSignal }
+  ): Promise<WaitResult | undefined>;
+  list(request?: ExecutionListRequest): Promise<ExecutionViewPage>;
+}
+```
+
+- `poll` returns the record's view, or `undefined` when no record exists.
+- `wait` reads the record, and then reads it again every `pollInterval` ms (default `25`) until it is terminal or `timeout` passes. It resolves with the terminal view, with `{ status: "timed-out", execution }`, or with `undefined` at once for an unknown ID. When `signal` aborts, it stops reading and rejects with the signal's reason. A negative `timeout` throws a `RangeError`. `isDuration(value)` is the check it applies to `timeout`: a number that is not `NaN` and not negative. `isPositiveInterval(value)` is the check it applies to `pollInterval`, and `createRoutes` to `maxWait`: a finite number greater than zero. `createExecutionObserver` throws a `RangeError` for a `pollInterval` that is not a finite number greater than zero, because a `pollInterval` of `0` reads the record continuously.
+- `list` returns `executions.list`'s page with each record turned into a view.
+- `notifier` is an optional fast path, such as the invoker's `workflowEndEmitter`: an event for the execution ID makes `wait` read the record early. An event that arrives while a read is in progress makes the next read start as soon as that read returns. No result depends on it. Each open wait adds one listener for its execution ID and removes it when it settles. An `EventEmitter` prints `MaxListenersExceededWarning` when more than 10 waits on one ID are open at once; raise its limit with `setMaxListeners` if you expect more.
+
+The views leave out `params`, `context`, lease and wake state and `unacknowledgedDeliveryCount`. `toExecutionView(record)` builds one, and `isTerminalExecutionView(view)` recognises a completed or failed view. See [Execution views](../manual/sdk-local.md#execution-views) for the types.
 
 ## `HeapClient` (abstract class)
 
@@ -402,7 +436,7 @@ type WorkflowInvoker = {
 };
 ```
 
-`deliver` runs one delivery under `lease` and resolves with its outcome. Once `signal` aborts, the delivery runs no more workflow code and makes no more fenced writes, and rejects with an `InfrastructureError` whose cause is the signal's reason. An invoker that can stop a running step function should, and reject at once: the worker invoker kills its worker. It rejects, without an outcome, when the delivery hits an infrastructure error or the worker exits before replying. A worker exit rejects with a `WorkerExitedError`, and the dispatcher leaves the lease to expire. The dispatcher treats every other rejection as a retry reply and releases the lease. The dispatcher still emits terminal outcomes on `workflowEndEmitter` as an in-process fast path; no guarantee depends on it.
+`deliver` runs one delivery under `lease` and resolves with its outcome. Once `signal` aborts, the delivery runs no more workflow code and makes no more fenced writes, and rejects with an `InfrastructureError` whose cause is the signal's reason. An invoker that can stop a running step function should, and reject at once: the worker invoker kills its worker. It rejects, without an outcome, when the delivery hits an infrastructure error or the worker exits before replying. A worker exit rejects with a `WorkerExitedError`, and the dispatcher leaves the lease to expire. The dispatcher treats every other rejection as a retry reply and releases the lease. The dispatcher still emits terminal outcomes on `workflowEndEmitter` as an in-process fast path, which the local SDK and the HTTP routes use to read the record early; no guarantee depends on it.
 
 ## Step response classes
 
@@ -425,9 +459,16 @@ type WorkflowInvoker = {
 ```ts
 type TriggerEvent<WorkflowId, Params> = {
   workflowId: WorkflowId;
-  executionId?: string;
   params: Params;
   context?: Record<string, any>;
+} & (
+  | { executionId?: string; idempotent?: false }
+  | { executionId: string; idempotent: true }
+);
+
+type TriggerAck = {
+  executionId: string;
+  status: "accepted" | "existing";
 };
 
 type ExecutionEvent<Params> = {

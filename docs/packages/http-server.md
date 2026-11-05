@@ -1,6 +1,6 @@
 # @yieldstar/http-server
 
-HTTP routes and middleware for triggering workflows over the network. Handlers use the standard `Request` and `Response` APIs.
+HTTP routes and middleware for triggering workflows and reading their executions over the network. Handlers use the standard `Request` and `Response` APIs.
 
 ## Install
 
@@ -8,9 +8,9 @@ HTTP routes and middleware for triggering workflows over the network. Handlers u
 bun add @yieldstar/http-server
 ```
 
-## `createRoutes({ runtime, invoker?, logger, middleware?, basePath? })`
+## `createRoutes({ runtime, invoker?, logger, middleware?, observationMiddleware?, pollInterval?, maxWait?, basePath? })`
 
-Returns route handlers for `POST /trigger` and `POST /events`. The routes object plugs directly into `Bun.serve({ routes })` or any router that accepts `Request` to `Response` handlers.
+Returns route handlers for `POST /trigger`, `POST /poll`, `POST /wait`, `POST /list` and the deprecated `POST /events`. The routes object plugs directly into `Bun.serve({ routes })` or any router that accepts `Request` to `Response` handlers.
 
 ```ts
 import { createRoutes } from "@yieldstar/http-server";
@@ -26,29 +26,61 @@ Bun.serve({
 | Param        | Type                   | Description                      |
 | ------------ | ---------------------- | -------------------------------- |
 | `runtime`    | `{ executions: ExecutionClient }` | The runtime whose execution records the routes admit and read |
-| `invoker`    | `WorkflowInvoker`      | Optional. Lets `/events` respond as soon as a delivery is acknowledged |
+| `invoker`    | `WorkflowInvoker`      | Optional. When the dispatcher runs in this process, lets `/wait` and `/events` respond as soon as it records an outcome. No response depends on it |
 | `logger`     | `Logger`               | Pino logger                      |
-| `middleware` | `MiddlewareFunction[]` | Optional middleware chain        |
+| `middleware` | `MiddlewareFunction[]` | Optional middleware chain for `/trigger` |
+| `observationMiddleware` | `ObservationMiddlewareFunction[]` | Optional. Allows or denies `/poll`, `/wait`, `/list` and `/events` requests. Without it they accept every request, and `createRoutes` logs a warning if `middleware` is set |
+| `pollInterval` | `number`             | Optional. How often each open `/wait` and `/events` request reads the record, in milliseconds. Defaults to 25. A value that is not a finite number greater than zero throws a `RangeError` |
+| `maxWait`    | `number`               | Optional. The longest the server holds a `/wait` request open, in milliseconds. Defaults to 8000. A value that is not a finite number greater than zero throws a `RangeError` |
 | `basePath`   | `` `/${string}` ``     | Optional prefix for routes       |
+
+Every error response has the body `{ code, message }`. A route that throws, including a middleware function, responds `500` with code `INTERNAL_ERROR` and the fixed message `Internal error`, and logs the thrown error with `logger.error`. `ObservationErrorCode` is the union of the codes the observation routes respond with.
 
 ### `POST /trigger`
 
-Accepts a `{ workflowId, params?, context?, executionId? }` body encoded with the durable value codec, of which plain JSON is a subset. Runs the middleware chain, then calls `runtime.executions.admit`. The routes never run workflow code; an `ExecutionDispatcher` must be running against the same runtime.
+Accepts a `{ workflowId, params?, context?, executionId?, idempotent? }` body encoded with the durable value codec, of which plain JSON is a subset. Runs the middleware chain, then calls `runtime.executions.admit`. The routes never run workflow code; an `ExecutionDispatcher` must be running against the same runtime.
 
 | Status | Body                                            | Cause                                                          |
 | ------ | ----------------------------------------------- | -------------------------------------------------------------- |
-| `202`  | `{ executionId }`                               | Admission committed. The ID is the caller's or the runtime's   |
+| `202`  | `{ executionId, status: "accepted" }`           | Admission committed. The ID is the caller's or the runtime's   |
+| `200`  | `{ executionId, status: "existing" }`           | An idempotent trigger matched an execution with the same `workflowId` and `params`, and admitted nothing |
 | `409`  | `{ code: "EXECUTION_ID_CONFLICT", message }`    | The supplied `executionId` is already in use                   |
-| `400`  | `{ code: "INVALID_EXECUTION_EVENT", message }`  | the body is not a valid encoding, or `params` or `context` are not durable values |
-| `500`  | Error message                                   | Admission threw, for example because the database failed       |
+| `409`  | `{ code: "EXECUTION_REQUEST_MISMATCH", message }` | An idempotent trigger's `executionId` is in use with a different `workflowId` or `params` |
+| `400`  | `{ code: "INVALID_EXECUTION_EVENT", message }`  | The body is not a valid encoding, `params` or `context` are not durable values, or `idempotent` is not a boolean |
+| `400`  | `{ code: "IDEMPOTENT_TRIGGER_REQUIRES_ID", message }` | An idempotent trigger has no `executionId`               |
+| `500`  | `{ code: "INTERNAL_ERROR", message: "Internal error" }` | Middleware or admission threw, for example because the database failed |
+
+See [Idempotent trigger](../manual/sdk-local.md#idempotent-trigger) for how a repeat is matched.
+
+### `POST /poll`
+
+Accepts `{ executionId }`. Responds `200` with the execution's `ExecutionView`, encoded with the durable value codec, or `404` `EXECUTION_NOT_FOUND`.
+
+### `POST /wait`
+
+Accepts `{ executionId, timeout? }`. Reads the record, and then waits until it is terminal or until `timeout` milliseconds pass. Responds `200` with a `WaitResult`, or `404` `EXECUTION_NOT_FOUND` for an unknown ID. The server holds each request open for at most `maxWait` milliseconds (8000 by default, below Bun's default 10-second idle timeout), and then responds `{ status: "timed-out", execution }`. The HTTP SDK repeats the request until the execution is terminal or its own timeout passes. When the client disconnects, the request's abort signal ends the wait, and the server stops reading the record.
+
+Each open `/wait` or `/events` request reads the execution record once every `pollInterval` milliseconds, independently of other requests. Many concurrent waits therefore multiply the reads of the backend: 100 open waits at the default 25 ms are about 4000 reads per second. Raise `pollInterval` to read less often, at the cost of a later response when no `invoker` is passed. Lower `maxWait` to end each request sooner. With `invoker`, a wait also reads the record when the dispatcher in this process records an outcome, so a longer `pollInterval` does not delay those responses.
+
+### `POST /list`
+
+Accepts `{ workflowId?, status?, cursor?, limit? }`. Responds `200` with `{ executions, cursor? }`, a page of views newest first by admission. `limit` defaults to 50, and a value above 1000 is lowered to 1000. An invalid `workflowId`, `limit`, `status` or `cursor` responds `400` `INVALID_LIST_REQUEST`, as the local SDK's `list` throws `ExecutionListRequestError`.
+
+A `/poll`, `/wait`, `/list` or `/events` body that is not a JSON object, has no `executionId` where one is needed, or has a negative `timeout` responds `400` `INVALID_OBSERVATION_REQUEST`. The views and pages are described in [Execution views](../manual/sdk-local.md#execution-views).
 
 ### `POST /events`
 
-Accepts `{ executionId }` JSON body. Blocks until the execution record is terminal, polling the record and re-reading early when `invoker.workflowEndEmitter` fires. Returns the result encoded with the durable value codec, the recorded error encoded the same way with status 500, or 404 when no record exists. The request's abort signal ends the wait.
+Deprecated: use `/wait`. Accepts `{ executionId }`. Blocks until the execution record is terminal, with no cap, polling the record every `pollInterval` and re-reading early when `invoker.workflowEndEmitter` fires. Returns the result encoded with the durable value codec, the recorded error encoded the same way with status `500`, or `404` `EXECUTION_NOT_FOUND`. The request's abort signal ends the wait. Observation middleware runs for `/events` with `operation: "events"`.
+
+## Observation middleware
+
+An `ObservationMiddlewareFunction` receives `(req, request, logger)`, where `request` is an `ObservationRequest`, and resolves with `{ allow: true }` or `{ allow: false, status: 401 | 403 }`. The functions run in array order before the route reads any record, and the first denial responds `401` `UNAUTHORIZED` or `403` `FORBIDDEN`. For `poll`, `wait` and `events`, `request` carries the `executionId` and a `load()` function that reads the full `ExecutionRecord`. For `list`, it carries the `filter` and no `load`. See [Observation middleware](../manual/http-server.md#observation-middleware).
+
+Observation middleware does not run for `/trigger`. A caller that trigger middleware allows can tell `existing` from `EXECUTION_REQUEST_MISMATCH` for another execution's ID, and so test guesses at that execution's `params`. Limit who may trigger with trigger middleware, or use execution IDs that other callers cannot guess.
 
 ## `createMiddleware(fn)`
 
-Wraps a middleware function for use with `createRoutes`. Middleware receives `(req, event, next, logger)`.
+Wraps a trigger middleware function for use with `createRoutes`. Middleware receives `(req, event, next, logger)`. It runs only for `/trigger`.
 
 ```ts
 import { createMiddleware } from "@yieldstar/http-server";

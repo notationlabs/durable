@@ -46,7 +46,9 @@ export interface ExecutionRecord {
 
 export type ExecutionAdmissionErrorCode =
   | "EXECUTION_ID_CONFLICT"
-  | "INVALID_EXECUTION_EVENT";
+  | "INVALID_EXECUTION_EVENT"
+  | "EXECUTION_REQUEST_MISMATCH"
+  | "IDEMPOTENT_TRIGGER_REQUIRES_ID";
 
 /**
  * A lease on one execution, granted by `claimDue`. `token` is a fencing token:
@@ -106,15 +108,40 @@ export type ExecutionAdmissionRequest = {
   workflowId: string;
   params: EventParams;
   context: EventContext;
+  /**
+   * Makes a repeat of the request safe. When the ID is already in use, the
+   * admission returns `existing` if the recorded workflow ID and canonical
+   * params match, and `EXECUTION_REQUEST_MISMATCH` otherwise. Context is not
+   * compared. Requires `executionId`.
+   */
+  idempotent?: boolean;
 };
 
 export type ExecutionAdmissionResult =
   | { status: "accepted"; executionId: string }
+  /** An idempotent repeat: nothing was admitted. */
+  | { status: "existing"; executionId: string }
   | {
       status: "rejected";
       code: ExecutionAdmissionErrorCode;
       message: string;
     };
+
+export type ExecutionListRequest = {
+  workflowId?: string;
+  /** Matched against the status at the runtime clock's current time. */
+  status?: ExecutionStatus;
+  /** Returned by the previous page. */
+  cursor?: string;
+  /** @default 50, at most 1000 */
+  limit?: number;
+};
+
+export type ExecutionListPage = {
+  executions: ExecutionRecord[];
+  /** Present when more executions may follow. */
+  cursor?: string;
+};
 
 export type WorkflowStartErrorCode =
   | "INVALID_START_PARAMETERS"
@@ -163,6 +190,16 @@ export interface ExecutionClient {
   admit(request: ExecutionAdmissionRequest): Promise<ExecutionAdmissionResult>;
 
   get(executionId: string): Promise<ExecutionRecord | undefined>;
+
+  /**
+   * Pages through execution records, newest first by admission sequence. The
+   * backend assigns the sequence, so it increases across all clients whatever
+   * their clocks. A cursor resumes after the last execution of its page, so no
+   * execution is returned twice, and executions admitted after the first page
+   * do not appear on later pages.
+   * @throws {ExecutionListRequestError} for an invalid filter, limit or cursor
+   */
+  list(request?: ExecutionListRequest): Promise<ExecutionListPage>;
 
   /**
    * Starts a workflow on behalf of the execution and step named by
@@ -267,6 +304,16 @@ export class ExecutionAdmissionError extends Error {
     super(message);
     this.name = "ExecutionAdmissionError";
     this.code = code;
+  }
+}
+
+/** Thrown by `ExecutionClient.list` for an invalid filter, limit or cursor. */
+export class ExecutionListRequestError extends Error {
+  readonly code = "INVALID_LIST_REQUEST";
+
+  constructor(message: string) {
+    super(message);
+    this.name = "ExecutionListRequestError";
   }
 }
 

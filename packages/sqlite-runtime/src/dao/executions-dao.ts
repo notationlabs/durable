@@ -1,6 +1,10 @@
-import type { ExecutionState } from "@yieldstar/core";
+import type {
+  ExecutionState,
+  PreparedExecutionListRequest,
+  SequencedExecutionState,
+} from "@yieldstar/core";
 import { nextClaimAt } from "@yieldstar/core";
-import type { SqliteDriver } from "../sqlite-driver";
+import type { SqliteDriver, SqliteParameters } from "../sqlite-driver";
 
 class ExecutionRow {
   execution_id!: string;
@@ -22,14 +26,20 @@ class ExecutionRow {
   parent_step_key!: string | null;
 }
 
+class SequencedExecutionRow extends ExecutionRow {
+  sequence!: number;
+}
+
 class ExecutionIdRow {
   execution_id!: string;
 }
 
 /**
  * Persists every ExecutionState field, plus `next_claim_at` (derived with
- * nextClaimAt) so claimDue can find due executions through an index.
- * Callers own the surrounding transaction.
+ * nextClaimAt) so claimDue can find due executions through an index. The
+ * table's `rowid` is the admission sequence that orders `list`: SQLite
+ * assigns it under the write lock, one more than the largest rowid in the
+ * table. Callers own the surrounding transaction.
  */
 export class ExecutionsDao {
   private db: SqliteDriver;
@@ -62,6 +72,10 @@ export class ExecutionsDao {
       );
       CREATE INDEX IF NOT EXISTS idx_executions_next_claim_at
       ON executions(next_claim_at) WHERE next_claim_at IS NOT NULL;
+      CREATE INDEX IF NOT EXISTS idx_executions_workflow_id
+      ON executions(workflow_id);
+      CREATE INDEX IF NOT EXISTS idx_executions_status
+      ON executions(status);
     `);
   }
 
@@ -99,6 +113,52 @@ export class ExecutionsDao {
         $executionIds: executionIds ? JSON.stringify(executionIds) : null,
       })
       .map((row) => row.execution_id);
+  }
+
+  /**
+   * Up to `limit + 1` executions that match the request, newest first. `now`
+   * is used to decide which executions are `running`. Only the conditions the
+   * request uses are added, so SQLite can read a filter through the
+   * `workflow_id` or `status` index, whose entries are in rowid order.
+   */
+  listStates(
+    request: PreparedExecutionListRequest,
+    now: number
+  ): SequencedExecutionState[] {
+    const conditions: string[] = [];
+    const bindings: SqliteParameters = { $limit: request.limit + 1 };
+    if (request.workflowId !== undefined) {
+      conditions.push("workflow_id = $workflowId");
+      bindings.$workflowId = request.workflowId;
+    }
+    if (request.beforeSequence !== undefined) {
+      conditions.push("rowid < $before");
+      bindings.$before = request.beforeSequence;
+    }
+    // `running` is derived from a live lease, so the other statuses exclude
+    // executions whose lease has not expired.
+    if (request.status === "running") {
+      conditions.push("lease_expires_at IS NOT NULL AND lease_expires_at > $now");
+      bindings.$now = now;
+    } else if (request.status !== undefined) {
+      conditions.push(
+        "status = $status AND (lease_expires_at IS NULL OR lease_expires_at <= $now)"
+      );
+      bindings.$status = request.status;
+      bindings.$now = now;
+    }
+    return this.db
+      .query<SequencedExecutionRow>(
+        `SELECT *, rowid AS sequence FROM executions
+         ${conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : ""}
+         ORDER BY rowid DESC
+         LIMIT $limit`
+      )
+      .all(bindings)
+      .map((row) => ({
+        state: toState(row),
+        admissionSequence: Number(row.sequence),
+      }));
   }
 
   /** Returns false when the execution ID is already in use. */

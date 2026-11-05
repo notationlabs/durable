@@ -55,7 +55,13 @@ Keeping them in one database lets every guarantee that spans clients hold in a s
 - An effect settlement and the wakes for its waiters commit together.
 - The heap write that records a step's result deletes that step's store and effect waiters.
 - Admission inserts the record already due, so the record and its first wake commit together.
+- `list` orders executions by the `rowid` of the `executions` table. SQLite assigns the `rowid` when the row is inserted, one more than the largest `rowid` in the table. The insert holds the write lock, so two processes never assign the same number, and a later admission always has a larger one, whatever the processes' clocks.
+- An idempotent admission reads an existing record in the same transaction as its insert, so of two concurrent repeats one is accepted and the other sees its record.
 - A new `start` inserts the target, already due and with its parent link, and the start request in one transaction. The request is looked up in the same transaction, so concurrent starts with one request ID admit one target.
+
+`SqliteRuntime` creates indexes on `executions(workflow_id)` and `executions(status)` when it opens the file, so a `list` filtered by `workflowId` or by a status other than `running` reads only the matching rows. Each index entry carries the `rowid`, so the matching rows are already in `list` order. No index serves `list({ status: "running" })`. Whether an execution is running depends on whether its lease has expired, which `list` decides from `lease_expires_at` and the current time, so SQLite reads the table in `rowid` order, newest first, and checks each row until it has filled the page. When a large table has few running executions, one page can read most of the table. Executions from earlier versions already have a `rowid` in insertion order, so they need no migration.
+
+`VACUUM` may renumber the `rowid`s of the `executions` table, because the table has no `INTEGER PRIMARY KEY`. A `list` cursor obtained before a `VACUUM` may then skip or repeat executions. Start paging again from the first page after a `VACUUM`.
 
 Every write runs as one synchronous `IMMEDIATE` transaction. Separate processes that open the same file, such as the app and its worker subprocesses, therefore serialize on SQLite's lock and see the same execution records.
 

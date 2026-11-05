@@ -14,6 +14,7 @@ bun add yieldstar
 import { workflow, createWorkflow } from "yieldstar";
 import { createWorkflowRouter } from "yieldstar";
 import { RetryableError, ExecutionAdmissionError, WorkflowStartError } from "yieldstar";
+import { ExecutionListRequestError, HttpRouteError } from "yieldstar";
 import { WorkflowValueError, registerErrorClass, WORKFLOW_RESULT_STEP_KEY } from "yieldstar";
 import { WorkflowEffectError, EffectDeliveryError, EffectClientInvariantError } from "yieldstar";
 import { defineStore } from "yieldstar";
@@ -28,6 +29,16 @@ import type {
   ExecutionRecord,
   ExecutionStatus,
   ExecutionParent,
+  ExecutionAdmissionErrorCode,
+  TriggerAck,
+  ExecutionObserver,
+  ExecutionView,
+  ActiveExecutionView,
+  TerminalExecutionView,
+  WaitResult,
+  ExecutionWaitOptions,
+  ExecutionListRequest,
+  ExecutionViewPage,
   Durable,
   DurableObject,
   DurableValue,
@@ -85,7 +96,24 @@ throw new RetryableError(message, { maxAttempts, retryInterval });
 
 ## `ExecutionAdmissionError`
 
-Thrown by both SDKs' `trigger` when admission is rejected. `err.code` is `"EXECUTION_ID_CONFLICT"` (the `executionId` is already in use) or `"INVALID_EXECUTION_EVENT"` (`params` or `context` are not durable values).
+Thrown by both SDKs' `trigger` when admission is rejected. `err.code` is one of:
+
+| `code`                           | Cause                                                                     |
+| -------------------------------- | ------------------------------------------------------------------------- |
+| `EXECUTION_ID_CONFLICT`          | The `executionId` is already in use                                       |
+| `EXECUTION_REQUEST_MISMATCH`     | An idempotent trigger's `executionId` is in use with a different `workflowId` or `params` |
+| `IDEMPOTENT_TRIGGER_REQUIRES_ID` | An idempotent trigger has no `executionId`                                |
+| `INVALID_EXECUTION_EVENT`        | `params` or `context` are not durable values, or `idempotent` is not a boolean |
+
+See [Idempotent trigger](../manual/sdk-local.md#idempotent-trigger).
+
+## `ExecutionListRequestError`
+
+Thrown by both SDKs' `list`, and by `ExecutionClient.list`, for a `workflowId` that is not a string, a `limit` that is not a positive integer, an unknown `status`, or a malformed `cursor`. `err.code` is `"INVALID_LIST_REQUEST"`.
+
+## `HttpRouteError`
+
+Thrown by the HTTP SDK for an error response that has no more specific error, such as an observation middleware denial or an `EXECUTION_NOT_FOUND` from `waitForResult`. `err.status` is the response status, and `err.code` is the response's `code` when the body has one.
 
 ## `WorkflowStartError`
 
@@ -109,11 +137,11 @@ Registers the class that recorded errors named `name` are revived as, in this pr
 
 ## `createLocalSdk<Router>(runtime, { invoker?, pollInterval? })`
 
-Creates a local SDK client that admits executions into `runtime`. See [Local SDK](../manual/sdk-local.md).
+Creates a local SDK client that admits executions into `runtime` and reads them back with `poll`, `wait` and `list`. It implements `ExecutionObserver`. See [Local SDK](../manual/sdk-local.md).
 
 ## `createHttpSdkFactory<Router>()`
 
-Returns a factory for HTTP SDK clients. See [HTTP SDK](../manual/sdk-http.md).
+Returns a factory for HTTP SDK clients. Each client implements `ExecutionObserver`. See [HTTP SDK](../manual/sdk-http.md).
 
 ## `defineStore(name, schema, { initial })`
 

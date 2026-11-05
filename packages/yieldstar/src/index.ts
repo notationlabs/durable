@@ -1,11 +1,12 @@
 export { createLocalSdk } from "./exports/sdk-local";
 export { createHttpSdkFactory } from "./exports/sdk-http";
 export { createWorkflowRouter } from "./exports/router";
-export { RetryableError } from "./exports/errors";
+export { HttpRouteError, RetryableError } from "./exports/errors";
 export {
   EffectClientInvariantError,
   EffectDeliveryError,
   ExecutionAdmissionError,
+  ExecutionListRequestError,
   WORKFLOW_RESULT_STEP_KEY,
   WorkflowEffectError,
   WorkflowStartError,
@@ -41,6 +42,15 @@ export type {
   StoreVersion,
   WorkflowEvent,
   ExecutionAdmissionErrorCode,
+  ActiveExecutionView,
+  ExecutionListRequest,
+  ExecutionObserver,
+  ExecutionView,
+  ExecutionViewPage,
+  ExecutionWaitOptions,
+  TerminalExecutionView,
+  TriggerAck,
+  WaitResult,
   ExecutionOutcome,
   ExecutionRecord,
   ExecutionStatus,

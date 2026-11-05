@@ -3,15 +3,17 @@ import {
   claimExecution,
   createExecutionState,
   createStartedExecution,
-  executionIdConflict,
   executionNotFound,
   isExecutionClaimable,
+  matchExecutionAdmission,
   matchStartRequest,
   prepareExecutionAdmission,
+  prepareExecutionListRequest,
   prepareExecutionStart,
   releaseExecutionLease,
   renewExecutionLease,
   requestExecutionWake,
+  toExecutionListPage,
   toExecutionRecord,
   type ExecutionAcknowledgeResult,
   type ExecutionAdmissionRequest,
@@ -19,6 +21,8 @@ import {
   type ExecutionClaimFilter,
   type ExecutionClient,
   type ExecutionLease,
+  type ExecutionListPage,
+  type ExecutionListRequest,
   type ExecutionRecord,
   type ExecutionStartRequest,
   type ExecutionStartResult,
@@ -78,11 +82,16 @@ export class SqliteExecutionClient implements ExecutionClient {
         now: this.clock(),
       });
       // The record is inserted already due, so it and its first wake commit
-      // together.
+      // together. The insert and the read of an existing record share the
+      // transaction, so of two concurrent idempotent admissions one is
+      // accepted and the other sees its record.
       if (!this.executionsDao.insertState(state)) {
-        return executionIdConflict(prepared.executionId);
+        return matchExecutionAdmission(
+          this.executionsDao.getState(prepared.executionId)!,
+          prepared
+        );
       }
-      return { status: "accepted", executionId: prepared.executionId };
+      return { status: "accepted" as const, executionId: prepared.executionId };
     });
   }
 
@@ -122,6 +131,16 @@ export class SqliteExecutionClient implements ExecutionClient {
   async get(executionId: string): Promise<ExecutionRecord | undefined> {
     const state = this.executionsDao.getState(executionId);
     return state ? toExecutionRecord(state, this.clock()) : undefined;
+  }
+
+  async list(request?: ExecutionListRequest): Promise<ExecutionListPage> {
+    const prepared = prepareExecutionListRequest(request);
+    const now = this.clock();
+    return toExecutionListPage(
+      this.executionsDao.listStates(prepared, now),
+      prepared,
+      now
+    );
   }
 
   async requestWake(request: {
