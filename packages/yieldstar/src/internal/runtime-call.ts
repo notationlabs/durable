@@ -5,6 +5,7 @@ import {
   StoreValidationError,
   WorkflowValueError,
   type ExecutionClient,
+  type JoinClient,
   type StoreClient,
   type StoreWaiter,
 } from "@yieldstar/core";
@@ -12,6 +13,7 @@ import {
 export type RuntimeClients = {
   stores: StoreClient;
   executions: ExecutionClient;
+  joins: JoinClient;
 };
 
 export type RuntimeCallResult<T> =
@@ -48,6 +50,19 @@ export class StepStoreWaitRequest extends StepStoreWait {
     wakeAt?: number
   ) {
     super(wakeAt);
+  }
+}
+
+/**
+ * Yielded by a step that must make `response` durable before it registers a
+ * waiter, such as a timed join recording its deadline. The driver writes
+ * `response` as the step's unfinished record and resumes the step.
+ */
+export class StepUnfinishedRecord extends StepResponse {
+  static type = "unfinished-record";
+  readonly type = "unfinished-record";
+  constructor(readonly response: StepResponse) {
+    super();
   }
 }
 

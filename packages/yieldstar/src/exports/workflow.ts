@@ -19,7 +19,9 @@ import { createStepRunner } from "../internal/step-runner";
 import {
   StepRuntimeCall,
   StepStoreWaitRequest,
+  StepUnfinishedRecord,
   executeRuntimeCall,
+  type RuntimeClients,
   infrastructure,
 } from "../internal/runtime-call";
 import { StepEffectCall, executeEffectCall } from "../internal/effect-call";
@@ -85,12 +87,18 @@ export function workflow<
     storeClient,
     executionClient,
     effectClient,
+    joinClient,
     clock,
     logger,
   }) {
     const stepRunner = createStepRunner({ event, clock });
     const workflowIterator = workflowFn(stepRunner, event, logger);
     const { executionId } = event;
+    const clients: RuntimeClients = {
+      stores: storeClient,
+      executions: executionClient,
+      joins: joinClient,
+    };
 
     /** Writes one attempt of a step. A lost lease or a conflicting record ends the delivery. */
     async function writeStep(params: {
@@ -200,9 +208,22 @@ export function workflow<
         while (
           stepResponse instanceof StepRuntimeCall ||
           stepResponse instanceof StepEffectCall ||
-          stepResponse instanceof StepStoreWaitRequest
+          stepResponse instanceof StepStoreWaitRequest ||
+          stepResponse instanceof StepUnfinishedRecord
         ) {
           stopIfAborted(signal);
+          if (stepResponse instanceof StepUnfinishedRecord) {
+            await writeStep({
+              stepKey,
+              stepAttempt,
+              done: false,
+              stepResponseJson: encodeStepRecord(stepResponse.response, stepKey).json,
+            });
+            stepAttempt++;
+            iteratorResult = await workflowIterator.next();
+            stepResponse = iteratorResult.value;
+            continue;
+          }
           if (stepResponse instanceof StepStoreWaitRequest) {
             const { waiter } = stepResponse;
             // 1. Record the unfinished step. A timed wait's deadline must be
@@ -217,7 +238,7 @@ export function workflow<
             // 2. Register the waiter.
             const registered = await executeRuntimeCall(
               new StepRuntimeCall(({ stores }) => stores.registerWaiter(waiter)),
-              { stores: storeClient, executions: executionClient }
+              clients
             );
             // 3. Suspend.
             if (registered.ok) {
@@ -243,10 +264,7 @@ export function workflow<
                   assertLease: () => stopIfAborted(signal),
                   logger,
                 })
-              : await executeRuntimeCall(stepResponse, {
-                  stores: storeClient,
-                  executions: executionClient,
-                });
+              : await executeRuntimeCall(stepResponse, clients);
           iteratorResult = await workflowIterator.next(callResult);
           stepResponse = iteratorResult.value;
         }

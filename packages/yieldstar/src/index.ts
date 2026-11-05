@@ -9,6 +9,7 @@ export {
   ExecutionListRequestError,
   WORKFLOW_RESULT_STEP_KEY,
   WorkflowEffectError,
+  WorkflowJoinError,
   WorkflowStartError,
   WorkflowValueError,
   registerErrorClass,
@@ -22,6 +23,7 @@ export type {
   EffectLookup,
   StepRunner,
   StepRunOptions,
+  TimedJoinResult,
   TimedWhenResult,
   WorkflowStore,
 } from "./internal/step-runner";
@@ -61,6 +63,7 @@ export type {
   ErrorClass,
   WorkflowValueErrorCode,
   WorkflowStartErrorCode,
+  WorkflowJoinErrorCode,
   EffectDeliveryErrorCode,
   EffectRecord,
   WorkflowEffectErrorCode,
