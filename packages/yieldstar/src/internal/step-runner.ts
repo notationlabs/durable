@@ -255,10 +255,8 @@ export function createStepRunner(params: {
     executionId: string,
     options?: { deadline: number }
   ): AsyncGenerator<StepResponse, unknown, StepResult | StepError> {
-    assertJoinStepKey("step.join", stepKey);
-    if (typeof executionId !== "string" || executionId === "") {
-      throw new TypeError("step.join requires a non-empty execution ID");
-    }
+    assertNonEmpty("step.join", "step key", stepKey);
+    assertNonEmpty("step.join", "execution ID", executionId);
     return joinStep({
       stepKey,
       event,
@@ -298,7 +296,7 @@ export function createStepRunner(params: {
     target: { workflowId: string; params?: unknown },
     options?: { deadline: number }
   ): AsyncGenerator<StepResponse, unknown, StepResult | StepError> {
-    assertJoinStepKey("step.call", stepKey);
+    assertNonEmpty("step.call", "step key", stepKey);
     const request: ExecutionStartRequest = {
       requestId: { executionId: event.executionId, stepKey },
       workflowId: target.workflowId,
@@ -319,15 +317,20 @@ export function createStepRunner(params: {
   return { run, delay: createDelay(clock), poll, store, start, effect, join, call };
 }
 
-function assertJoinStepKey(method: string, stepKey: unknown) {
-  if (typeof stepKey !== "string" || stepKey === "") {
-    throw new Error(`${method} requires a non-empty step key`);
+// As in step.start and a timed store.when: a value of the wrong type is a
+// TypeError, and an empty string is an Error.
+function assertNonEmpty(method: string, name: string, value: unknown) {
+  if (typeof value !== "string") {
+    throw new TypeError(`${method} requires the ${name} to be a string`);
+  }
+  if (value === "") {
+    throw new Error(`${method} requires a non-empty ${name}`);
   }
 }
 
 function joinDeadline(method: string, options: { deadline: number } | undefined) {
   if (options === undefined) return undefined;
-  const deadline = options?.deadline;
+  const { deadline } = options;
   if (typeof deadline !== "number" || !Number.isFinite(deadline)) {
     throw new TypeError(`${method} deadline must be a finite number`);
   }

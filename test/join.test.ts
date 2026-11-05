@@ -694,6 +694,7 @@ test("step.join and step.call validate their arguments in workflow code", async 
         for (const call of [
           () => step.join("", "target"),
           () => step.join("join", ""),
+          () => step.join("join", 42 as unknown as string),
           () => step.join("join", "target", { deadline: NaN }),
           () => step.call("", { workflowId: "ship-order" }),
           () => step.call("call", { workflowId: "ship-order" }, { deadline: Infinity }),
@@ -701,7 +702,7 @@ test("step.join and step.call validate their arguments in workflow code", async 
           try {
             call();
           } catch (err) {
-            results.push((err as Error).message);
+            results.push(`${(err as Error).name}: ${(err as Error).message}`);
           }
         }
       }),
@@ -720,11 +721,12 @@ test("step.join and step.call validate their arguments in workflow code", async 
     { lease: lease!, signal: new AbortController().signal }
   );
   expect(results).toEqual([
-    "step.join requires a non-empty step key",
-    "step.join requires a non-empty execution ID",
-    "step.join deadline must be a finite number",
-    "step.call requires a non-empty step key",
-    "step.call deadline must be a finite number",
+    "Error: step.join requires a non-empty step key",
+    "Error: step.join requires a non-empty execution ID",
+    "TypeError: step.join requires the execution ID to be a string",
+    "TypeError: step.join deadline must be a finite number",
+    "Error: step.call requires a non-empty step key",
+    "TypeError: step.call deadline must be a finite number",
   ]);
 });
 
