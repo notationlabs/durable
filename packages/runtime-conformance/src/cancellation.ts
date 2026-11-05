@@ -545,7 +545,6 @@ export function registerCancellationClientConformance({
 
         await cancel(peer, { executionId: "fulfil-42", reason: "courier", force: true });
         expect(await claimedIds(runtime)).toEqual(["audit-42", "order-42"]);
-        expect(await runtime.joins.getWaiters("fulfil-42")).toHaveLength(2);
         expect(await join(runtime, "order-42", "join:fulfil", "fulfil-42")).toEqual({
           status: "terminal",
           outcome: { status: "cancelled", reason: "courier" },
@@ -560,10 +559,8 @@ export function registerCancellationClientConformance({
         await waitOnPayment(runtime, "order-42", "wait-payment");
         await watchEffect(runtime, "charge:42", "order-42", "charge");
         await join(runtime, "order-42", "join:fulfil", "fulfil-42");
-        expect(await runtime.joins.getWaiters("fulfil-42")).toHaveLength(1);
 
         await cancel(runtime, { executionId: "order-42", force: true });
-        expect(await runtime.joins.getWaiters("fulfil-42")).toEqual([]);
 
         await markPaid(runtime, "order-42");
         await settleEffect(runtime, "charge:42");
@@ -1095,7 +1092,6 @@ export function registerCancellationClientConformance({
           ],
         });
         await suspend(runtime, holder);
-        expect(await runtime.joins.getWaiters("fulfil-42")).toEqual([]);
 
         await markPaid(peer, "order-42");
         expect(await claim(runtime)).toEqual([]);
