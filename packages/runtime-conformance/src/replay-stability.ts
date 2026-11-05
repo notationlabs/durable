@@ -712,18 +712,10 @@ export function registerReplayStabilityClientConformance({
         expect(await listIds(peer, { diverged: true })).toEqual(["c"]);
       });
 
-      it("treats a null diverged as absent", async ({ runtime }) => {
-        await admitSuspended(runtime, "a");
-        await admitSuspended(runtime, "b");
-        await diverge(runtime, "a");
-        expect(
-          await listIds(runtime, { diverged: null } as unknown as ExecutionListRequest)
-        ).toEqual(["b", "a"]);
-      });
-
       const invalidRequests: [string, unknown][] = [
         ["a string diverged", { diverged: "true" }],
         ["a numeric diverged", { diverged: 1 }],
+        ["a null diverged", { diverged: null }],
       ];
       for (const [label, request] of invalidRequests) {
         it(`throws ExecutionListRequestError for ${label}`, async ({ runtime }) => {

@@ -83,7 +83,6 @@ test("a database created before replay stability reads its rows with no version,
         next_claim_at INTEGER,
         parent_execution_id TEXT,
         parent_step_key TEXT,
-        admission_sequence INTEGER,
         parent_detached INTEGER NOT NULL DEFAULT 0,
         cancellation_reason TEXT,
         cancellation_source TEXT,
@@ -99,8 +98,8 @@ test("a database created before replay stability reads its rows with no version,
         step_response TEXT NOT NULL,
         PRIMARY KEY (execution_id, step_key, step_attempt)
       );
-      INSERT INTO executions (execution_id, workflow_id, params, context, status, admitted_at, updated_at, due_at, next_claim_at, admission_sequence)
-      VALUES ('order-42', 'place-order', '{}', '[]', 'suspended', 10, 10, 10, 10, 1);
+      INSERT INTO executions (execution_id, workflow_id, params, context, status, admitted_at, updated_at, due_at, next_claim_at)
+      VALUES ('order-42', 'place-order', '{}', '[]', 'suspended', 10, 10, 10, 10);
       INSERT INTO step_responses (execution_id, step_key, step_attempt, step_done, step_response)
       VALUES ('order-42', 'reserve-stock', 1, 1, '{}');
     `);
