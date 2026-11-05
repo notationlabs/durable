@@ -257,23 +257,25 @@ export function registerJoinClientConformance({
         await admitSuspended(runtime, "ship-running");
         const running = await lease(runtime, "ship-running");
         await admitSuspended(runtime, "ship-suspended");
+        const targets = ["ship-admitted", "ship-running", "ship-suspended"];
+        for (const target of targets) {
+          await admitSuspended(runtime, target.replace("ship", "charge"));
+        }
         await admit(runtime, "ship-admitted");
-        for (const target of ["ship-admitted", "ship-running", "ship-suspended"]) {
-          const joiner = target.replace("ship", "charge");
-          await admitSuspended(runtime, joiner);
-          expect(await join(peer, joiner, "join:ship", target)).toEqual({
+        for (const target of targets) {
+          expect(await join(peer, target.replace("ship", "charge"), "join:ship", target)).toEqual({
             status: "waiting",
           });
         }
         const admitted = await claimOne(runtime, "ship-admitted");
 
+        await complete(runtime, "ship-suspended", null);
         for (const targetLease of [admitted, running]) {
           await runtime.executions.acknowledge({
             lease: targetLease,
             outcome: { status: "completed", result: null },
           });
         }
-        await complete(runtime, "ship-suspended", null);
         expect(await claimedIds(runtime)).toEqual([
           "charge-admitted",
           "charge-running",
