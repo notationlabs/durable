@@ -214,8 +214,6 @@ export function workflow<
         stepAttempt = cached.meta.attempt + 1;
       }
 
-      // Decoded once: the cancellation checks and the step's cache check
-      // both read it.
       const recorded =
         cached && !iteratorResult.done ? decodeStepRecord(cached.stepResponseJson) : null;
 
