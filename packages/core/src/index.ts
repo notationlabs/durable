@@ -266,6 +266,7 @@ export type { MiddlewareNext, MiddlewareFunction } from "./base/middleware";
 
 export type {
   WorkflowGenerator,
+  WorkflowGeneratorParams,
   WorkflowGeneratorReturnType,
   WorkflowRouter,
   EventOfWorkflow,
