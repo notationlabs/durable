@@ -2,6 +2,8 @@ import type { EventContext, EventParams } from "../base/event";
 import type {
   ExecutionAcknowledgeResult,
   ExecutionAdmissionResult,
+  ExecutionCancelResult,
+  ExecutionCancellation,
   ExecutionLease,
   ExecutionOutcome,
   ExecutionParent,
@@ -75,6 +77,20 @@ export type ExecutionState = {
   redeliverAt: number | null;
   /** Set at admission by `start`, and never changed. */
   parent: ExecutionParent | null;
+  /** Set by the first cancellation request, and kept whatever the outcome. */
+  cancellation: ExecutionCancellationState | null;
+};
+
+/**
+ * A recorded cancellation request. `reason` and `source` never change once
+ * recorded; `forced` can only become true, and `deliveredAt` is set once.
+ */
+export type ExecutionCancellationState = {
+  reason: string | null;
+  source: string | null;
+  forced: boolean;
+  requestedAt: number;
+  deliveredAt: number | null;
 };
 
 export const DEFAULT_LEASE_DURATION = 30_000;
@@ -157,6 +173,13 @@ export function decodeExecutionEvent(encoded: {
  * failure that is not an error is recorded as `Error(String(value))`.
  */
 export function encodeExecutionOutcome(outcome: ExecutionOutcome): string {
+  if (outcome.status === "cancelled") {
+    return JSON.stringify({
+      ...(outcome.reason !== undefined ? { reason: outcome.reason } : {}),
+      ...(outcome.source !== undefined ? { source: outcome.source } : {}),
+      status: "cancelled",
+    });
+  }
   if (outcome.status === "completed") {
     const result = durableValueCodec.encode(outcome.result);
     if (result.status === "encoded") {
@@ -187,6 +210,13 @@ export function decodeExecutionOutcome(encoded: string): ExecutionOutcome {
   if (parsed.status === "completed") {
     return { status: "completed", result: decodeParsedValue(parsed.result, "result") };
   }
+  if (parsed.status === "cancelled") {
+    return {
+      status: "cancelled",
+      ...(typeof parsed.reason === "string" ? { reason: parsed.reason } : {}),
+      ...(typeof parsed.source === "string" ? { source: parsed.source } : {}),
+    };
+  }
   const error = decodeParsedValue(parsed.error, "error");
   if (!(error instanceof Error)) {
     throw new Error("Invalid failed outcome encoding: expected an error");
@@ -216,6 +246,7 @@ export function createExecutionState(params: {
   encoded: { params: string; context: string };
   now: number;
   parent?: ExecutionParent;
+  cancellation?: ExecutionCancellationState;
 }): ExecutionState {
   return {
     executionId: params.executionId,
@@ -233,6 +264,7 @@ export function createExecutionState(params: {
     unacknowledgedDeliveryCount: 0,
     redeliverAt: null,
     parent: params.parent ?? null,
+    cancellation: params.cancellation ?? null,
   };
 }
 
@@ -278,6 +310,21 @@ export function toExecutionRecord(
     updatedAt: state.updatedAt,
     unacknowledgedDeliveryCount: unacknowledgedDeliveryCountAt(state, now),
     ...(state.parent !== null ? { parent: { ...state.parent } } : {}),
+    ...(state.cancellation !== null
+      ? { cancellation: toExecutionCancellation(state.cancellation) }
+      : {}),
+  };
+}
+
+export function toExecutionCancellation(
+  state: ExecutionCancellationState
+): ExecutionCancellation {
+  return {
+    ...(state.reason !== null ? { reason: state.reason } : {}),
+    ...(state.source !== null ? { source: state.source } : {}),
+    forced: state.forced,
+    requestedAt: state.requestedAt,
+    ...(state.deliveredAt !== null ? { deliveredAt: state.deliveredAt } : {}),
   };
 }
 
@@ -427,11 +474,7 @@ export function acknowledgeExecution(
   };
 
   if (outcome.status !== "suspended") {
-    const encoded = encodeExecutionOutcome(
-      outcome.status === "completed"
-        ? { status: "completed", result: outcome.result }
-        : { status: "failed", error: outcome.error }
-    );
+    const encoded = encodeExecutionOutcome(terminalOutcome(state, outcome));
     // An invalid result is recorded as failed, so the status comes from the
     // encoding rather than the reported outcome.
     const terminal = decodeExecutionOutcome(encoded);
@@ -458,6 +501,214 @@ export function acknowledgeExecution(
       dueAt: earliest(state.dueAt, outcome.wakeAt ?? null),
     },
     result: { status: "suspended" },
+  };
+}
+
+function terminalOutcome(
+  state: ExecutionState,
+  outcome: Exclude<WorkflowRunOutcome, { status: "suspended" }>
+): ExecutionOutcome {
+  switch (outcome.status) {
+    case "completed":
+      return { status: "completed", result: outcome.result };
+    case "failed":
+      return { status: "failed", error: outcome.error };
+    case "cancelled":
+      // A request is never removed, so a delivery that carried one finds it
+      // here. Without one, the workflow threw its own WorkflowCancelledError.
+      if (state.cancellation === null) {
+        return {
+          status: "failed",
+          error: new Error("Workflow reported cancelled, but no cancellation was requested"),
+        };
+      }
+      return cancelledOutcome(state.cancellation);
+  }
+}
+
+function cancelledOutcome(cancellation: ExecutionCancellationState): ExecutionOutcome {
+  return {
+    status: "cancelled",
+    ...(cancellation.reason !== null ? { reason: cancellation.reason } : {}),
+    ...(cancellation.source !== null ? { source: cancellation.source } : {}),
+  };
+}
+
+/**
+ * One cancellation request, as `cancel` receives it or as it propagates to a
+ * descendant. `source` is absent where the cancellation began.
+ */
+export type CancellationRequest = {
+  reason?: string;
+  source?: string;
+  force: boolean;
+};
+
+/**
+ * Validates a cancel request. Adapters call this before touching storage.
+ */
+export function prepareExecutionCancel(request: {
+  executionId: string;
+  reason?: string;
+  force?: boolean;
+}):
+  | { ok: true; executionId: string; request: CancellationRequest }
+  | { ok: false; message: string } {
+  if (typeof request?.executionId !== "string" || request.executionId === "") {
+    return { ok: false, message: "executionId must be a non-empty string" };
+  }
+  if (request.reason !== undefined && typeof request.reason !== "string") {
+    return { ok: false, message: "reason must be a string" };
+  }
+  if (request.force !== undefined && typeof request.force !== "boolean") {
+    return { ok: false, message: "force must be a boolean" };
+  }
+  return {
+    ok: true,
+    executionId: request.executionId,
+    request: {
+      ...(request.reason !== undefined ? { reason: request.reason } : {}),
+      force: request.force === true,
+    },
+  };
+}
+
+/**
+ * Applies one cancellation request to an execution's state.
+ *
+ * - A terminal execution is unchanged, and the result is its outcome.
+ * - A first request is recorded with its `reason` and `source`. A repeat
+ *   keeps the first ones.
+ * - A graceful request makes the execution due now. The redelivery delay
+ *   still applies.
+ * - A forced request records `cancelled`, clears every pending wake and ends
+ *   any held lease by issuing a higher token, so the holder's next fenced
+ *   write returns `lost`.
+ *
+ * `propagate` is true when the request changed the state in a way the
+ * execution's non-detached children must also receive: a first request, or
+ * a request that made it forced. `terminal` is true when it made the
+ * execution terminal; adapters then delete the waiters it holds and wake its
+ * join waiters in the same atomic write.
+ */
+export function requestExecutionCancellation(
+  state: ExecutionState,
+  request: CancellationRequest,
+  now: number
+): {
+  state: ExecutionState;
+  result: Exclude<ExecutionCancelResult, { status: "rejected" }>;
+  propagate: boolean;
+  terminal: boolean;
+} {
+  if (isTerminalExecutionStatus(state.status)) {
+    return {
+      state,
+      result: decodeExecutionOutcome(state.outcome!),
+      propagate: false,
+      terminal: false,
+    };
+  }
+  const first = state.cancellation === null;
+  const cancellation: ExecutionCancellationState = state.cancellation
+    ? { ...state.cancellation, forced: state.cancellation.forced || request.force }
+    : {
+        reason: request.reason ?? null,
+        source: request.source ?? null,
+        forced: request.force,
+        requestedAt: now,
+        deliveredAt: null,
+      };
+
+  if (!request.force) {
+    if (!first) {
+      return { state, result: { status: "requested" }, propagate: false, terminal: false };
+    }
+    return {
+      state: {
+        ...state,
+        cancellation,
+        dueAt: earliest(state.dueAt, now),
+        updatedAt: now,
+      },
+      result: { status: "requested" },
+      propagate: true,
+      terminal: false,
+    };
+  }
+
+  const outcome = cancelledOutcome(cancellation);
+  return {
+    state: {
+      ...state,
+      cancellation,
+      status: "cancelled",
+      outcome: encodeExecutionOutcome(outcome),
+      dueAt: null,
+      claimedDueAt: null,
+      // A higher token than any issued, with no lease held, so the current
+      // holder's fenced writes return lost and no claim can reuse it.
+      leaseToken: state.leaseToken + 1,
+      leaseExpiresAt: null,
+      redeliverAt: null,
+      unacknowledgedDeliveryCount: 0,
+      updatedAt: now,
+    },
+    result: outcome,
+    propagate: true,
+    terminal: true,
+  };
+}
+
+/**
+ * The request a cancelled execution passes to its non-detached children: the
+ * same `force`, its first `reason`, and as `source` the execution where the
+ * cancellation began.
+ */
+export function propagatedCancellation(state: ExecutionState): CancellationRequest {
+  const cancellation = state.cancellation;
+  if (cancellation === null) {
+    throw new Error(`Execution "${state.executionId}" has no cancellation to propagate`);
+  }
+  return {
+    ...(cancellation.reason !== null ? { reason: cancellation.reason } : {}),
+    source: cancellation.source ?? state.executionId,
+    force: cancellation.forced,
+  };
+}
+
+/**
+ * Whether a child that `caller` starts now must receive a cancellation
+ * request at admission: the caller has a request that is not yet delivered
+ * and the child is not detached. Children started by cleanup steps, after
+ * delivery, receive none.
+ */
+export function cancellationForStartedChild(
+  caller: ExecutionState,
+  detached: boolean
+): CancellationRequest | undefined {
+  if (detached || caller.cancellation === null) return undefined;
+  if (caller.cancellation.deliveredAt !== null) return undefined;
+  return propagatedCancellation(caller);
+}
+
+/**
+ * Sets `deliveredAt` on the execution's request. Adapters apply it in the
+ * same fenced write as the step records of the delivered cancellation, after
+ * checking the lease. Throws if no request is recorded.
+ */
+export function markCancellationDelivered(
+  state: ExecutionState,
+  now: number
+): ExecutionState {
+  if (state.cancellation === null) {
+    throw new Error(`Execution "${state.executionId}" has no cancellation request`);
+  }
+  if (state.cancellation.deliveredAt !== null) return state;
+  return {
+    ...state,
+    cancellation: { ...state.cancellation, deliveredAt: now },
+    updatedAt: now,
   };
 }
 
@@ -602,6 +853,7 @@ export type StartRequestState = {
   workflowId: string;
   /** The canonical params, or null when the request had none. */
   params: string | null;
+  detached: boolean;
   executionId: string;
 };
 
@@ -610,6 +862,7 @@ export type PreparedExecutionStart = {
   stepKey: string;
   workflowId: string;
   params: string | null;
+  detached: boolean;
 };
 
 /**
@@ -635,6 +888,9 @@ export function prepareExecutionStart(
   if (typeof request.workflowId !== "string" || request.workflowId === "") {
     return invalid("workflowId must be a non-empty string");
   }
+  if (request.detached !== undefined && typeof request.detached !== "boolean") {
+    return invalid("detached must be a boolean");
+  }
   let params: string | null = null;
   if (request.params !== undefined) {
     if (!isPlainObject(request.params)) {
@@ -653,14 +909,15 @@ export function prepareExecutionStart(
       stepKey: request.requestId.stepKey,
       workflowId: request.workflowId,
       params,
+      detached: request.detached === true,
     },
   };
 }
 
 /**
  * Answers a repeated start request from its record: the first target's ID when
- * the workflow ID and canonical params match, and `START_REQUEST_MISMATCH`
- * otherwise. The target's status does not matter.
+ * the workflow ID, canonical params and `detached` match, and
+ * `START_REQUEST_MISMATCH` otherwise. The target's status does not matter.
  */
 export function matchStartRequest(
   recorded: StartRequestState,
@@ -668,20 +925,24 @@ export function matchStartRequest(
 ): ExecutionStartResult {
   if (
     recorded.workflowId === start.workflowId &&
-    recorded.params === start.params
+    recorded.params === start.params &&
+    recorded.detached === start.detached
   ) {
     return { status: "accepted", executionId: recorded.executionId };
   }
   return {
     status: "rejected",
     code: "START_REQUEST_MISMATCH",
-    message: `Step "${start.stepKey}" of execution "${start.callerExecutionId}" already started workflow "${recorded.workflowId}" with different parameters or workflow ID`,
+    message: `Step "${start.stepKey}" of execution "${start.callerExecutionId}" already started workflow "${recorded.workflowId}" with different parameters, workflow ID or detached option`,
   };
 }
 
 /**
  * Builds a new start's target state and start-request record. The target
  * inherits the caller's encoded context and links to the caller as its parent.
+ * A non-detached target of a caller whose cancellation is not yet delivered
+ * is admitted with the propagated request; a forced one is admitted
+ * `cancelled`.
  * Adapters insert both in one atomic write, after finding no recorded request
  * for the same ID. `executionId` defaults to a random UUID; if it is already in
  * use, adapters must not reuse it.
@@ -702,15 +963,23 @@ export function createStartedExecution(params: {
       context: caller.context,
     },
     now,
-    parent: { executionId: start.callerExecutionId, stepKey: start.stepKey },
+    parent: {
+      executionId: start.callerExecutionId,
+      stepKey: start.stepKey,
+      detached: start.detached,
+    },
   });
+  const cancellation = cancellationForStartedChild(caller, start.detached);
   return {
-    target,
+    target: cancellation
+      ? requestExecutionCancellation(target, cancellation, now).state
+      : target,
     startRequest: {
       callerExecutionId: start.callerExecutionId,
       stepKey: start.stepKey,
       workflowId: start.workflowId,
       params: start.params,
+      detached: start.detached,
       executionId,
     },
   };

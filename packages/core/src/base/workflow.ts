@@ -1,7 +1,11 @@
 import type { Logger } from "pino";
 import type { EventParams, WorkflowEvent, EventContext } from "./event";
 import type { EffectClient } from "./effect";
-import type { ExecutionClient, ExecutionLease } from "./execution";
+import type {
+  ExecutionCancellation,
+  ExecutionClient,
+  ExecutionLease,
+} from "./execution";
 import { HeapClient } from "./heap";
 import type { JoinClient } from "./join";
 import { StoreClient } from "./store";
@@ -19,6 +23,8 @@ export type WorkflowGeneratorParams<
    * step function and each fenced write.
    */
   signal: AbortSignal;
+  /** The delivery's cancellation request, from `DeliveryOptions`. */
+  cancellation?: ExecutionCancellation;
   heapClient: HeapClient;
   storeClient: StoreClient;
   /** `step.start` admits its target through this client. */
