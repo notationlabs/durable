@@ -47,6 +47,23 @@ export type ExecutionCancellation = {
   deliveredAt?: number;
 };
 
+export type ExecutionDivergenceCode = "NONDETERMINISTIC_REPLAY" | "STEP_SCHEMA_CHANGED";
+
+/**
+ * Set on an execution when a delivery found that the workflow code no longer
+ * matches the recorded history. While it is set, wakes stay pending but do
+ * not deliver the execution. `clearDivergence` removes it, and so does a
+ * terminal outcome.
+ */
+export type ExecutionDivergence = {
+  code: ExecutionDivergenceCode;
+  /** The step that would have run, when there was one. */
+  stepKey?: string;
+  /** The workflow version recorded on the execution. */
+  workflowVersion: number;
+  detectedAt: number;
+};
+
 /**
  * The durable record of one workflow execution. Admission creates it and
  * stores the event once; every delivery reads the event from here.
@@ -62,6 +79,9 @@ export type ExecutionCancellation = {
  *
  * `parent` is present, and immutable, only on executions admitted by `start`.
  * `cancellation` is present once `cancel` has recorded a request.
+ * `workflowVersion` is present once a delivery has made its first fenced
+ * write. `divergence` is present while the execution is parked after a
+ * divergent replay.
  */
 export interface ExecutionRecord {
   executionId: string;
@@ -76,6 +96,8 @@ export interface ExecutionRecord {
   unacknowledgedDeliveryCount: number;
   parent?: ExecutionParent;
   cancellation?: ExecutionCancellation;
+  workflowVersion?: number;
+  divergence?: ExecutionDivergence;
 }
 
 export type ExecutionAdmissionErrorCode =
@@ -133,13 +155,22 @@ export function isLeaseLost(value: unknown): value is LeaseLost {
  *   code threw `WorkflowCancelledError`. The acknowledgement records the
  *   request's `reason` and `source` as the outcome.
  *
+ * - `diverged`: replay no longer matches the recorded history. Nothing more
+ *   was written. The acknowledgement records `divergence` and parks the
+ *   execution instead of recording an outcome.
+ *
+ * `workflowVersion` is the version the delivery exposed. The acknowledgement
+ * records it when the execution has none.
+ *
  * Infrastructure errors are never outcomes: the delivery rejects instead.
  */
-export type WorkflowRunOutcome =
+export type WorkflowRunOutcome = (
   | { status: "completed"; result: unknown }
   | { status: "suspended"; wakeAt?: number }
   | { status: "failed"; error: Error }
-  | { status: "cancelled" };
+  | { status: "cancelled" }
+  | { status: "diverged"; code: ExecutionDivergenceCode; stepKey?: string }
+) & { workflowVersion?: number };
 
 export type ExecutionAdmissionRequest = {
   executionId?: string;
@@ -169,6 +200,8 @@ export type ExecutionListRequest = {
   workflowId?: string;
   /** Matched against the status at the runtime clock's current time. */
   status?: ExecutionStatus;
+  /** `true` returns only diverged executions, and `false` only the others. */
+  diverged?: boolean;
   /** Returned by the previous page. */
   cursor?: string;
   /** @default 50, at most 1000 */
@@ -233,8 +266,20 @@ export type ExecutionCancelResult =
       message: string;
     };
 
+export type ExecutionClearDivergenceResult =
+  /** `divergence` was removed and the execution is due now. */
+  | { status: "cleared" }
+  /** The execution has no divergence; nothing changed. */
+  | { status: "not-diverged" }
+  | {
+      status: "rejected";
+      code: "EXECUTION_NOT_FOUND";
+      message: string;
+    };
+
 export type ExecutionAcknowledgeResult =
   | { status: "suspended" }
+  | { status: "diverged" }
   | ExecutionOutcome
   | LeaseLost;
 
@@ -293,6 +338,13 @@ export interface ExecutionClient {
   cancel(request: ExecutionCancelRequest): Promise<ExecutionCancelResult>;
 
   /**
+   * Removes the execution's `divergence` and makes it due now, so the next
+   * delivery replays it again on the code deployed by then. Not fenced. An
+   * execution without a divergence, including a terminal one, is unchanged.
+   */
+  clearDivergence(executionId: string): Promise<ExecutionClearDivergenceResult>;
+
+  /**
    * Requests a wake from outside a delivery, such as a store commit. Wakes not
    * covered by a claimed delivery merge into one due time: the earliest.
    */
@@ -336,7 +388,9 @@ export interface ExecutionClient {
    * Records a delivery's outcome and ends its lease, all-or-nothing. A
    * `suspended` outcome clears the wakes the lease covered, leaving the
    * execution due at the earliest of `wakeAt` and any wake requested since the
-   * claim. A stale lease returns `lost` and changes nothing.
+   * claim. A `diverged` outcome records `divergence` and leaves those wakes
+   * pending without delivering them; it does not count as an unacknowledged
+   * delivery. A stale lease returns `lost` and changes nothing.
    */
   acknowledge(request: {
     lease: ExecutionLease;
@@ -431,6 +485,34 @@ export class InfrastructureError extends Error {
       typeof value === "object" &&
       value !== null &&
       (value as Record<symbol, unknown>)[INFRASTRUCTURE_ERROR] === true
+    );
+  }
+}
+
+const REPLAY_DIVERGENCE = Symbol.for("yieldstar.replayDivergence");
+
+/**
+ * Raised by the driver when replay no longer matches the recorded history.
+ * It is not a workflow error: workflow code cannot catch it, and the runner
+ * reports it as a `diverged` outcome instead of `failed`.
+ */
+export class ReplayDivergenceError extends Error {
+  readonly [REPLAY_DIVERGENCE] = true;
+  readonly code: ExecutionDivergenceCode;
+  readonly stepKey?: string;
+
+  constructor(code: ExecutionDivergenceCode, message: string, stepKey?: string) {
+    super(message);
+    this.name = "ReplayDivergenceError";
+    this.code = code;
+    if (stepKey !== undefined) this.stepKey = stepKey;
+  }
+
+  static is(value: unknown): value is ReplayDivergenceError {
+    return (
+      typeof value === "object" &&
+      value !== null &&
+      (value as Record<symbol, unknown>)[REPLAY_DIVERGENCE] === true
     );
   }
 }

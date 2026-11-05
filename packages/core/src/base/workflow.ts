@@ -25,6 +25,8 @@ export type WorkflowGeneratorParams<
   signal: AbortSignal;
   /** The delivery's cancellation request, from `DeliveryOptions`. */
   cancellation?: ExecutionCancellation;
+  /** Whether a keyless step without a record is rejected. */
+  requireStepKeys?: boolean;
   heapClient: HeapClient;
   storeClient: StoreClient;
   /** `step.start` admits its target through this client. */
@@ -42,9 +44,13 @@ export type WorkflowGenerator<
   Params extends EventParams,
   Result,
   Context extends EventContext
-> = (
-  genParams: WorkflowGeneratorParams<Params, Context>
-) => AsyncGenerator<StepResponse, WorkflowResult<Result>, StepResponse>;
+> = {
+  (
+    genParams: WorkflowGeneratorParams<Params, Context>
+  ): AsyncGenerator<StepResponse, WorkflowResult<Result>, StepResponse>;
+  /** The version the workflow declares. A delivery with none recorded exposes it. @default 1 */
+  readonly workflowVersion?: number;
+};
 
 export type WorkflowGeneratorReturnType<CG> = CG extends WorkflowGenerator<
   infer Params,

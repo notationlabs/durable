@@ -54,6 +54,27 @@ export class WorkflowRaceError extends Error {
   }
 }
 
+export type ReplayErrorCode = "STEP_KEY_REQUIRED" | "PATCH_IN_COMBINATOR";
+
+/**
+ * Thrown to workflow code when a step cannot be recorded safely for replay:
+ * a keyless step without a record under `requireStepKeys`
+ * (`STEP_KEY_REQUIRED`), or `step.patched` inside a combinator branch
+ * (`PATCH_IN_COMBINATOR`). It is recorded as the step's error, so replay
+ * throws it again.
+ */
+export class WorkflowReplayError extends Error {
+  readonly code: ReplayErrorCode;
+  readonly stepKey?: string;
+
+  constructor(code: ReplayErrorCode, message: string, stepKey?: string) {
+    super(message);
+    this.name = "WorkflowReplayError";
+    this.code = code;
+    if (stepKey !== undefined) this.stepKey = stepKey;
+  }
+}
+
 export type ErrorClass = abstract new (...args: any[]) => Error;
 
 const errorClasses = new Map<string, ErrorClass>();
@@ -95,6 +116,7 @@ const defaults: [string, ErrorClass][] = [
   ["WorkflowCancelledError", WorkflowCancelledError],
   ["WorkflowValueError", WorkflowValueError],
   ["WorkflowRaceError", WorkflowRaceError],
+  ["WorkflowReplayError", WorkflowReplayError],
   ["WorkflowEffectError", WorkflowEffectError],
   ["EffectClientInvariantError", EffectClientInvariantError],
   ["EffectDeliveryError", EffectDeliveryError],

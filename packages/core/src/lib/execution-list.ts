@@ -22,6 +22,7 @@ export const EXECUTION_STATUSES: readonly ExecutionStatus[] = [
 export type PreparedExecutionListRequest = {
   workflowId?: string;
   status?: ExecutionStatus;
+  diverged?: boolean;
   /** Only executions whose admission sequence is below this one. */
   beforeSequence?: number;
   limit: number;
@@ -55,6 +56,7 @@ export function prepareExecutionListRequest(
   const status = fields.status ?? undefined;
   const cursor = fields.cursor ?? undefined;
   const limit = fields.limit ?? undefined;
+  const diverged = fields.diverged ?? undefined;
   if (workflowId !== undefined && typeof workflowId !== "string") {
     throw new ExecutionListRequestError("workflowId must be a string");
   }
@@ -62,6 +64,9 @@ export function prepareExecutionListRequest(
     throw new ExecutionListRequestError(
       `status must be one of ${EXECUTION_STATUSES.join(", ")}`
     );
+  }
+  if (diverged !== undefined && typeof diverged !== "boolean") {
+    throw new ExecutionListRequestError("diverged must be a boolean");
   }
   if (
     limit !== undefined &&
@@ -77,6 +82,7 @@ export function prepareExecutionListRequest(
   };
   if (workflowId !== undefined) prepared.workflowId = workflowId;
   if (status !== undefined) prepared.status = status as ExecutionStatus;
+  if (diverged !== undefined) prepared.diverged = diverged;
   if (cursor !== undefined) prepared.beforeSequence = decodeExecutionListCursor(cursor);
   return prepared;
 }
@@ -89,7 +95,8 @@ export function matchesExecutionListRequest(
 ): boolean {
   return (
     (request.workflowId === undefined || state.workflowId === request.workflowId) &&
-    (request.status === undefined || executionStatusAt(state, now) === request.status)
+    (request.status === undefined || executionStatusAt(state, now) === request.status) &&
+    (request.diverged === undefined || (state.divergence !== null) === request.diverged)
   );
 }
 

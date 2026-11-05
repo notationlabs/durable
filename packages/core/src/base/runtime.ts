@@ -7,6 +7,12 @@ import type { StoreClient } from "./store";
 export interface RuntimeOptions {
   /** Every client of the runtime reads time from this clock. Defaults to `Date.now`. */
   clock?: () => number;
+  /**
+   * Rejects a keyless step that has no record with `WorkflowReplayError`
+   * (`STEP_KEY_REQUIRED`). A keyless step that already has a record still
+   * replays. Off by default; it will default to on in the next major version.
+   */
+  requireStepKeys?: boolean;
 }
 
 /**
@@ -25,6 +31,8 @@ export interface RuntimeOptions {
 export abstract class Runtime {
   /** The clock every client, and every step's wake time, reads. */
   abstract readonly clock: () => number;
+  /** As in `RuntimeOptions.requireStepKeys`. */
+  readonly requireStepKeys: boolean = false;
   abstract readonly executions: ExecutionClient;
   abstract readonly effects: EffectClient;
   abstract readonly heap: HeapClient;

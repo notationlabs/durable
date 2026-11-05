@@ -1,6 +1,7 @@
 import { isTerminalExecutionStatus } from "./execution";
 import type {
   ExecutionCancellation,
+  ExecutionDivergence,
   ExecutionListRequest,
   ExecutionParent,
   ExecutionRecord,
@@ -15,6 +16,10 @@ export type ExecutionViewBase = {
   parent?: ExecutionParent;
   /** Present once a cancellation request is recorded. */
   cancellation?: ExecutionCancellation;
+  /** Present once a delivery has recorded the workflow version. */
+  workflowVersion?: number;
+  /** Present while the execution is parked after a divergent replay. */
+  divergence?: ExecutionDivergence;
 };
 
 export type ActiveExecutionView = ExecutionViewBase & {
@@ -61,6 +66,8 @@ export type CancelResult =
   | { status: "requested"; execution: ActiveExecutionView }
   | TerminalExecutionView;
 
+export type ClearDivergenceResult = { status: "cleared" } | { status: "not-diverged" };
+
 export interface ExecutionControl {
   /**
    * Records a cancellation request and returns without waiting for the
@@ -69,6 +76,14 @@ export interface ExecutionControl {
    * unknown ID.
    */
   cancel(executionId: string, options?: CancelOptions): Promise<CancelResult | undefined>;
+
+  /**
+   * Removes a diverged execution's `divergence` and makes it due now, so the
+   * next delivery replays it on the code deployed by then. Resolves with
+   * `not-diverged` when there is nothing to clear, and with `undefined` for
+   * an unknown ID.
+   */
+  clearDivergence(executionId: string): Promise<ClearDivergenceResult | undefined>;
 }
 
 /** Reads executions from their durable record, from any process. */
@@ -98,6 +113,8 @@ export function toExecutionView(record: ExecutionRecord): ExecutionView {
     updatedAt: record.updatedAt,
     ...(record.parent ? { parent: { ...record.parent } } : {}),
     ...(record.cancellation ? { cancellation: { ...record.cancellation } } : {}),
+    ...(record.workflowVersion !== undefined ? { workflowVersion: record.workflowVersion } : {}),
+    ...(record.divergence ? { divergence: { ...record.divergence } } : {}),
   };
   if (isTerminalExecutionStatus(record.status)) {
     const outcome = record.outcome;

@@ -4,6 +4,9 @@ import type {
   ExecutionAdmissionResult,
   ExecutionCancelResult,
   ExecutionCancellation,
+  ExecutionClearDivergenceResult,
+  ExecutionDivergence,
+  ExecutionDivergenceCode,
   ExecutionLease,
   ExecutionOutcome,
   ExecutionParent,
@@ -79,6 +82,20 @@ export type ExecutionState = {
   parent: ExecutionParent | null;
   /** Set by the first cancellation request, and kept whatever the outcome. */
   cancellation: ExecutionCancellationState | null;
+  /** Set by the first fenced write of any delivery, and never changed. */
+  workflowVersion: number | null;
+  /**
+   * Set by a `diverged` acknowledgement. While set, `nextClaimAt` is null, so
+   * pending wakes do not deliver the execution.
+   */
+  divergence: ExecutionDivergenceState | null;
+};
+
+export type ExecutionDivergenceState = {
+  code: ExecutionDivergenceCode;
+  stepKey: string | null;
+  workflowVersion: number;
+  detectedAt: number;
 };
 
 /**
@@ -265,6 +282,8 @@ export function createExecutionState(params: {
     redeliverAt: null,
     parent: params.parent ?? null,
     cancellation: params.cancellation ?? null,
+    workflowVersion: null,
+    divergence: null,
   };
 }
 
@@ -313,6 +332,19 @@ export function toExecutionRecord(
     ...(state.cancellation !== null
       ? { cancellation: toExecutionCancellation(state.cancellation) }
       : {}),
+    ...(state.workflowVersion !== null ? { workflowVersion: state.workflowVersion } : {}),
+    ...(state.divergence !== null
+      ? { divergence: toExecutionDivergence(state.divergence) }
+      : {}),
+  };
+}
+
+export function toExecutionDivergence(state: ExecutionDivergenceState): ExecutionDivergence {
+  return {
+    code: state.code,
+    ...(state.stepKey !== null ? { stepKey: state.stepKey } : {}),
+    workflowVersion: state.workflowVersion,
+    detectedAt: state.detectedAt,
   };
 }
 
@@ -335,6 +367,8 @@ export function toExecutionCancellation(
  */
 export function nextClaimAt(state: ExecutionState): number | null {
   if (isTerminalExecutionStatus(state.status)) return null;
+  // A diverged execution's wakes stay pending until its divergence is cleared.
+  if (state.divergence !== null) return null;
   if (state.leaseExpiresAt !== null) {
     // A held lease covers the wakes that were due when it was claimed. Once it
     // expires, it counts as unacknowledged, and the redelivery delay runs
@@ -465,7 +499,35 @@ export function acknowledgeExecution(
   }
 
   const { outcome, now } = params;
+  const workflowVersion = state.workflowVersion ?? outcome.workflowVersion ?? null;
+
+  if (outcome.status === "diverged") {
+    return {
+      // Like a release, the wakes the lease covered stay pending, but the
+      // delivery does not count as unacknowledged: the execution is parked
+      // rather than redelivered.
+      state: {
+        ...state,
+        workflowVersion,
+        dueAt: earliest(state.dueAt, state.claimedDueAt),
+        claimedDueAt: null,
+        leaseExpiresAt: null,
+        redeliverAt: null,
+        divergence: {
+          code: outcome.code,
+          stepKey: outcome.stepKey ?? null,
+          workflowVersion: workflowVersion ?? 1,
+          detectedAt: now,
+        },
+        updatedAt: now,
+      },
+      result: { status: "diverged" },
+    };
+  }
+
   const ended = {
+    workflowVersion,
+    divergence: null,
     claimedDueAt: null,
     leaseExpiresAt: null,
     unacknowledgedDeliveryCount: 0,
@@ -506,7 +568,7 @@ export function acknowledgeExecution(
 
 function terminalOutcome(
   state: ExecutionState,
-  outcome: Exclude<WorkflowRunOutcome, { status: "suspended" }>
+  outcome: Exclude<WorkflowRunOutcome, { status: "suspended" | "diverged" }>
 ): ExecutionOutcome {
   switch (outcome.status) {
     case "completed":
@@ -652,6 +714,7 @@ export function requestExecutionCancellation(
       leaseExpiresAt: null,
       redeliverAt: null,
       unacknowledgedDeliveryCount: 0,
+      divergence: null,
       updatedAt: now,
     },
     result: outcome,
@@ -709,6 +772,33 @@ export function markCancellationDelivered(
     ...state,
     cancellation: { ...state.cancellation, deliveredAt: now },
     updatedAt: now,
+  };
+}
+
+/**
+ * Records `workflowVersion` on an execution that has none. Adapters apply it
+ * in the same fenced write as a step record, after checking the lease.
+ */
+export function recordWorkflowVersion(
+  state: ExecutionState,
+  workflowVersion: number | undefined
+): ExecutionState {
+  if (state.workflowVersion !== null || workflowVersion === undefined) return state;
+  return { ...state, workflowVersion };
+}
+
+/**
+ * Removes the execution's divergence and makes it due now. The redelivery
+ * delay still applies. An execution without a divergence is unchanged.
+ */
+export function clearExecutionDivergence(
+  state: ExecutionState,
+  now: number
+): { state: ExecutionState; result: Exclude<ExecutionClearDivergenceResult, { status: "rejected" }> } {
+  if (state.divergence === null) return { state, result: { status: "not-diverged" } };
+  return {
+    state: { ...state, divergence: null, dueAt: earliest(state.dueAt, now), updatedAt: now },
+    result: { status: "cleared" },
   };
 }
 

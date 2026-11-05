@@ -6,8 +6,10 @@ import type {
   ExecutionLease,
   WorkflowRunOutcome,
 } from "..";
+import type { DeliveryEvent } from "../base/event";
 import {
   InfrastructureError,
+  ReplayDivergenceError,
   StepDelay,
   StepEffectWait,
   StepJoinWait,
@@ -39,20 +41,43 @@ export class WorkflowRunner<
    *
    * A workflow that throws `WorkflowCancelledError` ends `cancelled` only when
    * the delivery carried a cancellation request; otherwise it ends `failed`.
+   * A replay that diverges from the recorded history ends `diverged`.
+   *
+   * The event's `workflowVersion` is `options.workflowVersion` when the
+   * record has one, and otherwise the version the workflow declares. The
+   * outcome carries it, so the acknowledgement can record it.
    */
   run = async (
-    event: WorkflowEvent,
+    deliveryEvent: DeliveryEvent,
     options: DeliveryOptions & { logger?: Logger }
   ): Promise<WorkflowRunOutcome> => {
     const { lease, signal, cancellation, logger = this.logger } = options;
-    const workflow = this.router[event.workflowId];
+    const workflow = this.router[deliveryEvent.workflowId];
 
     if (!workflow) {
       return {
         status: "failed",
-        error: new Error(`No workflow registered for "${event.workflowId}"`),
+        error: new Error(`No workflow registered for "${deliveryEvent.workflowId}"`),
       };
     }
+
+    const workflowVersion = options.workflowVersion ?? workflow.workflowVersion ?? 1;
+    const event: WorkflowEvent = { ...deliveryEvent, workflowVersion };
+    const outcome = await this.runEvent(workflow, event, {
+      lease,
+      signal,
+      cancellation,
+      logger,
+    });
+    return { ...outcome, workflowVersion };
+  };
+
+  private async runEvent(
+    workflow: WorkflowGenerator<any, any, any>,
+    event: WorkflowEvent,
+    options: Pick<DeliveryOptions, "lease" | "signal" | "cancellation"> & { logger: Logger }
+  ): Promise<WorkflowRunOutcome> {
+    const { lease, signal, cancellation, logger } = options;
 
     let response:
       | WorkflowResult<unknown>
@@ -71,6 +96,17 @@ export class WorkflowRunner<
       });
     } catch (err) {
       if (InfrastructureError.is(err)) throw err;
+      if (ReplayDivergenceError.is(err)) {
+        logger.warn(
+          { executionId: event.executionId, code: err.code, stepKey: err.stepKey },
+          `Replay diverged from the recorded history; the execution is parked until its divergence is cleared: ${err.message}`
+        );
+        return {
+          status: "diverged",
+          code: err.code,
+          ...(err.stepKey !== undefined ? { stepKey: err.stepKey } : {}),
+        };
+      }
       if (cancellation && err instanceof WorkflowCancelledError) {
         return { status: "cancelled" };
       }
@@ -86,7 +122,7 @@ export class WorkflowRunner<
       case "join-wait":
         return { status: "suspended", wakeAt: response.wakeAt };
     }
-  };
+  }
 
   private async runWorkflows<
     Params extends EventParams,
@@ -109,6 +145,7 @@ export class WorkflowRunner<
       lease,
       signal,
       ...(cancellation ? { cancellation } : {}),
+      requireStepKeys: this.runtime.requireStepKeys,
       heapClient: this.runtime.heap,
       storeClient: this.runtime.stores,
       executionClient: this.runtime.executions,
