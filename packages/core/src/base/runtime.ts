@@ -2,9 +2,8 @@ import type { EffectClient } from "./effect";
 import type { ExecutionClient } from "./execution";
 import type { HeapClient } from "./heap";
 import type { JoinClient } from "./join";
-import type { RetentionOptions } from "./retention";
+import { DEFAULT_PRUNE_BATCH_SIZE, type RetentionOptions } from "./retention";
 import type { StoreClient } from "./store";
-import { DEFAULT_PRUNE_BATCH_SIZE } from "../lib/retention";
 
 export interface RuntimeOptions {
   /** Every client of the runtime reads time from this clock. Defaults to `Date.now`. */
@@ -60,9 +59,13 @@ export abstract class Runtime {
    * `pruneExecutionStores`. Every step is safe to repeat and to run in
    * several processes at once. Without `retain`, it only cleans.
    *
-   * Resolves with the number of executions tombstoned and cleaned.
+   * A cleanup that throws does not stop the pass: its tombstone stays pending
+   * for a later pass, and the pass goes on to the next one. The result counts
+   * the executions tombstoned, cleaned and failed, and lists each failed
+   * cleanup's error in `errors`. A failure to tombstone or to list pending
+   * cleanups rejects the pass.
    */
-  async prune(options?: { limit?: number }): Promise<{ pruned: number; cleaned: number }> {
+  async prune(options?: { limit?: number }): Promise<PruneResult> {
     const limit = options?.limit ?? DEFAULT_PRUNE_BATCH_SIZE;
     if (!Number.isInteger(limit) || limit < 1) {
       throw new RangeError("limit must be a positive integer");
@@ -71,21 +74,39 @@ export abstract class Runtime {
       ? (await this.executions.prune({ retain: this.retain, limit })).length
       : 0;
     let cleaned = 0;
+    const errors: PruneFailure[] = [];
     for (const pending of await this.executions.listPendingPrunes({ limit })) {
       const { executionId } = pending;
-      // 1. Delete everything the tombstone no longer refers to.
-      await this.heap.deleteSteps({ executionId });
-      await this.stores.deleteExecutionData({
-        executionId,
-        deleteExecutionStore: pending.deleteExecutionStore,
-      });
-      await this.effects.deleteWaitersForExecution(executionId);
-      await this.joins.deleteWaitersForExecution(executionId);
-      // 2. Clear the mark last, so a pass that stops before here is finished
-      // by the next one.
-      await this.executions.finishPrune(executionId);
-      cleaned++;
+      try {
+        // 1. Delete everything the tombstone no longer refers to.
+        await this.heap.deleteSteps({ executionId });
+        await this.stores.deleteExecutionData({
+          executionId,
+          deleteExecutionStore: pending.deleteExecutionStore,
+        });
+        await this.effects.deleteWaitersForExecution(executionId);
+        await this.joins.deleteWaitersForExecution(executionId);
+        // 2. Clear the mark last, so a pass that stops before here is finished
+        // by the next one.
+        await this.executions.finishPrune(executionId);
+        cleaned++;
+      } catch (error) {
+        errors.push({ executionId, error });
+      }
     }
-    return { pruned, cleaned };
+    return { pruned, cleaned, failed: errors.length, errors };
   }
 }
+
+/** What one `Runtime.prune` pass did. */
+export type PruneResult = {
+  /** Executions replaced with tombstones. */
+  pruned: number;
+  /** Tombstones whose cleanup finished. */
+  cleaned: number;
+  /** Tombstones whose cleanup threw. They stay pending. */
+  failed: number;
+  errors: PruneFailure[];
+};
+
+export type PruneFailure = { executionId: string; error: unknown };

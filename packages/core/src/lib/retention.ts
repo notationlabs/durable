@@ -3,9 +3,6 @@ import { isPlainObject } from "../base/durable-value";
 import type { RetentionOptions, RetentionPolicy } from "../base/retention";
 import type { ExecutionState } from "./execution-state";
 
-/** The number of executions one pruning pass tombstones and cleans at most. */
-export const DEFAULT_PRUNE_BATCH_SIZE = 100;
-
 /** Milliseconds between the dispatcher's pruning passes. */
 export const DEFAULT_PRUNE_INTERVAL = 60_000;
 

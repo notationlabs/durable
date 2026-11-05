@@ -367,17 +367,17 @@ export function registerRetentionClientConformance({
       }) => {
         await runOrder(runtime);
         advance(7 * DAY - 1);
-        expect(await runtime.prune()).toEqual({ pruned: 0, cleaned: 0 });
+        expect(await runtime.prune()).toEqual({ pruned: 0, cleaned: 0, failed: 0, errors: [] });
         expect(await record(runtime, ORDER)).toMatchObject({ status: "completed" });
 
         advance(1);
-        expect(await runtime.prune()).toEqual({ pruned: 1, cleaned: 1 });
+        expect(await runtime.prune()).toEqual({ pruned: 1, cleaned: 1, failed: 0, errors: [] });
         expect(await runtime.executions.get(ORDER)).toEqual(tombstone(ORDER, clock.now));
         expect(await runtime.executions.listPendingPrunes({ limit: 10 })).toEqual([]);
 
         // The tombstone is kept for good, and a later pass changes nothing.
         advance(1_000 * DAY);
-        expect(await runtime.prune()).toEqual({ pruned: 0, cleaned: 0 });
+        expect(await runtime.prune()).toEqual({ pruned: 0, cleaned: 0, failed: 0, errors: [] });
         expect(await runtime.executions.get(ORDER)).toEqual(
           tombstone(ORDER, clock.now - 1_000 * DAY)
         );
@@ -486,16 +486,16 @@ export function registerRetentionClientConformance({
         }
 
         advance(6 * DAY - 1);
-        expect(await runtime.prune()).toEqual({ pruned: 0, cleaned: 0 });
+        expect(await runtime.prune()).toEqual({ pruned: 0, cleaned: 0, failed: 0, errors: [] });
         advance(1);
-        expect(await runtime.prune()).toEqual({ pruned: 1, cleaned: 1 });
+        expect(await runtime.prune()).toEqual({ pruned: 1, cleaned: 1, failed: 0, errors: [] });
         await expectPruned(runtime, "completed-42");
         await expectNotPruned(runtime, "failed-42", "cancelled-42");
 
         advance(23 * DAY - 1);
-        expect(await runtime.prune()).toEqual({ pruned: 0, cleaned: 0 });
+        expect(await runtime.prune()).toEqual({ pruned: 0, cleaned: 0, failed: 0, errors: [] });
         advance(1);
-        expect(await runtime.prune()).toEqual({ pruned: 2, cleaned: 2 });
+        expect(await runtime.prune()).toEqual({ pruned: 2, cleaned: 2, failed: 0, errors: [] });
         expect(await runtime.executions.get("failed-42")).toMatchObject({
           terminalStatus: "failed",
         });
@@ -525,7 +525,7 @@ export function registerRetentionClientConformance({
         await claim(runtime, "running-42", 10_000 * DAY);
 
         advance(1_000 * DAY);
-        expect(await runtime.prune()).toEqual({ pruned: 0, cleaned: 0 });
+        expect(await runtime.prune()).toEqual({ pruned: 0, cleaned: 0, failed: 0, errors: [] });
         expect(await record(runtime, "admitted-42")).toMatchObject({ status: "admitted" });
         expect(await record(runtime, "running-42")).toMatchObject({ status: "running" });
         expect(await record(runtime, "suspended-42")).toMatchObject({ status: "suspended" });
@@ -542,7 +542,7 @@ export function registerRetentionClientConformance({
       it("prunes nothing without a policy", undefined, async ({ runtime, advance }) => {
         await runToCompletion(runtime, "completed-42");
         advance(1_000 * DAY);
-        expect(await runtime.prune()).toEqual({ pruned: 0, cleaned: 0 });
+        expect(await runtime.prune()).toEqual({ pruned: 0, cleaned: 0, failed: 0, errors: [] });
         expect(await runtime.executions.prune({ retain: {}, limit: 100 })).toEqual([]);
         await expectNotPruned(runtime, "completed-42");
       });
@@ -553,7 +553,7 @@ export function registerRetentionClientConformance({
       }) => {
         await runToCompletion(runtime, "completed-42");
         advance(1_000 * DAY);
-        expect(await runtime.prune()).toEqual({ pruned: 0, cleaned: 0 });
+        expect(await runtime.prune()).toEqual({ pruned: 0, cleaned: 0, failed: 0, errors: [] });
         await expectNotPruned(runtime, "completed-42");
       });
 
@@ -574,12 +574,12 @@ export function registerRetentionClientConformance({
         await runToCompletion(runtime, "audit-42", "audit-order");
 
         advance(7 * DAY);
-        expect(await runtime.prune()).toEqual({ pruned: 2, cleaned: 2 });
+        expect(await runtime.prune()).toEqual({ pruned: 2, cleaned: 2, failed: 0, errors: [] });
         await expectPruned(runtime, "place-42", "charge-failed-42");
         await expectNotPruned(runtime, "charge-completed-42", "audit-42");
 
         advance(358 * DAY);
-        expect(await runtime.prune()).toEqual({ pruned: 1, cleaned: 1 });
+        expect(await runtime.prune()).toEqual({ pruned: 1, cleaned: 1, failed: 0, errors: [] });
         await expectPruned(runtime, "audit-42");
         await expectNotPruned(runtime, "charge-completed-42");
       });
@@ -591,13 +591,13 @@ export function registerRetentionClientConformance({
       }) => {
         await runOrder(runtime);
         advance(DAY);
-        expect(await runtime.prune()).toEqual({ pruned: 0, cleaned: 0 });
+        expect(await runtime.prune()).toEqual({ pruned: 0, cleaned: 0, failed: 0, errors: [] });
 
         const shortened: RetentionOptions = { default: { completed: DAY } };
         expect(await runtime.executions.prune({ retain: shortened, limit: 10 })).toEqual([
           tombstone(ORDER, clock.now),
         ]);
-        expect(await runtime.prune()).toEqual({ pruned: 0, cleaned: 1 });
+        expect(await runtime.prune()).toEqual({ pruned: 0, cleaned: 1, failed: 0, errors: [] });
         expect(await runtime.heap.listSteps({ executionId: ORDER })).toEqual([]);
       });
 
@@ -611,8 +611,8 @@ export function registerRetentionClientConformance({
         }
         const first = await runtime.executions.prune({ retain: RETAIN_NONE, limit: 2 });
         expect(first.map((pruned) => pruned.executionId)).toEqual(["order-c", "order-a"]);
-        expect(await runtime.prune({ limit: 2 })).toEqual({ pruned: 1, cleaned: 2 });
-        expect(await runtime.prune({ limit: 2 })).toEqual({ pruned: 0, cleaned: 1 });
+        expect(await runtime.prune({ limit: 2 })).toEqual({ pruned: 1, cleaned: 2, failed: 0, errors: [] });
+        expect(await runtime.prune({ limit: 2 })).toEqual({ pruned: 0, cleaned: 1, failed: 0, errors: [] });
         await expectPruned(runtime, "order-a", "order-b", "order-c");
       });
     });
@@ -639,7 +639,7 @@ export function registerRetentionClientConformance({
           status: "completed",
           result: null,
         });
-        expect(await runtime.prune()).toEqual({ pruned: 0, cleaned: 0 });
+        expect(await runtime.prune()).toEqual({ pruned: 0, cleaned: 0, failed: 0, errors: [] });
         expect(await record(runtime, child)).toMatchObject({ status: "completed" });
       });
 
@@ -763,7 +763,7 @@ export function registerRetentionClientConformance({
         expect(await peer.executions.get(ORDER)).toEqual(pruned);
 
         clock.now += DAY;
-        expect(await peer.prune()).toEqual({ pruned: 0, cleaned: 1 });
+        expect(await peer.prune()).toEqual({ pruned: 0, cleaned: 1, failed: 0, errors: [] });
         expect(await peer.executions.listPendingPrunes({ limit: 10 })).toEqual([]);
         expect(await runtime.heap.listSteps({ executionId: ORDER })).toEqual([]);
         expect((await updateLedger(runtime, 2)).state).toEqual({ total: 2 });
@@ -783,7 +783,7 @@ export function registerRetentionClientConformance({
         expect(await restarted.executions.listPendingPrunes({ limit: 10 })).toEqual([
           { executionId: ORDER, deleteExecutionStore: false },
         ]);
-        expect(await restarted.prune()).toEqual({ pruned: 0, cleaned: 1 });
+        expect(await restarted.prune()).toEqual({ pruned: 0, cleaned: 1, failed: 0, errors: [] });
         expect(await restarted.heap.listSteps({ executionId: ORDER })).toEqual([]);
         expect(await restarted.executions.listPendingPrunes({ limit: 10 })).toEqual([]);
       });
@@ -893,7 +893,7 @@ export function registerRetentionClientConformance({
         });
 
         advance(30 * DAY);
-        expect(await peer.prune()).toEqual({ pruned: 0, cleaned: 0 });
+        expect(await peer.prune()).toEqual({ pruned: 0, cleaned: 0, failed: 0, errors: [] });
         expect(await record(runtime, "ship-42")).toMatchObject({ status: "completed" });
 
         // The joiner reads the outcome on its delivery, and records it.
@@ -906,7 +906,7 @@ export function registerRetentionClientConformance({
         expect(await runtime.joins.getWaiters("ship-42")).toEqual([]);
         await acknowledge(runtime, delivery, { status: "suspended" });
 
-        expect(await peer.prune()).toEqual({ pruned: 1, cleaned: 1 });
+        expect(await peer.prune()).toEqual({ pruned: 1, cleaned: 1, failed: 0, errors: [] });
         await expectPruned(runtime, "ship-42");
         await expectNotPruned(runtime, "charge-42");
       });
@@ -928,9 +928,9 @@ export function registerRetentionClientConformance({
         expect(await runtime.joins.getWaiters("ship-42")).toEqual([]);
 
         advance(7 * DAY - 1);
-        expect(await runtime.prune()).toEqual({ pruned: 0, cleaned: 0 });
+        expect(await runtime.prune()).toEqual({ pruned: 0, cleaned: 0, failed: 0, errors: [] });
         advance(1);
-        expect(await runtime.prune()).toEqual({ pruned: 1, cleaned: 1 });
+        expect(await runtime.prune()).toEqual({ pruned: 1, cleaned: 1, failed: 0, errors: [] });
         await expectPruned(runtime, "ship-42");
       });
 
@@ -976,7 +976,7 @@ export function registerRetentionClientConformance({
           stepKey: "join:ship-42",
         });
 
-        expect(await runtime.prune()).toEqual({ pruned: 0, cleaned: 0 });
+        expect(await runtime.prune()).toEqual({ pruned: 0, cleaned: 0, failed: 0, errors: [] });
         expect(await record(runtime, "ship-42")).toMatchObject({ status: "completed" });
 
         // Once the divergence is cleared, the joiner reads the outcome and records it.
@@ -987,7 +987,7 @@ export function registerRetentionClientConformance({
         });
         await writeStep(runtime, delivery, "join:ship-42", { kind: "join" });
         await acknowledge(runtime, delivery, { status: "suspended" });
-        expect(await runtime.prune()).toEqual({ pruned: 1, cleaned: 1 });
+        expect(await runtime.prune()).toEqual({ pruned: 1, cleaned: 1, failed: 0, errors: [] });
         await expectPruned(runtime, "ship-42");
       });
 
@@ -1033,7 +1033,7 @@ export function registerRetentionClientConformance({
           result: null,
         });
 
-        expect(await runtime.prune()).toEqual({ pruned: 2, cleaned: 2 });
+        expect(await runtime.prune()).toEqual({ pruned: 2, cleaned: 2, failed: 0, errors: [] });
         await expectPruned(runtime, "ship-42", "charge-42");
         expect(await runtime.joins.getWaiters("ship-42")).toEqual([]);
       });
@@ -1047,7 +1047,7 @@ export function registerRetentionClientConformance({
         await runtime.joins.join(joinWaiter("charge-42", "ship-42"));
         await acknowledge(runtime, joiner, { status: "failed", error: new Error("gave up") });
 
-        expect(await runtime.prune()).toEqual({ pruned: 1, cleaned: 1 });
+        expect(await runtime.prune()).toEqual({ pruned: 1, cleaned: 1, failed: 0, errors: [] });
         expect(await runtime.joins.getWaiters("ship-42")).toEqual([]);
 
         await acknowledge(runtime, await wake(runtime, "ship-42"), {

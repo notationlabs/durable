@@ -15,7 +15,8 @@ import {
 } from "../base/execution";
 import { isPrunedExecution } from "../base/retention";
 import { DEFAULT_LEASE_DURATION } from "./execution-state";
-import { DEFAULT_PRUNE_BATCH_SIZE, DEFAULT_PRUNE_INTERVAL } from "./retention";
+import { DEFAULT_PRUNE_BATCH_SIZE } from "../base/retention";
+import { DEFAULT_PRUNE_INTERVAL } from "./retention";
 
 export const DEFAULT_DISPATCHER_CONCURRENCY = 10;
 
@@ -176,7 +177,12 @@ export class ExecutionDispatcher {
   private async prune() {
     try {
       while (this.running) {
-        const { pruned, cleaned } = await this.runtime.prune({ limit: DEFAULT_PRUNE_BATCH_SIZE });
+        const { pruned, cleaned, errors } = await this.runtime.prune({
+          limit: DEFAULT_PRUNE_BATCH_SIZE,
+        });
+        for (const { executionId, error } of errors) {
+          this.logger.error({ err: error, executionId }, "Failed to clean up a pruned execution");
+        }
         if (pruned < DEFAULT_PRUNE_BATCH_SIZE && cleaned < DEFAULT_PRUNE_BATCH_SIZE) return;
       }
     } catch (err) {

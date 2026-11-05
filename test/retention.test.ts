@@ -168,9 +168,9 @@ describe.each(backends)("retention on %s", (_name, create) => {
     const { child } = await runOrder(runtime);
 
     backend.clock.now += 7 * DAY - 1;
-    expect(await runtime.prune()).toEqual({ pruned: 0, cleaned: 0 });
+    expect(await runtime.prune()).toEqual({ pruned: 0, cleaned: 0, failed: 0, errors: [] });
     backend.clock.now += 1;
-    expect(await runtime.prune()).toEqual({ pruned: 1, cleaned: 1 });
+    expect(await runtime.prune()).toEqual({ pruned: 1, cleaned: 1, failed: 0, errors: [] });
     const prunedAt = backend.clock.now;
 
     const tombstone = {
@@ -273,10 +273,12 @@ describe.each(backends)("retention on %s", (_name, create) => {
     const backend = create();
     await runOrder(backend.open());
     backend.clock.now += DAY;
-    expect(await backend.open().prune()).toEqual({ pruned: 0, cleaned: 0 });
+    expect(await backend.open().prune()).toEqual({ pruned: 0, cleaned: 0, failed: 0, errors: [] });
     expect(await backend.open({ default: { completed: DAY } }).prune()).toEqual({
       pruned: 1,
       cleaned: 1,
+      failed: 0,
+      errors: [],
     });
   });
 
@@ -298,6 +300,66 @@ describe.each(backends)("retention on %s", (_name, create) => {
     try {
       await vi.waitFor(async () => {
         expect(await runtime.executions.get(ORDER)).toMatchObject({ status: "pruned" });
+      });
+    } finally {
+      await dispatcher.stop();
+    }
+  });
+
+  test("a failing cleanup does not stop the cleanups after it, and stays pending", async () => {
+    const backend = create();
+    const runtime = backend.open({ default: { completed: 0 } });
+    for (const executionId of ["first", "second", "third"]) {
+      await admit(runtime, executionId);
+      await complete(runtime, await claim(runtime, executionId));
+    }
+    const failure = new Error("heap unavailable");
+    const deleteSteps = runtime.heap.deleteSteps.bind(runtime.heap);
+    const spy = vi
+      .spyOn(runtime.heap, "deleteSteps")
+      .mockImplementation(async (request) => {
+        if (request.executionId === "second") throw failure;
+        return deleteSteps(request);
+      });
+
+    expect(await runtime.prune()).toEqual({
+      pruned: 3,
+      cleaned: 2,
+      failed: 1,
+      errors: [{ executionId: "second", error: failure }],
+    });
+    expect(await runtime.executions.listPendingPrunes({ limit: 10 })).toEqual([
+      { executionId: "second", deleteExecutionStore: false },
+    ]);
+
+    spy.mockRestore();
+    expect(await runtime.prune()).toEqual({ pruned: 0, cleaned: 1, failed: 0, errors: [] });
+  });
+
+  test("the dispatcher logs each failed cleanup", async () => {
+    const backend = create();
+    const runtime = backend.open({ default: { completed: 0 } });
+    await admit(runtime, ORDER);
+    await complete(runtime, await claim(runtime, ORDER));
+    const failure = new Error("heap unavailable");
+    vi.spyOn(runtime.heap, "deleteSteps").mockRejectedValue(failure);
+    const error = vi.fn();
+    const dispatcher = new ExecutionDispatcher(runtime, {
+      invoker: {
+        deliver: vi.fn(),
+        workflowEndEmitter: { emit() {} },
+      } as unknown as WorkflowInvoker,
+      logger: { info() {}, warn() {}, error } as unknown as Logger,
+      pollInterval: 5,
+      pruneInterval: 5,
+    });
+    dispatcher.start();
+    try {
+      await vi.waitFor(() => {
+        expect(error).toHaveBeenCalledWith(
+          { err: failure, executionId: ORDER },
+          "Failed to clean up a pruned execution"
+        );
       });
     } finally {
       await dispatcher.stop();
@@ -359,7 +421,7 @@ describe("retention on SQLite", () => {
       executions: [{ executionId: "order-42", status: "completed" }],
     });
     clock.now = 15;
-    expect(await runtime.prune()).toEqual({ pruned: 1, cleaned: 1 });
+    expect(await runtime.prune()).toEqual({ pruned: 1, cleaned: 1, failed: 0, errors: [] });
     expect(await runtime.executions.get("order-42")).toEqual({
       status: "pruned",
       executionId: "order-42",

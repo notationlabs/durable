@@ -1,3 +1,8 @@
+import type { ExecutionRecord } from "./execution";
+
+/** The number of executions one pruning pass tombstones and cleans at most. */
+export const DEFAULT_PRUNE_BATCH_SIZE = 100;
+
 /**
  * How long a workflow's terminal executions are kept before they are pruned.
  * Each period is in milliseconds after the terminal outcome was recorded. An
@@ -47,6 +52,16 @@ export function isPrunedExecution(value: unknown): value is PrunedExecutionRecor
     value !== null &&
     (value as { status?: unknown }).status === "pruned"
   );
+}
+
+/**
+ * Whether a value `ExecutionClient.get` or `list` returned is a live record
+ * rather than a tombstone or undefined.
+ */
+export function isExecutionRecord(
+  value: ExecutionRecord | PrunedExecutionRecord | undefined
+): value is ExecutionRecord {
+  return value !== undefined && !isPrunedExecution(value);
 }
 
 /**

@@ -1,7 +1,7 @@
 export type { HeapClient, HeapRecord, HeapStep } from "./base/heap";
 export type { DeliveryOptions, WorkflowInvoker } from "./base/invoker";
 export { WorkerExitedError } from "./base/invoker";
-export type { RuntimeOptions } from "./base/runtime";
+export type { PruneFailure, PruneResult, RuntimeOptions } from "./base/runtime";
 export { Runtime } from "./base/runtime";
 export type {
   ExecutionTombstone,
@@ -9,9 +9,13 @@ export type {
   RetentionOptions,
   RetentionPolicy,
 } from "./base/retention";
-export { ExecutionPrunedError, isPrunedExecution } from "./base/retention";
 export {
   DEFAULT_PRUNE_BATCH_SIZE,
+  ExecutionPrunedError,
+  isExecutionRecord,
+  isPrunedExecution,
+} from "./base/retention";
+export {
   DEFAULT_PRUNE_INTERVAL,
   isExecutionExpired,
   prunesExecutionStores,
@@ -213,6 +217,7 @@ export {
   isPrunedExecutionView,
   isTerminalExecutionView,
   toExecutionView,
+  toPrunedExecutionView,
 } from "./base/observation";
 export type {
   ExecutionNotifier,
