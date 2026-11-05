@@ -44,7 +44,6 @@ export function becameTerminal(before: ExecutionState, after: ExecutionState) {
   );
 }
 
-/** Orders waiters by joining execution, then step key. */
 export function compareJoinWaiters(a: JoinWaiter, b: JoinWaiter) {
   return compare(a.executionId, b.executionId) || compare(a.stepKey, b.stepKey);
 }
