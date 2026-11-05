@@ -39,6 +39,12 @@ export {
   type ReplayStabilityConformanceHarnessOptions,
   type ReplayStabilityConformanceOptions,
 } from "./replay-stability";
+export {
+  registerRetentionClientConformance,
+  type RetentionConformanceHarness,
+  type RetentionConformanceHarnessOptions,
+  type RetentionConformanceOptions,
+} from "./retention";
 
 /**
  * A clean runtime under test. Store wakes are observed through its
