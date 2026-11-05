@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { expect, test } from "vitest";
 import { registerExecutionClientConformance } from "@yieldstar/runtime-conformance";
 import { MemoryRuntime } from "@yieldstar/test-runtime";
-import { SqliteRuntime } from "@yieldstar/sqlite-runtime";
+import { SqliteRuntime, type SqliteParameters } from "@yieldstar/sqlite-runtime";
 
 const isBun = "Bun" in globalThis;
 const { createSqliteDb } = isBun
@@ -128,20 +128,28 @@ test("filtered list queries read the workflow_id and status indexes in rowid ord
   const db = createSqliteDb({ path: ":memory:", wal: false });
   try {
     new SqliteRuntime(db);
-    const plan = (where: string) =>
+    const plan = (where: string, bindings: SqliteParameters) =>
       db
         .query<{ detail: string }>(
           `EXPLAIN QUERY PLAN SELECT *, rowid AS sequence FROM executions
            WHERE ${where} ORDER BY rowid DESC LIMIT 51`
         )
-        .all({ $workflowId: "charge-order", $status: "admitted", $now: 0, $before: 10 })
+        .all(bindings)
         .map((row) => row.detail);
 
-    expect(plan("workflow_id = $workflowId AND rowid < $before")).toEqual([
+    expect(
+      plan("workflow_id = $workflowId AND rowid < $before", {
+        $workflowId: "charge-order",
+        $before: 10,
+      })
+    ).toEqual([
       expect.stringMatching(/USING INDEX idx_executions_workflow_id \(workflow_id=\? AND rowid<\?\)/),
     ]);
     expect(
-      plan("status = $status AND (lease_expires_at IS NULL OR lease_expires_at <= $now)")
+      plan("status = $status AND (lease_expires_at IS NULL OR lease_expires_at <= $now)", {
+        $status: "admitted",
+        $now: 0,
+      })
     ).toEqual([expect.stringMatching(/USING INDEX idx_executions_status \(status=\?\)/)]);
   } finally {
     db.close();
