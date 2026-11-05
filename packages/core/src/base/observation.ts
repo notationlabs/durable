@@ -1,10 +1,16 @@
-import type { ExecutionListRequest, ExecutionRecord } from "./execution";
+import type {
+  ExecutionListRequest,
+  ExecutionParent,
+  ExecutionRecord,
+} from "./execution";
 
 export type ExecutionViewBase = {
   executionId: string;
   workflowId: string;
   admittedAt: number;
   updatedAt: number;
+  /** Present on executions started by `step.start` or `step.call`. */
+  parent?: ExecutionParent;
 };
 
 export type ActiveExecutionView = ExecutionViewBase & {
@@ -65,6 +71,7 @@ export function toExecutionView(record: ExecutionRecord): ExecutionView {
     workflowId: record.workflowId,
     admittedAt: record.admittedAt,
     updatedAt: record.updatedAt,
+    ...(record.parent ? { parent: { ...record.parent } } : {}),
   };
   if (record.status === "completed" || record.status === "failed") {
     const outcome = record.outcome;

@@ -100,6 +100,7 @@ export class WorkflowRunner<
       storeClient: this.runtime.stores,
       executionClient: this.runtime.executions,
       effectClient: this.runtime.effects,
+      joinClient: this.runtime.joins,
       clock: this.runtime.clock,
       logger,
     });

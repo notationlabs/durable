@@ -4,6 +4,13 @@ export { WorkerExitedError } from "./base/invoker";
 export type { RuntimeOptions } from "./base/runtime";
 export { Runtime } from "./base/runtime";
 export type {
+  JoinClient,
+  JoinResult,
+  JoinWaiter,
+  WorkflowJoinErrorCode,
+} from "./base/join";
+export { WorkflowJoinError } from "./base/join";
+export type {
   ExecutionAcknowledgeResult,
   ExecutionAdmissionErrorCode,
   ExecutionAdmissionRequest,
