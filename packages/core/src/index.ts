@@ -148,7 +148,7 @@ export type {
   ExecutionNotifier,
   ExecutionObserverOptions,
 } from "./lib/execution-observer";
-export { createExecutionObserver, isDuration } from "./lib/execution-observer";
+export { createExecutionObserver, isDuration, isPositiveInterval } from "./lib/execution-observer";
 export type {
   PreparedExecutionListRequest,
   SequencedExecutionState,

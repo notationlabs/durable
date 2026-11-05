@@ -17,6 +17,7 @@ import {
   durableValueCodec,
   encodeThrownValue,
   isDuration,
+  isPositiveInterval,
   prepareExecutionListRequest,
 } from "@yieldstar/core";
 import { executeMiddlewareChain } from "./middleware";
@@ -398,8 +399,8 @@ export function createRoutes(params: {
   const { logger, runtime, invoker, middleware = [], basePath = "" } = params;
   const { executions } = runtime;
   const maxWait = params.maxWait ?? DEFAULT_MAX_WAIT;
-  if (!isDuration(maxWait) || maxWait === 0) {
-    throw new RangeError("maxWait must be a positive number of milliseconds");
+  if (!isPositiveInterval(maxWait)) {
+    throw new RangeError("maxWait must be a positive, finite number of milliseconds");
   }
   const observation: ObservationParams = {
     executions,

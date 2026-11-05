@@ -475,14 +475,14 @@ test("pollInterval sets how often /wait reads the record", async () => {
 
 });
 
-test("createRoutes rejects a pollInterval or maxWait that is not greater than zero", () => {
+test("createRoutes rejects a pollInterval or maxWait that is not a positive, finite number", () => {
   const runtime = new MemoryRuntime();
-  for (const value of [-1, 0, NaN]) {
+  for (const value of [-1, 0, NaN, Infinity]) {
     expect(() => createRoutes({ runtime, logger, pollInterval: value })).toThrow(
-      new RangeError("pollInterval must be a positive number of milliseconds")
+      new RangeError("pollInterval must be a positive, finite number of milliseconds")
     );
     expect(() => createRoutes({ runtime, logger, maxWait: value })).toThrow(
-      new RangeError("maxWait must be a positive number of milliseconds")
+      new RangeError("maxWait must be a positive, finite number of milliseconds")
     );
   }
 });

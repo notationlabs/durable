@@ -80,10 +80,10 @@ test("aborting a wait's signal stops its reads and rejects with the signal's rea
   expect(reads).toBe(0);
 });
 
-test("the observer and the local SDK reject a pollInterval that is not greater than zero", () => {
+test("the observer and the local SDK reject a pollInterval that is not a positive, finite number", () => {
   const runtime = new MemoryRuntime();
-  for (const pollInterval of [-1, 0, NaN]) {
-    const error = new RangeError("pollInterval must be a positive number of milliseconds");
+  for (const pollInterval of [-1, 0, NaN, Infinity]) {
+    const error = new RangeError("pollInterval must be a positive, finite number of milliseconds");
     expect(() => createExecutionObserver(runtime.executions, { pollInterval })).toThrow(error);
     expect(() => createLocalSdk(runtime, { pollInterval })).toThrow(error);
   }

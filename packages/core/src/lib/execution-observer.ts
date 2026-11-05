@@ -40,8 +40,8 @@ export function createExecutionObserver(
   options: ExecutionObserverOptions = {}
 ): ExecutionObserver {
   const pollInterval = options.pollInterval ?? DEFAULT_POLL_INTERVAL;
-  if (!isDuration(pollInterval) || pollInterval === 0) {
-    throw new RangeError("pollInterval must be a positive number of milliseconds");
+  if (!isPositiveInterval(pollInterval)) {
+    throw new RangeError("pollInterval must be a positive, finite number of milliseconds");
   }
 
   return {
@@ -107,6 +107,11 @@ export function createExecutionObserver(
 /** Whether `value` is a non-negative number of milliseconds, as a wait `timeout` must be. */
 export function isDuration(value: unknown): value is number {
   return typeof value === "number" && !Number.isNaN(value) && value >= 0;
+}
+
+/** Whether `value` is a positive, finite number of milliseconds, as a poll interval or wait cap must be. */
+export function isPositiveInterval(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0;
 }
 
 function assertDuration(name: string, value: unknown) {
