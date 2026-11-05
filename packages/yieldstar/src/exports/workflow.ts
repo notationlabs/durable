@@ -150,7 +150,7 @@ export function workflow<
     /**
      * Records the cancellation at every parked step, and at each unsettled
      * combinator above one, in one write. Returns the error to throw into
-     * workflow code at each step. A lost lease or a conflicting record ends
+     * workflow code at every parked step. A lost lease or a conflicting record ends
      * the delivery.
      */
     async function deliverCancellation(
@@ -201,7 +201,7 @@ export function workflow<
           throw new InfrastructureError(new StepConflictError(executionId, step.stepKey));
         }
       });
-      return parked.map(() => (decodeStepRecord(thrown) as StepCancelled).err);
+      return (decodeStepRecord(thrown) as StepCancelled).err;
     }
 
     // A request is delivered once. Replay of a delivered request reads the
@@ -213,7 +213,7 @@ export function workflow<
 
     /**
      * Advances one generator, the workflow's or a branch's, until it returns,
-     * suspends or is abandoned. An error that workflow code throws rejects
+     * suspends or stops. An error that workflow code throws rejects
      * with a `WorkflowThrew`. Any other rejection ends the delivery.
      */
     async function drive(
@@ -291,7 +291,7 @@ export function workflow<
           // without a record is still driven so that replay reaches the keys
           // its branches reached, and it is not a cancellation point.
           if (branch.stopped) return { status: "stopped" };
-          if (barrier.pending && !isCombinator) {
+          if (barrier.pending) {
             // A delay is recorded done when it starts, so its cancellation
             // is written as the step's next attempt, which replay reads.
             const err = await barrier.park(branch, stepKey, stepAttempt);
@@ -348,9 +348,6 @@ export function workflow<
         }
 
         if ("throw" in action) {
-          // An abandoned branch is resumed only with recorded values, never
-          // with an error, so its catch and finally blocks do not run.
-          if (branch.abandoned) return { status: "stopped" };
           nextIteratorResult = await throwInto(action.throw);
           continue;
         }
@@ -453,21 +450,13 @@ export function workflow<
         if (cached && !(recorded instanceof StepBranchesDecision)) {
           throw new Error(`Step "${stepKey}" has a record that is not a combinator decision`);
         }
-        const outcome = await runBranches(
+        return runBranches(
           stepResponse,
           branch,
           stepKey,
           stepAttempt,
           cached ? (recorded as StepBranchesDecision).decision : undefined
         );
-        switch (outcome.status) {
-          case "value":
-            return { resume: new StepResult(outcome.value) };
-          case "threw":
-            return { throw: outcome.err };
-          default:
-            return outcome;
-        }
       }
 
       // TODO: the iterable check should come before the StepKey check.
@@ -548,19 +537,19 @@ export function workflow<
       stepKey: string,
       stepAttempt: number,
       recorded: BranchesDecision | undefined
-    ): Promise<BranchesOutcome> {
+    ): Promise<StepAction> {
       const { combinator: kind, mode, concurrency, branches } = request.request;
       const combinator = new Combinator(owner, stepKey, stepAttempt, concurrency);
       combinator.decision = recorded;
-      const children = branches.map((_, i) => new DrivenBranch(combinator, i));
+      const children = branches.map(() => new DrivenBranch(combinator));
       const states: BranchState[] = branches.map(() => ({ status: "running" }));
       // Indexes of branches that returned or threw, in the order they did.
       const finished: number[] = [];
       let writing = false;
       let done = false;
 
-      return new Promise<BranchesOutcome>((resolve, reject) => {
-        const settle = (fn: () => BranchesOutcome) => {
+      return new Promise<StepAction>((resolve, reject) => {
+        const settle = (fn: () => StepAction) => {
           done = true;
           barrier.enter();
           try {
@@ -621,7 +610,7 @@ export function workflow<
                 stepAttempt,
                 done: true,
                 stepResponseJson: json,
-                deleteWaitersOf: children.flatMap((child) => child.keys),
+                deleteWaitersOf: combinator.keys,
               })
             )
             .catch((err) => {
@@ -720,11 +709,6 @@ type BranchState =
   | { status: "threw"; err: unknown }
   | DriveOutcome;
 
-type BranchesOutcome =
-  | { status: "value"; value: unknown }
-  | { status: "threw"; err: unknown }
-  | Exclude<DriveOutcome, { status: "returned" }>;
-
 /** The combinator's decision once `finished` (in order) have returned or thrown, if it has one. */
 function decide(
   kind: "all" | "race",
@@ -756,7 +740,7 @@ function applyDecision(
   stepKey: string,
   decision: BranchesDecision,
   states: readonly BranchState[]
-): BranchesOutcome {
+): StepAction {
   const diverged = () =>
     new Error(`Step "${stepKey}" no longer reaches its recorded outcome on replay`);
   const value = (i: number) => {
@@ -771,49 +755,42 @@ function applyDecision(
   };
   switch (decision.decision) {
     case "fulfilled":
-      return { status: "value", value: states.map((_, i) => value(i)) };
+      return { resume: new StepResult(states.map((_, i) => value(i))) };
     case "rejected":
-      return { status: "threw", err: error(decision.index) };
+      return { throw: error(decision.index) };
     case "settled":
       return {
-        status: "value",
-        value: states.map((state, i) =>
-          state.status === "returned"
-            ? { status: "fulfilled", value: state.value }
-            : { status: "rejected", error: error(i) }
+        resume: new StepResult(
+          states.map((state, i) =>
+            state.status === "returned"
+              ? { status: "fulfilled", value: state.value }
+              : { status: "rejected", error: error(i) }
+          )
         ),
       };
     case "won":
       return {
-        status: "value",
-        value: { index: decision.index, value: value(decision.index) },
+        resume: new StepResult({ index: decision.index, value: value(decision.index) }),
       };
     case "failed":
-      return {
-        status: "threw",
-        err: new WorkflowRaceError(stepKey, states.map((_, i) => error(i))),
-      };
+      return { throw: new WorkflowRaceError(stepKey, states.map((_, i) => error(i))) };
     case "cancelled":
-      return { status: "threw", err: decision.err };
+      return { throw: decision.err };
   }
 }
 
-/** The suspension with the earliest wake time, or the first if none has one. */
+/**
+ * The suspension of a combinator whose branches suspended. The runner reads
+ * only `wakeAt`, so this is a delay at the earliest wake time, or the first
+ * suspension if none has a wake time.
+ */
 function earliestWake(states: readonly BranchState[]): StepResponse {
-  let earliest: (StepResponse & { wakeAt?: number }) | undefined;
-  for (const state of states) {
-    if (state.status !== "suspended") continue;
-    const response = state.response as StepResponse & { wakeAt?: number };
-    if (
-      !earliest ||
-      (response.wakeAt !== undefined &&
-        (earliest.wakeAt === undefined || response.wakeAt < earliest.wakeAt))
-    ) {
-      earliest = response;
-    }
-  }
-  if (!earliest) throw new Error("A combinator suspended without a suspended branch");
-  return earliest;
+  const suspended = states.flatMap((state) =>
+    state.status === "suspended" ? [state.response as StepResponse & { wakeAt?: number }] : []
+  );
+  if (suspended.length === 0) throw new Error("A combinator suspended without a suspended branch");
+  const wakeTimes = suspended.flatMap(({ wakeAt }) => (wakeAt === undefined ? [] : [wakeAt]));
+  return wakeTimes.length > 0 ? new StepDelay(Math.min(...wakeTimes)) : suspended[0]!;
 }
 
 export const createWorkflow = workflow;

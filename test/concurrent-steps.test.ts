@@ -349,6 +349,20 @@ const router = {
     yield* step.delay("after", MINUTE);
     return first.index;
   }),
+  "loser-key-after-caught-error": workflow(async function* (step) {
+    yield* step.race("first", [
+      step.delay("deadline", MINUTE),
+      (async function* () {
+        try {
+          yield* step.run("a1", () => fail("a1"));
+        } catch {}
+        yield* step.run("K", () => work("K", "loser"));
+        yield* step.delay("long", DAY);
+      })(),
+    ]);
+    yield* step.delay("after", MINUTE);
+    return yield* step.run("K", () => work("K-after", "after"));
+  }),
   "nested-loser-race": workflow(async function* (step) {
     const first = yield* step.race("first", [
       step.race("inner", [step.run("a", () => work("a", "a")), step.delay("d", DAY)]),
@@ -946,7 +960,7 @@ describe.each(runtimes)("concurrent steps on $name", ({ create }) => {
       expect((result as { error: Error }).error.message).toMatch(/unique cache key/);
     });
 
-    test("a losing branch whose running step fails after the race settles runs no catch or finally block", async () => {
+    test("a losing branch whose running step fails after the race settles runs its catch and finally blocks", async () => {
       const slow = closeGate("slow-fail");
       await admit("loser-fails-late");
       const lease = (await claim())!;
@@ -958,7 +972,19 @@ describe.each(runtimes)("concurrent steps on $name", ({ create }) => {
       expect(await readStep("slow-fail")).toMatchObject({ type: "step-error", done: true });
       advance(MINUTE);
       expect(await deliver()).toEqual({ status: "completed", result: 0 });
-      expect(ran.sort()).toEqual(["fast", "slow-fail"]);
+      expect(ran.sort()).toEqual(["catch", "catch", "fast", "finally", "finally", "slow-fail"]);
+    });
+
+    test("replay reaches the keys a losing branch reached after it caught a step error", async () => {
+      await admit("loser-key-after-caught-error");
+      expect(await deliver()).toEqual({ status: "suspended", wakeAt: START + MINUTE });
+      expect(await readStep("K")).toMatchObject({ result: "loser" });
+      advance(MINUTE);
+      expect(await deliver()).toEqual({ status: "suspended", wakeAt: START + 2 * MINUTE });
+      advance(MINUTE);
+      const result = await deliver();
+      expect((result as { error: Error }).error.message).toMatch(/unique cache key/);
+      expect(ran).not.toContain("K-after");
     });
 
     test("a nested combinator in a losing branch records no decision", async () => {

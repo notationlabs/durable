@@ -110,8 +110,8 @@ export class Limiter {
 /**
  * Orders a combinator's decision write after the runtime calls already in
  * flight, and runtime calls made after it behind it. A runtime call made in
- * shared mode checks for abandonment first, so no waiter is registered after
- * the decision write deleted the waiters of its abandoned branches.
+ * shared mode checks first whether its branch has stopped, so no waiter is
+ * registered after the decision write deleted the waiters of stopped branches.
  */
 export class DecisionLock {
   private readers = 0;
@@ -148,6 +148,8 @@ export class Combinator {
   decision: BranchesDecision | undefined;
   /** An error that ends the delivery, raised by one of the branches. */
   fatal: { err: unknown } | undefined;
+  /** Step keys its branches and their nested branches reached. */
+  readonly keys: string[] = [];
   readonly limiter: Limiter;
 
   constructor(
@@ -159,20 +161,6 @@ export class Combinator {
     this.limiter = new Limiter(concurrency);
   }
 
-  /**
-   * Whether the outcome no longer uses branch `index`: a losing race branch,
-   * an unfinished branch after a fail-fast failure, or any branch once a
-   * branch failed with an error that ends the delivery.
-   */
-  abandons(index: number): boolean {
-    if (this.fatal) return true;
-    const { decision } = this;
-    if (decision?.decision === "won" || decision?.decision === "rejected") {
-      return decision.index !== index;
-    }
-    return false;
-  }
-
   /** Whether its branches must start no new work. */
   get stopsBranches(): boolean {
     if (this.fatal) return true;
@@ -182,23 +170,10 @@ export class Combinator {
 
 /** The workflow itself, or one branch of a combinator. */
 export class DrivenBranch {
-  /** Step keys this branch and its nested branches reached. */
-  readonly keys: string[] = [];
   private holding = 0;
   private acquired: Promise<void> = Promise.resolve();
 
-  constructor(
-    readonly parent?: Combinator,
-    readonly index = 0
-  ) {}
-
-  /** Whether a combinator above this branch no longer uses its outcome. */
-  get abandoned(): boolean {
-    for (let branch: DrivenBranch | undefined = this; branch?.parent; branch = branch.parent.owner) {
-      if (branch.parent.abandons(branch.index)) return true;
-    }
-    return false;
-  }
+  constructor(readonly parent?: Combinator) {}
 
   /**
    * Whether a combinator above this branch settled with a decision other than
@@ -214,8 +189,8 @@ export class DrivenBranch {
   }
 
   reach(stepKey: string) {
-    for (let branch: DrivenBranch | undefined = this; branch?.parent; branch = branch.parent.owner) {
-      branch.keys.push(stepKey);
+    for (let combinator = this.parent; combinator; combinator = combinator.owner.parent) {
+      combinator.keys.push(stepKey);
     }
   }
 
@@ -248,7 +223,7 @@ type Parked = {
  * Delivers a pending cancellation to every unfinished branch at once. Each
  * branch that reaches an unfinished step parks there. When no branch is still
  * replaying, `deliver` records the throw at every parked step in one fenced
- * write, and each parked branch resumes with the error.
+ * write, and every parked branch resumes with the same error.
  */
 export class CancellationBarrier {
   /** Branches that are replaying or running, and combinator decision writes. */
@@ -260,7 +235,7 @@ export class CancellationBarrier {
     private readonly deliver: (
       request: ExecutionCancellation,
       parked: readonly { branch: DrivenBranch; stepKey: string; stepAttempt: number }[]
-    ) => Promise<unknown[]>
+    ) => Promise<unknown>
   ) {}
 
   park(branch: DrivenBranch, stepKey: string, stepAttempt: number) {
@@ -279,7 +254,7 @@ export class CancellationBarrier {
     if (this.pending && this.running === 0 && this.parked.length > 0) this.flush();
   }
 
-  /** Resumes the parked branches that are now abandoned, without the error. */
+  /** Resumes the parked branches that are now stopped, without the error. */
   releaseStopped() {
     const stopped = this.parked.filter(({ branch }) => branch.stopped);
     if (stopped.length === 0) return;
@@ -295,7 +270,7 @@ export class CancellationBarrier {
     this.parked = [];
     this.enter(parked.length);
     this.deliver(request, parked).then(
-      (errors) => parked.forEach(({ resolve }, i) => resolve(errors[i])),
+      (err) => parked.forEach(({ resolve }) => resolve(err)),
       (err) => parked.forEach(({ reject }) => reject(err))
     );
   }

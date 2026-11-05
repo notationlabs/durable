@@ -123,9 +123,9 @@ Suppose the payment and the deadline both land in the same delivery. If timing p
 
 A losing race branch, and an unfinished branch of a `fail-fast` `step.all` after a failure, are abandoned:
 
-- **No new steps.** The branch replays its recorded steps and stops at the first step that needs new work. Its generator is not resumed past that step, so its `finally` blocks do not run.
+- **No new steps.** The branch replays its recorded steps, values and errors alike, and stops at the first step that needs new work. Its generator is not resumed past that step, so its `finally` blocks do not run.
 - **Waiters deleted.** The write that records the decision deletes the store, effect and join waiters of every step the abandoned branches reached. A payment at minute thirty-one does not wake `place-order`. The losing delay's wake time is not requested again.
-- **In-flight functions finish.** A `step.run` function that is already running is not interrupted. Its result is recorded but not used, and the combinator returns only after it is recorded. The delivery therefore acknowledges only after every write from an abandoned branch. If the function returned a value, the branch resumes with it, as it would on replay, and stops at its next step. If the function failed, the branch stops there, and its `catch` and `finally` blocks do not run.
+- **In-flight functions finish.** A `step.run` function that is already running is not interrupted. Its result is recorded but not used, and the combinator returns only after it is recorded. The delivery therefore acknowledges only after every write from an abandoned branch. The branch resumes with the function's value or error, as it would on replay, and stops at its next step. If the function failed, the branch's `catch` and `finally` blocks therefore run up to that step.
 - **Nested combinators record nothing.** A `step.all` or `step.race` inside an abandoned branch records no decision. Replay still drives its branches through their recorded steps.
 - **Between steps.** The driver checks for abandonment between steps. Workflow code that an abandoned branch runs between two steps is not interrupted.
 

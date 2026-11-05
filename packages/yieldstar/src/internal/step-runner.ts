@@ -389,7 +389,7 @@ export function createStepRunner(params: {
    * first branch to succeed. A failed branch does not end the race; if every
    * branch fails, throws `WorkflowRaceError`. The winner is recorded under
    * `stepKey`, so replay returns the same winner. The other branches are
-   * abandoned: they start no new steps and are not resumed.
+   * abandoned: they replay their recorded steps and start no new steps.
    */
   function race<const B extends readonly Branch<unknown>[]>(
     stepKey: string,
