@@ -289,6 +289,31 @@ for (const backendKind of backendKinds) {
         expect(requests[0]).not.toHaveProperty("load");
       });
 
+      test("/list treats null fields as absent", async () => {
+        const { runtime } = openBackend(backendKind);
+        await admit(runtime, "a");
+        await admit(runtime, "b");
+        const requests: ObservationRequest[] = [];
+        const { url } = serveRoutes(runtime, {
+          observationMiddleware: [
+            async (_req, request) => {
+              requests.push(request);
+              return { allow: true };
+            },
+          ],
+        });
+        const response = await post(url, "list", {
+          workflowId: null,
+          status: null,
+          cursor: null,
+          limit: null,
+        });
+        expect(response.status).toBe(200);
+        const page = (await response.json()) as { executions: { executionId: string }[] };
+        expect(page.executions.map((view) => view.executionId)).toEqual(["b", "a"]);
+        expect(requests).toEqual([{ operation: "list", filter: {} }]);
+      });
+
       test("middleware runs in array order, and the first denial wins", async () => {
         const { runtime } = openBackend(backendKind);
         const calls: string[] = [];

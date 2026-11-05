@@ -6,6 +6,7 @@ import type {
   ExecutionObserver,
   ExecutionRecord,
   ExecutionStatus,
+  PreparedExecutionListRequest,
   WorkflowInvoker,
 } from "@yieldstar/core";
 import {
@@ -263,15 +264,16 @@ export const createListHandler = (params: ObservationParams): RouteHandler =>
       for (const key of ["workflowId", "status", "cursor", "limit"] as const) {
         if (body[key] !== undefined) (request as Record<string, unknown>)[key] = body[key];
       }
+      let prepared: PreparedExecutionListRequest;
       try {
-        prepareExecutionListRequest(request);
+        prepared = prepareExecutionListRequest(request);
       } catch (err) {
         if (!(err instanceof ExecutionListRequestError)) throw err;
         return errorResponse(400, "INVALID_LIST_REQUEST", err.message);
       }
       const filter: { workflowId?: string; status?: ExecutionStatus } = {};
-      if (request.workflowId !== undefined) filter.workflowId = request.workflowId;
-      if (request.status !== undefined) filter.status = request.status;
+      if (prepared.workflowId !== undefined) filter.workflowId = prepared.workflowId;
+      if (prepared.status !== undefined) filter.status = prepared.status;
       return { request: { operation: "list", filter }, value: request };
     },
     async (_req, request) => durableResponse(await params.observer.list(request), 200)

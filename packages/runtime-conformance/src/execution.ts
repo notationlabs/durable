@@ -2634,6 +2634,14 @@ export function registerExecutionClientConformance({
         });
       }
 
+      it("treats a null workflowId, status, cursor or limit as absent", async ({ runtime }) => {
+        for (const id of ["a", "b"]) await admit(runtime, id);
+        const request = { workflowId: null, status: null, cursor: null, limit: null };
+        expect(await listIds(runtime, request as unknown as ExecutionListRequest)).toEqual({
+          ids: ["b", "a"],
+        });
+      });
+
       itAfterRestart("resumes a cursor after a restart", async ({ runtime, restart }) => {
         for (const id of ["a", "b", "c"]) await admit(runtime, id);
         const first = await listIds(runtime, { limit: 2 });

@@ -28,8 +28,8 @@ export type PreparedExecutionListRequest = {
 
 /**
  * An execution with the admission sequence its adapter assigned. Adapters
- * assign each new execution a sequence greater than every earlier one, in the
- * same atomic write as its insert.
+ * assign each new execution a sequence greater than every earlier one,
+ * including executions since deleted, in the same atomic write as its insert.
  */
 export type SequencedExecutionState = {
   state: ExecutionState;
@@ -38,7 +38,8 @@ export type SequencedExecutionState = {
 
 /**
  * Validates a list request and decodes its cursor. A limit above
- * `MAX_EXECUTION_LIST_LIMIT` is lowered to it.
+ * `MAX_EXECUTION_LIST_LIMIT` is lowered to it. A `null` field is treated as
+ * absent, since JSON clients send `null` for a field they leave out.
  * @throws {ExecutionListRequestError} for an invalid filter, limit or cursor
  */
 export function prepareExecutionListRequest(
@@ -48,7 +49,11 @@ export function prepareExecutionListRequest(
   if (!isPlainObject(request)) {
     throw new ExecutionListRequestError("A list request must be an object");
   }
-  const { workflowId, status, cursor, limit } = request as Record<string, unknown>;
+  const fields = request as Record<string, unknown>;
+  const workflowId = fields.workflowId ?? undefined;
+  const status = fields.status ?? undefined;
+  const cursor = fields.cursor ?? undefined;
+  const limit = fields.limit ?? undefined;
   if (workflowId !== undefined && typeof workflowId !== "string") {
     throw new ExecutionListRequestError("workflowId must be a string");
   }

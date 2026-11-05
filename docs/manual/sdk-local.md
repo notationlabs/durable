@@ -158,7 +158,7 @@ The order is the order in which the backend admitted the executions, not `admitt
 - Every matching execution admitted before the first page appears once. Executions admitted after the first page do not appear on later pages.
 - `status` is compared with the status at the runtime clock's current time, so `running` matches executions with a live lease. An execution whose status changes while you page through a `status` filter may appear or disappear on later pages.
 
-`list` throws `ExecutionListRequestError` (`code: "INVALID_LIST_REQUEST"`) for a `workflowId` that is not a string, a `limit` that is not a positive integer, an unknown `status`, or a `cursor` that `list` did not return.
+`list` throws `ExecutionListRequestError` (`code: "INVALID_LIST_REQUEST"`) for a `workflowId` that is not a string, a `limit` that is not a positive integer, an unknown `status`, or a `cursor` that `list` did not return. A field set to `null` is treated as absent.
 
 ## Execution views
 
