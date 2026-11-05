@@ -544,9 +544,7 @@ export type CancellationRequest = {
   force: boolean;
 };
 
-/**
- * Validates a cancel request. Adapters call this before touching storage.
- */
+/** Validates a cancel request. Adapters call it before touching storage. */
 export function prepareExecutionCancel(request: {
   executionId: string;
   reason?: string;
