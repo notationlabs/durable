@@ -32,9 +32,11 @@ import {
   Combinator,
   DecisionLock,
   DrivenBranch,
+  PatchStepKey,
   STOPPED,
   StepBranches,
   StepBranchesDecision,
+  StepSchemaChanged,
   type BranchesDecision,
 } from "../internal/branches";
 import {
@@ -51,13 +53,16 @@ import {
   WorkflowResult,
   InfrastructureError,
   LeaseLostError,
+  ReplayDivergenceError,
   StepConflictError,
   WorkflowCancelledError,
   WorkflowRaceError,
+  WorkflowReplayError,
   isLeaseLost,
   WORKFLOW_RESULT_STEP_KEY,
   type ExecutionCancellation,
   type HeapRecord,
+  type WorkflowGeneratorParams,
 } from "@yieldstar/core";
 
 export type WorkflowFn<
@@ -84,7 +89,16 @@ export type DurableWorkflowFn<Params, Result> = IfDurable<
     (step: any, event: any, logger: any) => AsyncGenerator<any, Durable<Result>>
   >;
 
-/**
+export type WorkflowOptions = {
+  /**
+   * A non-negative integer. The first delivery of each execution records it,
+   * and every later delivery exposes the recorded version as
+   * `event.workflowVersion`, whatever the code declares by then.
+   * @default 1
+   */
+  version: number;
+};
+
 /**
  * Wraps a workflow function in a generator that advances its steps and yields
  * control to the executor whenever a step needs async work.
@@ -96,12 +110,42 @@ export function workflow<
 >(
   workflowFn: WorkflowFn<Params, Result, Context> &
     DurableWorkflowFn<Params, Result>
-): WorkflowGenerator<Params, Result, Context> {
+): WorkflowGenerator<Params, Result, Context>;
+export function workflow<
+  Params extends EventParams,
+  Result,
+  Context extends EventContext
+>(
+  options: WorkflowOptions,
+  workflowFn: WorkflowFn<Params, Result, Context> &
+    DurableWorkflowFn<Params, Result>
+): WorkflowGenerator<Params, Result, Context>;
+export function workflow(
+  arg1: WorkflowOptions | WorkflowFn<any, any, any>,
+  arg2?: WorkflowFn<any, any, any>
+): WorkflowGenerator<any, any, any> {
+  const workflowFn = typeof arg1 === "function" ? arg1 : arg2;
+  if (typeof workflowFn !== "function") {
+    throw new TypeError("workflow requires a workflow function");
+  }
+  const version = typeof arg1 === "function" ? 1 : arg1?.version;
+  if (typeof version !== "number" || !Number.isSafeInteger(version) || version < 0) {
+    throw new TypeError("workflow version must be a non-negative integer");
+  }
+  return Object.assign(createWorkflowGenerator(workflowFn), { workflowVersion: version });
+}
+
+function createWorkflowGenerator<
+  Params extends EventParams,
+  Result,
+  Context extends EventContext
+>(workflowFn: WorkflowFn<Params, Result, Context>) {
   return async function* workflowGenerator({
     event,
     lease,
     signal,
     cancellation,
+    requireStepKeys = false,
     heapClient,
     storeClient,
     executionClient,
@@ -109,7 +153,11 @@ export function workflow<
     joinClient,
     clock,
     logger,
-  }) {
+  }: WorkflowGeneratorParams<Params, Context>): AsyncGenerator<
+    StepResponse,
+    WorkflowResult<Result>,
+    StepResponse
+  > {
     const stepRunner = createStepRunner({ event, clock });
     const workflowIterator = workflowFn(stepRunner, event, logger);
     const { executionId } = event;
@@ -118,9 +166,51 @@ export function workflow<
       executions: executionClient,
       joins: joinClient,
     };
-    // Shared by every branch, so a key repeated across branches is rejected.
+    const { workflowVersion } = event;
+    // The keys this delivery requested, shared by every branch, so a key
+    // repeated across branches is rejected. A recorded step is consumed once
+    // its key is in here.
     const stepKeys = new Set<string>();
+    // The kind each requested key was requested as, stored with its records.
+    const stepKinds = new Map<string, string>();
     const lock = new DecisionLock();
+    // Every step the history recorded before this delivery. Records this
+    // delivery writes are for keys it requested.
+    const recordedSteps = new Set(
+      (await infrastructure(() => heapClient.listSteps({ executionId }))).map(
+        ({ stepKey }) => stepKey
+      )
+    );
+    // Set once replay diverges. No fenced write is made after it.
+    let divergence: ReplayDivergenceError | undefined;
+
+    function diverge(code: ReplayDivergenceError["code"], message: string, stepKey?: string) {
+      divergence ??= new ReplayDivergenceError(code, message, stepKey);
+      return divergence;
+    }
+
+    function firstUnconsumed(): string | undefined {
+      for (const stepKey of recordedSteps) {
+        if (!stepKeys.has(stepKey)) return stepKey;
+      }
+      return undefined;
+    }
+
+    /**
+     * Ends the delivery as diverged when a recorded step has not been
+     * consumed. `stepKey` names the step that would have run, if any.
+     */
+    function assertConsumed(stepKey?: string) {
+      const unconsumed = firstUnconsumed();
+      if (unconsumed === undefined) return;
+      throw diverge(
+        "NONDETERMINISTIC_REPLAY",
+        stepKey === undefined
+          ? `Replay did not reach recorded step "${unconsumed}"`
+          : `Step "${stepKey}" would run, but replay did not reach recorded step "${unconsumed}"`,
+        stepKey
+      );
+    }
 
     /** Writes one attempt of a step. A lost lease or a conflicting record ends the delivery. */
     async function writeStep(params: {
@@ -130,9 +220,16 @@ export function workflow<
       stepResponseJson: string;
       deleteWaitersOf?: readonly string[];
     }) {
+      if (divergence) throw divergence;
       stopIfAborted(signal);
+      const stepKind = stepKinds.get(params.stepKey);
       const written = await infrastructure(() =>
-        heapClient.writeStep({ lease, ...params })
+        heapClient.writeStep({
+          lease,
+          ...params,
+          ...(stepKind !== undefined ? { stepKind } : {}),
+          workflowVersion,
+        })
       );
       if (isLeaseLost(written)) {
         throw new InfrastructureError(new LeaseLostError(executionId));
@@ -185,15 +282,19 @@ export function workflow<
           stepAttempt,
           stepResponseJson: cancelled.json,
         })),
-      ];
+      ].map((step) => {
+        const stepKind = stepKinds.get(step.stepKey);
+        return stepKind !== undefined ? { ...step, stepKind } : step;
+      });
       // Set before the write, so no combinator settles another way meanwhile.
       // A failed write ends the delivery.
       for (const combinator of combinators) {
         combinator.decision = (cancelled.response as StepBranchesDecision).decision;
       }
+      if (divergence) throw divergence;
       stopIfAborted(signal);
       const written = await infrastructure(() =>
-        heapClient.recordCancellation({ lease, steps })
+        heapClient.recordCancellation({ lease, steps, workflowVersion })
       );
       if (isLeaseLost(written)) {
         throw new InfrastructureError(new LeaseLostError(executionId));
@@ -261,15 +362,53 @@ export function workflow<
         if (iteratorResult.done) {
           return { status: "returned", value: iteratorResult.value };
         }
+        if (iteratorResult.value instanceof StepSchemaChanged) {
+          throw diverge(
+            "STEP_SCHEMA_CHANGED",
+            iteratorResult.value.message,
+            iteratorResult.value.stepKey
+          );
+        }
         if (!(iteratorResult.value instanceof StepKey)) {
           throw new Error("Step runners must yield a StepKey object");
         }
-        const stepKey = iteratorResult.value.key;
-        const isCombinator = iteratorResult.value instanceof BranchesStepKey;
+        const requested = iteratorResult.value;
+        const stepKey = requested.key;
+        const isCombinator = requested instanceof BranchesStepKey;
+        if (requested instanceof PatchStepKey && branch.parent) {
+          // Whether a branch passed the patch point depends on how branches
+          // interleave, so a patch is rejected inside any branch. A repeat
+          // of the ID in another branch throws the same error unrecorded.
+          const err = new WorkflowReplayError(
+            "PATCH_IN_COMBINATOR",
+            `step.patched("${requested.patchId}") cannot be called inside a step.all or step.race branch`,
+            stepKey
+          );
+          if (!stepKeys.has(stepKey)) {
+            stepKeys.add(stepKey);
+            stepKinds.set(stepKey, "patched");
+            branch.reach(stepKey);
+            const cached = await infrastructure(() =>
+              heapClient.readStep({ executionId, stepKey })
+            );
+            if (!cached && !branch.stopped) {
+              await writeStep({
+                stepKey,
+                stepAttempt: 0,
+                done: true,
+                stepResponseJson: encodeStepRecord(new StepError(err), stepKey).json,
+              });
+            }
+          }
+          if (branch.abandoned || branch.stopped) return { status: "stopped" };
+          nextIteratorResult = await throwInto(err);
+          continue;
+        }
         if (stepKeys.has(stepKey)) {
           throw new Error("Each step in a loop must have a unique cache key.");
         }
         stepKeys.add(stepKey);
+        if (requested.kind !== undefined) stepKinds.set(stepKey, requested.kind);
         branch.reach(stepKey);
 
         let cached = await infrastructure(() =>
@@ -279,11 +418,45 @@ export function workflow<
           })
         );
 
+        const recordedKind = cached?.meta.kind;
+        if (recordedKind !== undefined && requested.kind !== undefined && recordedKind !== requested.kind) {
+          throw diverge(
+            "NONDETERMINISTIC_REPLAY",
+            `Step "${stepKey}" is recorded as a ${recordedKind} step, but replay requested it as a ${requested.kind} step`,
+            stepKey
+          );
+        }
+
+        if (requested instanceof PatchStepKey) {
+          // A marker is recorded only at the edge of the history, so the
+          // check below is all a patch needs.
+          let applies = cached !== null;
+          if (!cached && firstUnconsumed() === undefined) {
+            await writeStep({
+              stepKey,
+              stepAttempt: 0,
+              done: true,
+              stepResponseJson: encodeStepRecord(new StepResult(true), stepKey).json,
+            });
+            applies = true;
+          }
+          resumeWith = new StepResult(applies);
+          continue;
+        }
+
         if (cached?.meta) {
           stepAttempt = cached.meta.attempt + 1;
         }
 
         const recorded = cached ? decodeStepRecord(cached.stepResponseJson) : null;
+
+        // Outside every combinator, steps run one at a time, so a step about
+        // to do new work must find the whole history consumed. Inside a
+        // combinator, branches interleave differently on each delivery, and
+        // the check waits for the end of the delivery.
+        if (!branch.parent && !isCombinator && isUnfinishedStep(cached, recorded, clock())) {
+          assertConsumed(stepKey);
+        }
 
         let thrown: { err: unknown } | undefined;
         if (cached?.meta.done && recorded instanceof StepCancelled) {
@@ -301,6 +474,27 @@ export function workflow<
             const err = await barrier.park(branch, stepKey, stepAttempt);
             if (err === STOPPED) return { status: "stopped" };
             thrown = { err };
+          }
+        }
+        if (!thrown && !cached && requested.keyless) {
+          if (requireStepKeys) {
+            const record = encodeStepRecord(
+              new StepError(
+                new WorkflowReplayError(
+                  "STEP_KEY_REQUIRED",
+                  `A step without a key has no record, and the runtime requires step keys. Pass an explicit key to the step at this call site.`,
+                  stepKey
+                )
+              ),
+              stepKey
+            );
+            await writeStep({ stepKey, stepAttempt, done: true, stepResponseJson: record.json });
+            thrown = { err: (record.response as StepError).err };
+          } else {
+            logger.warn(
+              { executionId, stepKey },
+              "Deprecated: a step without a key takes its key from its call site, so editing the workflow file can make replay run it again. Pass an explicit key."
+            );
           }
         }
         if (thrown) {
@@ -615,7 +809,15 @@ export function workflow<
             (decision.decision !== "cancelled" ||
               states.every((state) => state.status === "returned" || state.status === "threw"))
           ) {
-            settle(() => applyDecision(stepKey, decision, states));
+            settle(() =>
+              applyDecision(stepKey, decision, states, () =>
+                diverge(
+                  "NONDETERMINISTIC_REPLAY",
+                  `Step "${stepKey}" no longer reaches its recorded outcome on replay`,
+                  stepKey
+                )
+              )
+            );
             return;
           }
           if (owner.stopped) {
@@ -684,6 +886,9 @@ export function workflow<
 
     async function recordWorkflowResult(value: unknown) {
       const stepKey = WORKFLOW_RESULT_STEP_KEY;
+      stepKeys.add(stepKey);
+      stepKinds.set(stepKey, "result");
+      assertConsumed();
       const cached = await infrastructure(() =>
         heapClient.readStep({ executionId, stepKey })
       );
@@ -703,12 +908,19 @@ export function workflow<
     try {
       outcome = await drive(workflowIterator, new DrivenBranch());
     } catch (err) {
-      throw err instanceof WorkflowThrew ? err.err : err;
+      const thrown = err instanceof WorkflowThrew ? err.err : err;
+      // A failed or cancelled outcome is terminal, so the whole history must
+      // be consumed before it is recorded.
+      if (!InfrastructureError.is(thrown) && !ReplayDivergenceError.is(thrown)) {
+        assertConsumed();
+      }
+      throw thrown;
     }
     switch (outcome.status) {
       case "returned":
         return await recordWorkflowResult(outcome.value);
       case "suspended":
+        assertConsumed();
         yield outcome.response;
         throw new Error("A suspended delivery cannot be resumed");
       case "stopped":
@@ -766,16 +978,15 @@ function decide(
 
 /**
  * The combinator's value or error under `decision`, read from what its
- * branches returned or threw. Throws if the branches no longer reach the
- * recorded outcome, as when workflow code changed.
+ * branches returned or threw. Throws `diverged()` if the branches no longer
+ * reach the recorded outcome, as when workflow code changed.
  */
 function applyDecision(
   stepKey: string,
   decision: BranchesDecision,
-  states: readonly BranchState[]
+  states: readonly BranchState[],
+  diverged: () => Error
 ): BranchesOutcome {
-  const diverged = () =>
-    new Error(`Step "${stepKey}" no longer reaches its recorded outcome on replay`);
   const value = (i: number) => {
     const state = states[i];
     if (state?.status !== "returned") throw diverged();

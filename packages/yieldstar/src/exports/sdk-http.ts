@@ -1,6 +1,7 @@
 import type {
   CancelOptions,
   CancelResult,
+  ClearDivergenceResult,
   EventParamsOf,
   ExecutionAdmissionErrorCode,
   ExecutionControl,
@@ -66,7 +67,7 @@ export function createHttpSdkFactory<W extends WorkflowRouter>() {
     };
 
     /**
-     * Decodes a `/poll`, `/wait` or `/cancel` response. Only a `404` with code
+     * Decodes a `/poll`, `/wait`, `/cancel` or `/clear-divergence` response. Only a `404` with code
      * `EXECUTION_NOT_FOUND` means the execution does not exist; any other
      * `404`, such as one from a wrong base path, throws.
      */
@@ -218,6 +219,23 @@ export function createHttpSdkFactory<W extends WorkflowRouter>() {
           JSON.stringify({ executionId, ...prepared.request })
         );
         return decodeObservation<CancelResult>(res);
+      },
+
+      /**
+       * Removes a diverged execution's `divergence` through the
+       * clear-divergence route, and makes it due now. Resolves with
+       * `not-diverged` when there is nothing to clear, and with `undefined`
+       * for an unknown ID.
+       * @throws {TypeError} before any request for an empty ID
+       * @throws {HttpRouteError} for an error response other than `404`
+       * `EXECUTION_NOT_FOUND`
+       */
+      async clearDivergence(executionId: string): Promise<ClearDivergenceResult | undefined> {
+        if (typeof executionId !== "string" || executionId === "") {
+          throw new TypeError("executionId must be a non-empty string");
+        }
+        const res = await post("clear-divergence", JSON.stringify({ executionId }));
+        return decodeObservation<ClearDivergenceResult>(res);
       },
 
       /**

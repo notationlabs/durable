@@ -58,7 +58,9 @@ import {
 import type { WorkflowEvent } from "@yieldstar/core";
 import {
   BranchesStepKey,
+  PatchStepKey,
   StepBranches,
+  StepSchemaChanged,
   type AllOptions,
   type Branch,
   type BranchResults,
@@ -402,7 +404,34 @@ export function createStepRunner(params: {
     ) as AsyncGenerator<StepResponse, RaceResult<B>, any>;
   }
 
-  return { run, delay: createDelay(clock), poll, store, start, effect, join, call, all, race };
+  /**
+   * Whether this execution reached this point after the patch `patchId` was
+   * deployed. Returns `true` when a marker for `patchId` is recorded. Returns
+   * `false`, and records nothing, when the history has recorded steps that
+   * replay has not reached yet, since the original run passed this point
+   * without the patch. Otherwise replay is at the edge of the history: it
+   * records a marker and returns `true`. Inside a `step.all` or `step.race`
+   * branch it records and throws `WorkflowReplayError`
+   * (`PATCH_IN_COMBINATOR`).
+   */
+  function patched(patchId: string): AsyncGenerator<StepResponse, boolean, any> {
+    assertNonEmpty("step.patched", "patch ID", patchId);
+    return patchedStep(patchId);
+  }
+
+  return {
+    run,
+    delay: createDelay(clock),
+    poll,
+    store,
+    start,
+    effect,
+    join,
+    call,
+    all,
+    race,
+    patched,
+  };
 }
 
 function assertBranches(method: string, branches: unknown) {
@@ -424,11 +453,16 @@ function assertBranches(method: string, branches: unknown) {
   }
 }
 
+async function* patchedStep(patchId: string): AsyncGenerator<StepResponse, boolean, any> {
+  const recorded: StepResult = yield new PatchStepKey(patchId);
+  return recorded.result;
+}
+
 async function* branchesStep(
   stepKey: string,
   request: StepBranches
 ): AsyncGenerator<StepResponse, any, any> {
-  yield new BranchesStepKey(stepKey);
+  yield new BranchesStepKey(stepKey, { kind: request.request.combinator });
   yield new StepCacheCheck();
   const outcome: StepResult = yield request;
   return outcome.result;
@@ -487,7 +521,7 @@ async function* joinStep(params: {
   const { stepKey, event, clock, target } = params;
   const timed = params.deadline !== undefined;
 
-  yield new StepKey(stepKey);
+  yield new StepKey(stepKey, { kind: "start" in target ? "call" : "join" });
 
   const cached = yield new UnfinishedCacheCheck();
 
@@ -638,7 +672,7 @@ async function* effectStep(
   key: string,
   descriptor: EffectDescriptor<unknown, unknown>
 ): AsyncGenerator<StepResponse, unknown, any> {
-  yield new StepKey(key);
+  yield new StepKey(key, { kind: "effect" });
 
   const cached = yield new StepCacheCheck();
 
@@ -743,7 +777,7 @@ async function* startStep(
   key: string,
   request: ExecutionStartRequest
 ): AsyncGenerator<StepResponse, { executionId: string }, any> {
-  yield new StepKey(key);
+  yield new StepKey(key, { kind: "start" });
 
   const cached = yield new StepCacheCheck();
 
@@ -811,7 +845,8 @@ function createWorkflowStore<T>(params: {
       return runtimeStep(
         stepKey ?? getCallSiteHash(this.get),
         async ({ stores }) =>
-          (await stores.getStore({ definition, id })) as StoreSnapshot<T>
+          (await stores.getStore({ definition, id })) as StoreSnapshot<T>,
+        { kind: "store.get", keyless: stepKey === undefined }
       );
     },
     select<R>(stepKey: string, selector: StoreSelector<T, R>) {
@@ -821,7 +856,7 @@ function createWorkflowStore<T>(params: {
         // corrupt shared state (consistent with when, which throws via
         // its tracking proxy).
         return workflowCallback(selector)(cloneStoreState(snapshot.state as T));
-      });
+      }, { kind: "store.select" });
     },
     update(stepKey, updater) {
       return runtimeStep(
@@ -835,7 +870,8 @@ function createWorkflowStore<T>(params: {
             // after a crash, the store's applied-steps ledger returns the
             // recorded result instead of re-running the updater.
             stepId: { executionId: event.executionId, stepKey },
-          })) as StoreUpdateResult<T>
+          })) as StoreUpdateResult<T>,
+        { kind: "store.update" }
       );
     },
     updateFrom(stepKey, snapshot, updater) {
@@ -848,7 +884,8 @@ function createWorkflowStore<T>(params: {
             snapshot,
             updater: workflowCallback(updater, assertSynchronousUpdater) as any,
             stepId: { executionId: event.executionId, stepKey },
-          })) as StoreUpdateFromResult<T>
+          })) as StoreUpdateFromResult<T>,
+        { kind: "store.updateFrom" }
       );
     },
     deleteFrom(stepKey, snapshot) {
@@ -858,7 +895,8 @@ function createWorkflowStore<T>(params: {
           id,
           snapshot,
           stepId: { executionId: event.executionId, stepKey },
-        })
+        }),
+        { kind: "store.deleteFrom" }
       );
     },
     when<R>(
@@ -905,6 +943,7 @@ function createWorkflowStore<T>(params: {
         event,
         stepKey,
         selector,
+        keyless: typeof arg1 !== "string",
       });
     },
     take<R>(
@@ -988,9 +1027,12 @@ function run(
     options = arg2 as StepRunOptions<StandardSchemaV1> | undefined;
   }
 
-  if (!key) key = getCallSiteHash(run);
-
-  return durableStep(key, fn, options?.schema);
+  if (key) return durableStep(new StepKey(key, { kind: "run" }), fn, options?.schema);
+  return durableStep(
+    new StepKey(getCallSiteHash(run), { kind: "run", keyless: true }),
+    fn,
+    options?.schema
+  );
 }
 
 type StepSchemaInput<S extends StandardSchemaV1> = Durable<
@@ -1015,20 +1057,23 @@ function createDelay(clock: () => number) {
       retryInterval = arg1;
     }
 
-    if (!key) key = getCallSiteHash(delay);
-
-    return delayStep(key, retryInterval, clock);
+    if (key) return delayStep(new StepKey(key, { kind: "delay" }), retryInterval, clock);
+    return delayStep(
+      new StepKey(getCallSiteHash(delay), { kind: "delay", keyless: true }),
+      retryInterval,
+      clock
+    );
   }
 
   return delay;
 }
 
 async function* delayStep(
-  key: string,
+  key: StepKey,
   retryInterval: number,
   clock: () => number
 ): AsyncGenerator<any, void, StepDelay> {
-  yield new StepKey(key);
+  yield key;
 
   const cached = yield new StepCacheCheck();
 
@@ -1067,7 +1112,9 @@ function poll(
     predicate = arg2 as PollPredicate;
   }
 
-  if (!key) key  = getCallSiteHash(poll);
+  const stepKey = key
+    ? new StepKey(key, { kind: "poll" })
+    : new StepKey(getCallSiteHash(poll), { kind: "poll", keyless: true });
 
   const task = async () => {
     if (!(await predicate())) {
@@ -1078,15 +1125,16 @@ function poll(
     }
   };
 
-  return run(key, task);
+  return durableStep(stepKey, task, undefined);
 }
 
 async function* durableStep(
-  key: string,
+  stepKey: StepKey,
   fn: () => unknown,
   schema: StandardSchemaV1 | undefined
 ): AsyncGenerator<StepResponse, any, any> {
-  yield new StepKey(key);
+  const { key } = stepKey;
+  yield stepKey;
 
   const cached = yield new StepCacheCheck();
 
@@ -1094,6 +1142,12 @@ async function* durableStep(
     const value = yield* replay(cached);
     if (!schema) return value;
     const validated = await validateStepValue(key, schema, value);
+    if (cached.schema === "accepted" && !validated.ok) {
+      // The history says the value was valid and the new schema disagrees,
+      // so replay has diverged. The driver ends the delivery here.
+      yield new StepSchemaChanged(key, validated.error.message);
+      throw new Error("A diverged step was resumed");
+    }
     if (cached.schema === "rejected" && validated.ok) {
       throw new WorkflowValueError(
         "STEP_SCHEMA_INVALID",
@@ -1201,9 +1255,10 @@ async function* fail(key: string, error: unknown): AsyncGenerator<StepResponse, 
  */
 async function* runtimeStep<T>(
   key: string,
-  call: StepRuntimeCall<T>["call"]
+  call: StepRuntimeCall<T>["call"],
+  options: { kind: string; keyless?: boolean }
 ): AsyncGenerator<StepResponse, T, any> {
-  yield new StepKey(key);
+  yield new StepKey(key, options);
 
   const cached = yield new StepCacheCheck();
 
@@ -1222,10 +1277,11 @@ async function* whenStep<T, R>(params: {
   event: WorkflowEvent;
   stepKey: string;
   selector: StoreSelector<T, R | undefined | null | false>;
+  keyless: boolean;
 }): AsyncGenerator<StepResponse, NonNullable<R>, any> {
   const { stepKey } = params;
 
-  yield new StepKey(stepKey);
+  yield new StepKey(stepKey, { kind: "store.when", keyless: params.keyless });
 
   const cached = yield new StepCacheCheck();
 
@@ -1255,7 +1311,7 @@ async function* timedWhenStep<T, R>(params: {
 }): AsyncGenerator<StepResponse, TimedWhenResult<R>, any> {
   const { stepKey, clock } = params;
 
-  yield new StepKey(stepKey);
+  yield new StepKey(stepKey, { kind: "store.when" });
 
   const cached = yield new UnfinishedCacheCheck();
 
@@ -1349,7 +1405,7 @@ async function* takeStep<T, R>(params: {
 }): AsyncGenerator<StepResponse, NonNullable<R>, any> {
   const { definition, id, event, stepKey, selector, claim } = params;
 
-  yield new StepKey(stepKey);
+  yield new StepKey(stepKey, { kind: "store.take" });
 
   const cached = yield new StepCacheCheck();
 
