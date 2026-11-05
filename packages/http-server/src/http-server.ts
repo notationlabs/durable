@@ -138,7 +138,7 @@ export const createTriggerHandler =
             );
           }
           return errorResponse(
-            admissionStatus[admission.code] ?? 400,
+            admissionStatus[admission.code],
             admission.code,
             admission.message
           );
