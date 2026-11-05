@@ -17,6 +17,7 @@ import {
   type EffectWatchRequest,
 } from "@yieldstar/core";
 import type { MemoryExecutionClient } from "./memory-execution";
+import { deleteExecutionWaiters, waiterKey } from "./waiters";
 
 /**
  * In-memory effect records and waiters. Every operation runs synchronously
@@ -94,20 +95,4 @@ export class MemoryEffectClient implements EffectClient {
   deleteWaitersForExecution(executionId: string) {
     deleteExecutionWaiters(this.waiters, executionId);
   }
-}
-
-function deleteExecutionWaiters(
-  waitersByTarget: Map<string, Map<string, { executionId: string }>>,
-  executionId: string
-) {
-  for (const [target, waiters] of waitersByTarget) {
-    for (const [key, waiter] of waiters) {
-      if (waiter.executionId === executionId) waiters.delete(key);
-    }
-    if (waiters.size === 0) waitersByTarget.delete(target);
-  }
-}
-
-function waiterKey(step: { executionId: string; stepKey: string }) {
-  return JSON.stringify([step.executionId, step.stepKey]);
 }
