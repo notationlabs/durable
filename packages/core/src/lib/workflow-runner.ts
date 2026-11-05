@@ -44,7 +44,8 @@ export class WorkflowRunner<
    * A replay that diverges from the recorded history ends `diverged`.
    *
    * The event's `workflowVersion` is `options.workflowVersion` when the
-   * record has one, and otherwise the version the workflow declares. The
+   * record has one. Otherwise it is 1 when the execution already has step
+   * records, and the version the workflow declares when it has none. The
    * outcome carries it, so the acknowledgement can record it.
    */
   run = async (
@@ -61,7 +62,11 @@ export class WorkflowRunner<
       };
     }
 
-    const workflowVersion = options.workflowVersion ?? workflow.workflowVersion ?? 1;
+    // An execution with history but no recorded version was first delivered
+    // before versions were recorded, by code that declared none.
+    const workflowVersion =
+      options.workflowVersion ??
+      ((await this.hasHistory(deliveryEvent.executionId)) ? 1 : (workflow.workflowVersion ?? 1));
     const event: WorkflowEvent = { ...deliveryEvent, workflowVersion };
     const outcome = await this.runEvent(workflow, event, {
       lease,
@@ -71,6 +76,14 @@ export class WorkflowRunner<
     });
     return { ...outcome, workflowVersion };
   };
+
+  private async hasHistory(executionId: string) {
+    try {
+      return (await this.runtime.heap.listSteps({ executionId })).length > 0;
+    } catch (err) {
+      throw new InfrastructureError(err);
+    }
+  }
 
   private async runEvent(
     workflow: WorkflowGenerator<any, any, any>,

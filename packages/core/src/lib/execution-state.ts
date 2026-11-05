@@ -788,8 +788,8 @@ export function recordWorkflowVersion(
 }
 
 /**
- * Removes the execution's divergence and makes it due now. The redelivery
- * delay still applies. An execution without a divergence is unchanged.
+ * Removes the execution's divergence and makes it due now. An execution
+ * without a divergence is unchanged.
  */
 export function clearExecutionDivergence(
   state: ExecutionState,
