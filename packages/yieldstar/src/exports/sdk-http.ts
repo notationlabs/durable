@@ -34,6 +34,7 @@ type TriggerResponse<W extends WorkflowRouter, K extends string & keyof W> = Tri
 
 const admissionErrorCodes: ExecutionAdmissionErrorCode[] = [
   "EXECUTION_ID_CONFLICT",
+  "EXECUTION_PRUNED",
   "INVALID_EXECUTION_EVENT",
   "EXECUTION_REQUEST_MISMATCH",
   "IDEMPOTENT_TRIGGER_REQUIRES_ID",
@@ -96,7 +97,8 @@ export function createHttpSdkFactory<W extends WorkflowRouter>() {
        * Admits an execution through the trigger route, and resolves once
        * admission commits. The server chooses the ID when `executionId` is
        * omitted, and the response carries it. With `idempotent: true`, a
-       * repeat of the same request resolves with `status: "existing"`. The
+       * repeat of the same request resolves with `status: "existing"`, and a
+       * repeat that names a pruned execution throws `EXECUTION_PRUNED`. The
        * body is encoded with the durable value codec, so params and context
        * reach the runtime unchanged.
        * @throws {ExecutionAdmissionError} when the route rejects the
@@ -142,7 +144,8 @@ export function createHttpSdkFactory<W extends WorkflowRouter>() {
       },
 
       /**
-       * The current view of an execution, or `undefined` if none exists.
+       * The current view of an execution, the pruned view of a pruned
+       * execution, or `undefined` if none exists.
        * @throws {HttpRouteError} for an error response other than `404`
        * `EXECUTION_NOT_FOUND`
        */
@@ -155,7 +158,8 @@ export function createHttpSdkFactory<W extends WorkflowRouter>() {
        * Waits for a terminal outcome. The server caps each `/wait` request,
        * so this repeats requests until the execution is terminal or
        * `timeout` passes. Resolves with `timed-out` and the current view when
-       * `timeout` passes first, and with `undefined` for an unknown ID.
+       * `timeout` passes first, at once with the pruned view of a pruned
+       * execution, and with `undefined` for an unknown ID.
        * @throws {RangeError} for a negative timeout
        * @throws {HttpRouteError} for an error response other than `404`
        * `EXECUTION_NOT_FOUND`
@@ -182,7 +186,8 @@ export function createHttpSdkFactory<W extends WorkflowRouter>() {
       },
 
       /**
-       * Pages through executions, newest first by admission.
+       * Pages through executions, newest first by admission. Pruned
+       * executions are left out unless `status` is `pruned`.
        * @throws {ExecutionListRequestError} for an invalid limit, status or cursor
        * @throws {HttpRouteError} for any other error response
        */
@@ -202,8 +207,9 @@ export function createHttpSdkFactory<W extends WorkflowRouter>() {
        * Records a cancellation request through the cancel route, and returns
        * without waiting for the workflow to stop. Resolves with `requested`
        * and the current view, with the terminal view when the execution is
-       * terminal (including after a forced cancel), and with `undefined` for
-       * an unknown ID.
+       * terminal (including after a forced cancel), with the pruned view of a
+       * pruned execution, which is not changed, and with `undefined` for an
+       * unknown ID.
        * @throws {ExecutionCancelRequestError} before any request for an empty
        * ID, or a `reason` or `force` of the wrong type
        * @throws {HttpRouteError} for an error response other than `404`
@@ -225,7 +231,8 @@ export function createHttpSdkFactory<W extends WorkflowRouter>() {
       /**
        * Removes a diverged execution's `divergence` through the
        * clear-divergence route, and makes it due now. Resolves with
-       * `not-diverged` when there is nothing to clear, and with `undefined`
+       * `not-diverged` when there is nothing to clear, including for a pruned
+       * execution, and with `undefined`
        * for an unknown ID.
        * @throws {TypeError} before any request for an empty ID
        * @throws {HttpRouteError} for an error response other than `404`
@@ -244,6 +251,8 @@ export function createHttpSdkFactory<W extends WorkflowRouter>() {
        * recorded error, revived as the class registered under its name.
        * @throws {WorkflowCancelledError} with the outcome's `reason` and
        * `source` when the execution ends `cancelled`
+       * @throws {ExecutionPrunedError} with the tombstone's fields when the
+       * execution was pruned
        * @throws {HttpRouteError} with code `EXECUTION_NOT_FOUND` for an
        * unknown ID
        */
