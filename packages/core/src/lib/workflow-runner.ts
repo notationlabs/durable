@@ -12,6 +12,7 @@ import {
   StepEffectWait,
   StepJoinWait,
   StepStoreWait,
+  WorkflowCancelledError,
   WorkflowResult,
 } from "..";
 import type { Runtime } from "../base/runtime";
@@ -35,12 +36,15 @@ export class WorkflowRunner<
    * Runs one delivery under `options.lease` and resolves with its outcome.
    * Rejects only with an infrastructure error, which must not be acknowledged
    * as an outcome; a lost lease is one, and so is an aborted `options.signal`.
+   *
+   * A workflow that throws `WorkflowCancelledError` ends `cancelled` only when
+   * the delivery carried a cancellation request; otherwise it ends `failed`.
    */
   run = async (
     event: WorkflowEvent,
     options: DeliveryOptions & { logger?: Logger }
   ): Promise<WorkflowRunOutcome> => {
-    const { lease, signal, logger = this.logger } = options;
+    const { lease, signal, cancellation, logger = this.logger } = options;
     const workflow = this.router[event.workflowId];
 
     if (!workflow) {
@@ -63,9 +67,13 @@ export class WorkflowRunner<
         event,
         lease,
         signal,
+        cancellation,
       });
     } catch (err) {
       if (InfrastructureError.is(err)) throw err;
+      if (cancellation && err instanceof WorkflowCancelledError) {
+        return { status: "cancelled" };
+      }
       return { status: "failed", error: toError(err) };
     }
 
@@ -89,16 +97,18 @@ export class WorkflowRunner<
     event: WorkflowEvent<Params, Context>;
     lease: ExecutionLease;
     signal: AbortSignal;
+    cancellation: DeliveryOptions["cancellation"];
     logger: Logger;
   }): Promise<
     WorkflowResult<Result> | StepDelay | StepEffectWait | StepStoreWait | StepJoinWait
   > {
-    const { workflow, event, lease, signal, logger } = params;
+    const { workflow, event, lease, signal, cancellation, logger } = params;
 
     const workflowIterator = workflow({
       event,
       lease,
       signal,
+      ...(cancellation ? { cancellation } : {}),
       heapClient: this.runtime.heap,
       storeClient: this.runtime.stores,
       executionClient: this.runtime.executions,

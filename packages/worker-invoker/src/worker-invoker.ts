@@ -47,7 +47,7 @@ export function createWorkflowInvoker(params: {
   const { logger, workerPath, execPath, handshakeTimeout = 5_000 } = params;
   return {
     workflowEndEmitter,
-    deliver(event: WorkflowEvent, { lease, signal }: DeliveryOptions) {
+    deliver(event: WorkflowEvent, { lease, signal, cancellation }: DeliveryOptions) {
       const { executionId } = event;
 
       const filePath = workerPath.startsWith("file:")
@@ -141,6 +141,7 @@ export function createWorkflowInvoker(params: {
                 type: "deliver",
                 event: { ...event, ...encoded },
                 lease,
+                ...(cancellation ? { cancellation } : {}),
               };
               request(delivery);
               return;
@@ -166,6 +167,7 @@ export function createWorkflowInvoker(params: {
 function deserializeOutcome(outcome: SerializedOutcome): WorkflowRunOutcome {
   switch (outcome.status) {
     case "suspended":
+    case "cancelled":
       return outcome;
     case "completed":
       return { status: "completed", result: decodeOrThrow(outcome.result) };

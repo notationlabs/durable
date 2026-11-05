@@ -16,10 +16,10 @@ export function createWorkflowInvoker(params: {
   const { logger, runner } = params;
   return {
     workflowEndEmitter,
-    async deliver(event: WorkflowEvent, { lease, signal }: DeliveryOptions) {
+    async deliver(event: WorkflowEvent, options: DeliveryOptions) {
       const { executionId } = event;
       logger.info({ executionId }, "Starting workflow delivery");
-      return runner.run(event, { lease, signal, logger });
+      return runner.run(event, { ...options, logger });
     },
   };
 }

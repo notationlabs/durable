@@ -230,7 +230,11 @@ export class ExecutionDispatcher {
               params: record.params,
               context: record.context,
             },
-            { lease, signal: renewal.signal }
+            {
+              lease,
+              signal: renewal.signal,
+              ...(record.cancellation ? { cancellation: record.cancellation } : {}),
+            }
           ),
           lease,
           renewal.signal
