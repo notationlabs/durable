@@ -1,5 +1,6 @@
 import {
   acknowledgeExecution,
+  becameTerminal,
   claimExecution,
   createExecutionState,
   createStartedExecution,
@@ -50,10 +51,19 @@ export class MemoryExecutionClient implements ExecutionClient {
   /** Keyed by startRequestKey. */
   private startRequests = new Map<string, StartRequestState>();
   private clock: () => number;
+  private onTerminal?: (executionId: string) => void;
 
-  constructor(options?: { clock?: () => number }) {
+  constructor(options?: {
+    clock?: () => number;
+    /**
+     * Called synchronously when an acknowledgement makes an execution
+     * terminal, so the runtime wakes its join waiters in the same write.
+     */
+    onTerminal?: (executionId: string) => void;
+  }) {
     // Read Date.now lazily so fake timers installed later still apply.
     this.clock = options?.clock ?? (() => Date.now());
+    this.onTerminal = options?.onTerminal;
   }
 
   async admit(
@@ -165,6 +175,14 @@ export class MemoryExecutionClient implements ExecutionClient {
     return state !== undefined && isLeaseCurrent(state, lease);
   }
 
+  /**
+   * Synchronously reads an execution's stored state, for reads that must be
+   * atomic with the caller's own write (join registration).
+   */
+  getState(executionId: string): ExecutionState | undefined {
+    return this.executions.get(executionId);
+  }
+
   private insert(state: ExecutionState) {
     this.executions.set(state.executionId, state);
     this.admissionOrder.push(state.executionId);
@@ -238,6 +256,7 @@ export class MemoryExecutionClient implements ExecutionClient {
       now: this.clock(),
     });
     this.executions.set(state.executionId, next);
+    if (becameTerminal(state, next)) this.onTerminal?.(state.executionId);
     return result;
   }
 }

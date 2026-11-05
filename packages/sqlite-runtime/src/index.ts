@@ -5,6 +5,7 @@ export {
 } from "./sqlite-execution";
 export { SqliteEffectClient } from "./sqlite-effect";
 export { SqliteHeapClient } from "./sqlite-heap";
+export { SqliteJoinClient } from "./sqlite-join";
 export { SqliteStoreClient } from "./sqlite-store";
 export type {
   SqliteDriver,

@@ -135,6 +135,12 @@ export {
   toExecutionRecord,
   unacknowledgedDeliveryCountAt,
 } from "./lib/execution-state";
+export {
+  becameTerminal,
+  compareJoinWaiters,
+  prepareJoinWaiter,
+  readJoinTarget,
+} from "./lib/join-state";
 export type { DispatcherOptions } from "./lib/execution-dispatcher";
 export {
   DEFAULT_ABORT_GRACE_PERIOD,

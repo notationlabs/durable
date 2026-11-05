@@ -1,5 +1,6 @@
 import {
   acknowledgeExecution,
+  becameTerminal,
   claimExecution,
   createExecutionState,
   createStartedExecution,
@@ -33,6 +34,7 @@ import {
   type WorkflowRunOutcome,
 } from "@yieldstar/core";
 import { ExecutionsDao } from "./dao/executions-dao";
+import { JoinWaitersDao } from "./dao/join-waiters-dao";
 import { StartRequestsDao } from "./dao/start-requests-dao";
 import type { SqliteDriver } from "./sqlite-driver";
 import { runTransaction } from "./sqlite-transaction";
@@ -52,12 +54,14 @@ export class SqliteExecutionClient implements ExecutionClient {
   private db: SqliteDriver;
   private executionsDao: ExecutionsDao;
   private startRequestsDao: StartRequestsDao;
+  private joinWaitersDao: JoinWaitersDao;
   private clock: () => number;
 
   constructor(db: SqliteDriver, options: SqliteExecutionClientOptions = {}) {
     this.db = db;
     this.executionsDao = new ExecutionsDao(db);
     this.startRequestsDao = new StartRequestsDao(db);
+    this.joinWaitersDao = new JoinWaitersDao(db);
     // Read Date.now lazily so fake timers installed later still apply.
     this.clock = options.clock ?? (() => Date.now());
   }
@@ -217,13 +221,25 @@ export class SqliteExecutionClient implements ExecutionClient {
     lease: ExecutionLease;
     outcome: WorkflowRunOutcome;
   }): Promise<ExecutionAcknowledgeResult> {
-    return this.transition(request.lease, (state) =>
-      acknowledgeExecution(state, {
+    const { executionId } = request.lease;
+    return runTransaction(this.db, () => {
+      const state = this.executionsDao.getState(executionId);
+      if (!state) return { status: "lost" as const };
+      const next = acknowledgeExecution(state, {
         lease: request.lease,
         outcome: request.outcome,
         now: this.clock(),
-      })
-    );
+      });
+      if (next.state === state) return next.result;
+      this.executionsDao.updateState(next.state);
+      // The join waiters stay registered until each joiner records its step.
+      if (becameTerminal(state, next.state)) {
+        for (const joiner of this.joinWaitersDao.getWaitingExecutionIds(executionId)) {
+          this.wakeInTransaction(joiner);
+        }
+      }
+      return next.result;
+    });
   }
 
   /**
