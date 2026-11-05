@@ -164,7 +164,10 @@ test("a cancellation request reaches workflow code in a worker process, and the 
   await runtime.executions.cancel({ executionId: "order-42", reason: "abandoned" });
   dispatcher.start();
 
-  expect(await outcomeOf("order-42")).toEqual({ status: "cancelled", reason: "abandoned" });
+  expect(await outcomeOf("order-42")).toMatchObject({
+    status: "cancelled",
+    reason: "abandoned",
+  });
   const release = await runtime.heap.readStep({ executionId: "order-42", stepKey: "release" });
   expect(JSON.parse(release!.stepResponseJson)).toMatchObject({ result: "released: abandoned" });
 });

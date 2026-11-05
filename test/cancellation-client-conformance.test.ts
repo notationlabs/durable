@@ -97,8 +97,7 @@ test("a database created before cancellation reads its rows as attached, with no
         redeliver_at INTEGER,
         next_claim_at INTEGER,
         parent_execution_id TEXT,
-        parent_step_key TEXT,
-        admission_sequence INTEGER
+        parent_step_key TEXT
       );
       CREATE TABLE start_requests (
         caller_execution_id TEXT NOT NULL,
@@ -108,10 +107,10 @@ test("a database created before cancellation reads its rows as attached, with no
         execution_id TEXT NOT NULL,
         PRIMARY KEY (caller_execution_id, step_key)
       );
-      INSERT INTO executions (execution_id, workflow_id, params, context, status, admitted_at, updated_at, admission_sequence)
-      VALUES ('order-42', 'place-order', '{}', '[]', 'suspended', 10, 10, 1);
-      INSERT INTO executions (execution_id, workflow_id, params, context, status, admitted_at, updated_at, parent_execution_id, parent_step_key, admission_sequence)
-      VALUES ('fulfil-42', 'fulfil-order', '{}', '[]', 'suspended', 10, 10, 'order-42', 'start:fulfil', 2);
+      INSERT INTO executions (execution_id, workflow_id, params, context, status, admitted_at, updated_at)
+      VALUES ('order-42', 'place-order', '{}', '[]', 'suspended', 10, 10);
+      INSERT INTO executions (execution_id, workflow_id, params, context, status, admitted_at, updated_at, parent_execution_id, parent_step_key)
+      VALUES ('fulfil-42', 'fulfil-order', '{}', '[]', 'suspended', 10, 10, 'order-42', 'start:fulfil');
       INSERT INTO start_requests (caller_execution_id, step_key, workflow_id, params, execution_id)
       VALUES ('order-42', 'start:fulfil', 'fulfil-order', NULL, 'fulfil-42');
     `);
