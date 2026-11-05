@@ -457,7 +457,7 @@ export function createRoutes(params: {
   // upgrade, including /list, which returns every execution's outcome.
   if (middleware.length > 0 && params.observationMiddleware === undefined) {
     logger.warn(
-      "createRoutes has trigger middleware but no observationMiddleware, so /poll, /wait, /list and /events accept every request. Pass observationMiddleware, or [] to allow every request on purpose."
+      "createRoutes has trigger middleware but no observationMiddleware, so /poll, /wait, /list, /events and /cancel accept every request. Pass observationMiddleware, or [] to allow every request on purpose."
     );
   }
   const { executions } = runtime;
