@@ -15,6 +15,7 @@ A runtime bundles the five clients that hold durable state, and the clock they a
 ```ts
 abstract class Runtime {
   abstract readonly clock: () => number; // shared by every client and by delay and retry steps
+  readonly requireStepKeys: boolean; // default false
   abstract readonly executions: ExecutionClient;
   abstract readonly effects: EffectClient; // step.effect's effect records (RFC 005)
   abstract readonly heap: HeapClient;
@@ -24,8 +25,11 @@ abstract class Runtime {
 
 interface RuntimeOptions {
   clock?: () => number; // every client reads time from this; defaults to Date.now
+  requireStepKeys?: boolean; // reject keyless steps that have no record; default false
 }
 ```
+
+`WorkflowRunner` passes `requireStepKeys` to every delivery. With it set, a keyless step that has no record is recorded and thrown as `WorkflowReplayError` (`STEP_KEY_REQUIRED`), and a keyless step that has a record replays as usual. See [`requireStepKeys`](../manual/replay-stability.md#requirestepkeys).
 
 A runtime is defined by the guarantees its clients keep together, not by how many databases it uses. See [Runtime guarantees](https://github.com/notationlabs/yieldstar/blob/main/docs/store-connector-spec.md#runtime-guarantees).
 
@@ -45,15 +49,21 @@ const runner = new WorkflowRunner(runtime, { router, logger });
 | `options.router` | `WorkflowRouter` | Map of workflow IDs to generators |
 | `options.logger` | `Logger`         | Pino logger                       |
 
-`runner.run(event, { lease, signal, cancellation?, logger? })` runs the delivery under `lease`, the `ExecutionLease` the dispatcher claimed. Every step write carries it. The method resolves with an outcome for everything workflow code can cause, and rejects only with an `InfrastructureError`:
+`runner.run(event, { lease, signal, cancellation?, workflowVersion?, logger? })` runs the delivery under `lease`, the `ExecutionLease` the dispatcher claimed. Every step write carries it. The method resolves with an outcome for everything workflow code can cause, and rejects only with an `InfrastructureError`:
 
 ```ts
-type WorkflowRunOutcome =
+type WorkflowRunOutcome = (
   | { status: "completed"; result: unknown }
   | { status: "suspended"; wakeAt?: number } // wakeAt: when a delay, retry or timed wait's deadline elapses
   | { status: "failed"; error: Error }
-  | { status: "cancelled" }; // the delivery carried a cancellation and workflow code threw WorkflowCancelledError
+  | { status: "cancelled" } // the delivery carried a cancellation and workflow code threw WorkflowCancelledError
+  | { status: "diverged"; code: ExecutionDivergenceCode; stepKey?: string } // replay no longer matches the history
+) & { workflowVersion?: number }; // the version the delivery exposed
 ```
+
+`event` is a `DeliveryEvent`: a `WorkflowEvent` without `workflowVersion`. The runner adds `workflowVersion` before it runs workflow code: `options.workflowVersion` when the record has one, and otherwise the version the workflow declares (`WorkflowGenerator.workflowVersion`, 1 when it declares none). The outcome carries the same `workflowVersion`, so that the acknowledgement can record it on an execution that has none. Every step write and `recordCancellation` pass it to the heap too, and the first fenced write records it.
+
+The driver raises `ReplayDivergenceError` when replay no longer matches the recorded history (see [Divergence](../manual/replay-stability.md#divergence)). It is not thrown into workflow code. The runner logs a warning and resolves `diverged` with the error's `code` and `stepKey`. After a divergence, the delivery makes no further step write. `ReplayDivergenceError.is(err)` recognises one even when several copies of `@yieldstar/core` are loaded.
 
 An event whose `workflowId` has no registered workflow resolves as `failed`. A store wait resolves as `suspended` without `wakeAt`, because a store commit wakes it. A timed `when` resolves as `suspended` with `wakeAt` set to its recorded deadline, after it has recorded the deadline with the unfinished step and registered its waiter. A `step.effect` whose outcome is uncertain resolves as `suspended` with `wakeAt` set to now plus its `retryIn`, after it has watched the effect and recorded the unfinished step. On attempt number `maxAttempts`, it records a `WorkflowEffectError` with code `EFFECT_OUTCOME_UNKNOWN` instead.
 
@@ -96,7 +106,16 @@ interface ExecutionRecord {
   unacknowledgedDeliveryCount: number; // consecutive deliveries that ended without an acknowledgement
   parent?: ExecutionParent; // present only on executions admitted by `start`
   cancellation?: ExecutionCancellation; // present once `cancel` has recorded a request
+  workflowVersion?: number; // present once a delivery has made its first fenced write
+  divergence?: ExecutionDivergence; // present while the execution is parked after a divergent replay
 }
+
+type ExecutionDivergence = {
+  code: "NONDETERMINISTIC_REPLAY" | "STEP_SCHEMA_CHANGED"; // ExecutionDivergenceCode
+  stepKey?: string; // the step that would have run, when there was one
+  workflowVersion: number; // the version recorded on the execution
+  detectedAt: number;
+};
 
 type ExecutionParent = { executionId: string; stepKey: string; detached: boolean };
 
@@ -112,6 +131,8 @@ type ExecutionCancellation = {
 `parent` names the execution and step that started this one with [`step.start`](../manual/steps.md#stepstart) or [`step.call`](../manual/steps.md#stepcall). Execution views carry it too. It is set when the target is admitted and never changes. `detached` is `true` when the caller passed `{ detached: true }`, and such a target receives no cancellation propagated from its parent. An execution admitted through `admit`, such as a trigger, has no parent.
 
 `cancellation` is set by the first `cancel` request and stays whatever the outcome. `reason` and `source` never change once recorded, `forced` can only become `true`, and `deliveredAt` is set once. See [Cancellation](../manual/cancellation.md).
+
+`workflowVersion` is set by the first fenced write of any delivery, a step record, a cancellation record or the acknowledgement, and never changes. `divergence` is set by a `diverged` acknowledgement. While it is set, `nextClaimAt` is `null`, so pending wakes do not deliver the execution. `clearDivergence`, a terminal acknowledgement and a forced cancel remove it. See [Replay Stability](../manual/replay-stability.md).
 
 `running` means the execution has a live lease. When the lease ends without a terminal acknowledgement, the status returns to `suspended` if an earlier delivery was acknowledged as suspended, and to `admitted` otherwise. Operators can read `unacknowledgedDeliveryCount` to find executions that keep failing.
 
@@ -138,6 +159,7 @@ interface ExecutionClient {
   list(request?: {
     workflowId?: string;
     status?: ExecutionStatus;
+    diverged?: boolean; // true: only diverged executions; false: only the others
     cursor?: string;
     limit?: number; // default 50, at most 1000
   }): Promise<{ executions: ExecutionRecord[]; cursor?: string }>;
@@ -159,6 +181,12 @@ interface ExecutionClient {
   }): Promise<
     | { status: "requested" } // recorded; the execution is not terminal
     | ExecutionOutcome // the execution is terminal: a forced cancel's outcome, or the one it had
+    | { status: "rejected"; code: "EXECUTION_NOT_FOUND"; message: string }
+  >;
+
+  clearDivergence(executionId: string): Promise<
+    | { status: "cleared" } // divergence removed; the execution is due now
+    | { status: "not-diverged" } // nothing changed
     | { status: "rejected"; code: "EXECUTION_NOT_FOUND"; message: string }
   >;
 
@@ -184,7 +212,7 @@ interface ExecutionClient {
   acknowledge(request: {
     lease: ExecutionLease;
     outcome: WorkflowRunOutcome;
-  }): Promise<{ status: "suspended" } | ExecutionOutcome | LeaseLost>;
+  }): Promise<{ status: "suspended" } | { status: "diverged" } | ExecutionOutcome | LeaseLost>;
 }
 
 type ExecutionLease = { executionId: string; token: number; expiresAt: number };
@@ -203,19 +231,20 @@ type ExecutionAdmissionErrorCode =
 | `list`        | Pages through records, newest first by admission sequence. The sequence increases with every admission, including targets of `start`, across every client sharing the backend, whatever their clocks. `status` is matched at the runtime clock's current time. A cursor resumes after the last execution of its page, so paging never returns an execution twice, and executions admitted after the first page do not appear on later ones. Cursors are opaque. An invalid filter, `limit` or `cursor` throws `ExecutionListRequestError` (`INVALID_LIST_REQUEST`); a `limit` above 1000 is lowered to 1000 |
 | `start`       | Admits a target execution on behalf of the step named by `requestId`, idempotently by that ID. A new start admits the target due now, with the caller's `context` and `parent` set to `requestId`, and records the start request, all-or-nothing. A repeated request ID returns the first target's ID if its `workflowId`, canonical `params` and `detached` match, and `START_REQUEST_MISMATCH` otherwise, whatever the target's status. A target that is not detached, started by a caller whose cancellation request has no `deliveredAt`, is admitted with the propagated request; when that request is forced, the target is admitted `cancelled`. Missing `params` and `{}` do not match. An empty `workflowId`, or `params` that are not a plain object or that `durableValueCodec` cannot encode, return `INVALID_START_PARAMETERS` and admit nothing |
 | `cancel`      | Records a cancellation request and propagates it to every non-terminal child whose `parent` is not detached, and recursively to their children, all-or-nothing. A terminal child is skipped, and so are its descendants. A propagated request carries the same `force`, the first `reason`, and as `source` the execution where the cancellation began. A graceful request makes the execution due now; the redelivery delay still applies. A forced request records `cancelled`, clears the pending wake, deletes the store, effect and join waiters the execution holds, requests a wake for every joiner of the execution, and ends any live lease by issuing a higher token. A repeat keeps the first `reason`, `source` and `requestedAt`; a forced request after a graceful one sets `forced`. A terminal execution is not changed and its outcome is returned. An unknown ID is `EXECUTION_NOT_FOUND`. An invalid request throws a `TypeError` and changes nothing |
+| `clearDivergence` | Removes the execution's `divergence` and makes it due now; the redelivery delay still applies. An execution without a divergence, including a terminal one, is unchanged and returns `not-diverged`. An unknown ID is `EXECUTION_NOT_FOUND`. Not fenced |
 | `requestWake` | Carries wakes from outside a delivery, such as a store commit. Pending wakes merge into one due time: the earliest                                                       |
 | `claimDue`    | Leases up to `limit` executions that are due at or before the runtime clock and have no live lease, earliest due first. Each lease lasts `duration` ms and carries a token greater than every earlier token for that execution. An execution has at most one live lease at a time, across every client sharing the backend. With `filter.executionIds`, only executions with those IDs are claimed, in the same atomic claim, and an empty list claims nothing |
 | `renew`       | Extends the lease to `duration` ms from now. Returns `lost` once a higher token has been issued or the lease has ended. An expired lease that nobody has claimed again is still current |
 | `release`     | Ends the lease without an outcome. The delivery counts as unacknowledged, so the execution is claimable again after the redelivery delay |
-| `acknowledge` | Records the outcome and ends the lease, clearing the wakes the delivery covered. The next due time is the earlier of the outcome's `wakeAt` and any wake requested after the claim. A stale lease returns `lost` and changes nothing |
+| `acknowledge` | Records the outcome and ends the lease, clearing the wakes the delivery covered. The next due time is the earlier of the outcome's `wakeAt` and any wake requested after the claim. Records the outcome's `workflowVersion` when the execution has none. A `diverged` outcome records `divergence` instead of an outcome, keeps the wakes the lease covered pending without delivering them, and does not add to `unacknowledgedDeliveryCount`. A terminal outcome removes `divergence`. A stale lease returns `lost` and changes nothing |
 
-`renew`, `release`, `acknowledge` and `HeapClient.writeStep` are fenced: the adapter checks the lease's token and makes the write in one atomic step, and accepts the write only if the token is current. Clocks decide only when an execution becomes claimable again; tokens decide whose writes count. A holder that receives `lost` must stop, without acknowledging. `HeapClient.recordCancellation` is fenced too. `start` is not fenced: it is idempotent by its request ID, so a stale holder that calls it receives the same target and starts nothing new. `cancel` is not fenced either: it is not part of a delivery, and needs no lease.
+`renew`, `release`, `acknowledge` and `HeapClient.writeStep` are fenced: the adapter checks the lease's token and makes the write in one atomic step, and accepts the write only if the token is current. Clocks decide only when an execution becomes claimable again; tokens decide whose writes count. A holder that receives `lost` must stop, without acknowledging. `HeapClient.recordCancellation` is fenced too. `start` is not fenced: it is idempotent by its request ID, so a stale holder that calls it receives the same target and starts nothing new. `cancel` and `clearDivergence` are not fenced either: they are not part of a delivery, and need no lease.
 
 A lease ends without an acknowledgement when it is released, or when it expires and another claim takes over. Each such delivery adds one to `unacknowledgedDeliveryCount`, and any acknowledgement resets it to zero. While it is above zero, the execution waits a redelivery delay after the delivery ended before it can be claimed. The delay starts at 1 second and doubles with each unacknowledged delivery, up to 5 minutes (`redeliveryDelay(n)`).
 
-`ExecutionAdmissionError` (`code: ExecutionAdmissionErrorCode`) is what the SDKs throw for a rejected admission. `WorkflowCancelledError` (`reason?`, `source?`) is what the runner throws into workflow code when it delivers a cancellation. `WorkflowStartError` (`code: "INVALID_START_PARAMETERS" | "START_REQUEST_MISMATCH"`) is what `step.start` throws to workflow code for a rejected start; the rejection is recorded as the step's result, so replay throws the same class and code. `InfrastructureError` wraps a runtime failure; `InfrastructureError.is(err)` recognises one even when several copies of `@yieldstar/core` are loaded. `isLeaseLost(value)` recognises a `LeaseLost` result.
+`ExecutionAdmissionError` (`code: ExecutionAdmissionErrorCode`) is what the SDKs throw for a rejected admission. `WorkflowCancelledError` (`reason?`, `source?`) is what the runner throws into workflow code when it delivers a cancellation. `WorkflowStartError` (`code: "INVALID_START_PARAMETERS" | "START_REQUEST_MISMATCH"`) is what `step.start` throws to workflow code for a rejected start; the rejection is recorded as the step's result, so replay throws the same class and code. `WorkflowReplayError` (`code: "STEP_KEY_REQUIRED" | "PATCH_IN_COMBINATOR"`, `stepKey?`) is what the driver throws to workflow code for a keyless step under `requireStepKeys` or a `step.patched` inside a combinator branch; it is recorded as the step's error. `InfrastructureError` wraps a runtime failure; `InfrastructureError.is(err)` recognises one even when several copies of `@yieldstar/core` are loaded. `isLeaseLost(value)` recognises a `LeaseLost` result.
 
-Runtime adapter authors can import the storage-neutral state machine that `SqliteRuntime` and `MemoryRuntime` share: `prepareExecutionAdmission`, `createExecutionState`, `prepareExecutionStart`, `matchStartRequest`, `createStartedExecution`, `requestExecutionWake`, `claimExecution`, `renewExecutionLease`, `releaseExecutionLease`, `acknowledgeExecution`, `isLeaseCurrent`, `nextClaimAt`, `isExecutionClaimable`, `toExecutionRecord`, and the event and outcome codecs. An adapter persists `ExecutionState` however it likes and applies each transition inside one atomic write. A fenced heap write checks `isLeaseCurrent` in the same write. For `admit`, an adapter validates the request with `prepareExecutionAdmission`, and when the ID is in use answers with `matchExecutionAdmission` in the same atomic step as its insert. For `list`, an adapter assigns each new execution an admission sequence greater than every earlier one, including executions since deleted, in the same atomic write as its insert, validates the request and decodes its cursor with `prepareExecutionListRequest` (which treats a `null` field as absent), fetches up to `limit + 1` matching executions below the cursor's sequence (`matchesExecutionListRequest` applies the filters to an `ExecutionState`), and builds the page with `toExecutionListPage`. For `start`, an adapter validates the request with `prepareExecutionStart`, looks up the request ID, answers a recorded request with `matchStartRequest`, and otherwise inserts the target and the `StartRequestState` from `createStartedExecution` in one atomic write, choosing another ID if the target's is in use. For `JoinClient.join`, an adapter validates the waiter with `prepareJoinWaiter`, reads the target's state and answers with `readJoinTarget` in one atomic step, and registers the waiter only when the answer is `waiting`. In the atomic write of an acknowledgement for which `becameTerminal(before, after)` holds, it requests a wake for the joiner of every join waiter on the execution and keeps the waiters. For `cancel`, an adapter validates the request with `prepareExecutionCancel`, and in one atomic write applies `requestExecutionCancellation` to the target; when the result's `propagate` is true, it applies `propagatedCancellation(state)` to each non-terminal child that is not detached, and repeats for their children. When a result's `terminal` is true, the same write deletes the store, effect and join waiters that execution holds and requests a wake for its joiners. `createStartedExecution` applies `cancellationForStartedChild` itself. For `HeapClient.recordCancellation`, an adapter checks the lease, applies `markCancellationDelivered`, writes the step records and deletes those steps' waiters in one atomic write, and writes nothing if any step already has a different record. `toExecutionCancellation` turns the stored request into the record's `cancellation`. `DEFAULT_LEASE_DURATION` (30 seconds), `REDELIVERY_DELAY_BASE`, `REDELIVERY_DELAY_MAX`, `DEFAULT_EXECUTION_LIST_LIMIT` (50) and `MAX_EXECUTION_LIST_LIMIT` (1000) are the defaults.
+Runtime adapter authors can import the storage-neutral state machine that `SqliteRuntime` and `MemoryRuntime` share: `prepareExecutionAdmission`, `createExecutionState`, `prepareExecutionStart`, `matchStartRequest`, `createStartedExecution`, `requestExecutionWake`, `claimExecution`, `renewExecutionLease`, `releaseExecutionLease`, `acknowledgeExecution`, `isLeaseCurrent`, `nextClaimAt`, `isExecutionClaimable`, `toExecutionRecord`, and the event and outcome codecs. An adapter persists `ExecutionState` however it likes and applies each transition inside one atomic write. A fenced heap write checks `isLeaseCurrent` in the same write. For `admit`, an adapter validates the request with `prepareExecutionAdmission`, and when the ID is in use answers with `matchExecutionAdmission` in the same atomic step as its insert. For `list`, an adapter assigns each new execution an admission sequence greater than every earlier one, including executions since deleted, in the same atomic write as its insert, validates the request and decodes its cursor with `prepareExecutionListRequest` (which treats a `null` field as absent), fetches up to `limit + 1` matching executions below the cursor's sequence (`matchesExecutionListRequest` applies the filters to an `ExecutionState`), and builds the page with `toExecutionListPage`. For `start`, an adapter validates the request with `prepareExecutionStart`, looks up the request ID, answers a recorded request with `matchStartRequest`, and otherwise inserts the target and the `StartRequestState` from `createStartedExecution` in one atomic write, choosing another ID if the target's is in use. For `JoinClient.join`, an adapter validates the waiter with `prepareJoinWaiter`, reads the target's state and answers with `readJoinTarget` in one atomic step, and registers the waiter only when the answer is `waiting`. In the atomic write of an acknowledgement for which `becameTerminal(before, after)` holds, it requests a wake for the joiner of every join waiter on the execution and keeps the waiters. For `cancel`, an adapter validates the request with `prepareExecutionCancel`, and in one atomic write applies `requestExecutionCancellation` to the target; when the result's `propagate` is true, it applies `propagatedCancellation(state)` to each non-terminal child that is not detached, and repeats for their children. When a result's `terminal` is true, the same write deletes the store, effect and join waiters that execution holds and requests a wake for its joiners. `createStartedExecution` applies `cancellationForStartedChild` itself. For `HeapClient.recordCancellation`, an adapter checks the lease, applies `markCancellationDelivered`, writes the step records and deletes those steps' waiters in one atomic write, and writes nothing if any step already has a different record. `toExecutionCancellation` turns the stored request into the record's `cancellation`. For `HeapClient.writeStep` and `recordCancellation`, an adapter applies `recordWorkflowVersion(state, workflowVersion)` in the same fenced write; it changes nothing when the execution already has a version. `acknowledgeExecution` records the version and the divergence itself. For `clearDivergence`, an adapter applies `clearExecutionDivergence(state, now)` in one atomic write. `toExecutionDivergence` turns the stored divergence into the record's `divergence`. `ExecutionState` carries `workflowVersion` and `divergence` (`ExecutionDivergenceState`), both `null` when absent, and `matchesExecutionListRequest` applies the `diverged` filter. `DEFAULT_LEASE_DURATION` (30 seconds), `REDELIVERY_DELAY_BASE`, `REDELIVERY_DELAY_MAX`, `DEFAULT_EXECUTION_LIST_LIMIT` (50) and `MAX_EXECUTION_LIST_LIMIT` (1000) are the defaults.
 
 ## `durableValueCodec`
 
@@ -264,13 +293,13 @@ So `{ a: undefined }` and `{}` stay distinct, and only a tagged value decodes as
 
 An error keeps its `name`, `message`, a string `stack` and `code`, its own `cause` (encoded recursively), a non-enumerable `errors` array such as `AggregateError`'s, and its own enumerable properties whose values are durable, under `fields`. Properties that are not durable are left out rather than rejecting the error. `encodeThrownValue(value)` encodes a thrown value as thrown when it is durable, and as `Error(String(value))` otherwise.
 
-`decode` revives an error as the class registered under its `name` with `registerErrorClass(name, errorClass)`, setting its prototype and fields without calling the constructor, and as an `Error` with the same name, message, code, cause and fields when no class is registered. Registration is per process. `TypeError`, `RangeError`, `SyntaxError`, `ReferenceError`, `EvalError`, `URIError`, `AggregateError`, `WorkflowStartError`, `WorkflowJoinError`, `WorkflowCancelledError`, `WorkflowRaceError`, `WorkflowValueError`, `WorkflowEffectError`, `EffectDeliveryError`, `EffectClientInvariantError` and `StoreValidationError` are registered by default, and `yieldstar` registers `RetryableError`.
+`decode` revives an error as the class registered under its `name` with `registerErrorClass(name, errorClass)`, setting its prototype and fields without calling the constructor, and as an `Error` with the same name, message, code, cause and fields when no class is registered. Registration is per process. `TypeError`, `RangeError`, `SyntaxError`, `ReferenceError`, `EvalError`, `URIError`, `AggregateError`, `WorkflowStartError`, `WorkflowJoinError`, `WorkflowCancelledError`, `WorkflowRaceError`, `WorkflowReplayError`, `WorkflowValueError`, `WorkflowEffectError`, `EffectDeliveryError`, `EffectClientInvariantError` and `StoreValidationError` are registered by default, and `yieldstar` registers `RetryableError`.
 
 `WorkflowValueError` (`code: "INVALID_STEP_VALUE" | "STEP_SCHEMA_INVALID"`, `stepKey`) reports a value the codec or a step's schema rejects. A completed outcome whose result the codec rejects is recorded as `failed` with `INVALID_STEP_VALUE` and `stepKey` `WORKFLOW_RESULT_STEP_KEY` (`"$$workflow-result$$"`).
 
 ## `ExecutionDispatcher`
 
-The only component that delivers executions. It leases due executions, reads each event from its record, passes it to `invoker.deliver` with the lease, and acknowledges the outcome under that lease. A terminal execution that is claimed again returns its recorded outcome without running workflow code.
+The only component that delivers executions. It leases due executions, reads each event from its record, passes it to `invoker.deliver` with the lease and the record's `cancellation` and `workflowVersion`, and acknowledges the outcome under that lease. A `diverged` outcome is acknowledged too, which parks the execution. A terminal execution that is claimed again returns its recorded outcome without running workflow code.
 
 - **Concurrency.** It runs up to `concurrency` deliveries at once, and claims new executions as slots free up without waiting for earlier deliveries to reach an outcome. Several dispatchers, in one process or several, can share one backend: each execution has at most one live lease.
 - **Renewal.** It renews each lease every `renewInterval` while the delivery runs, so a slow delivery keeps its lease. If a renewal returns `lost`, it stops renewing, aborts the delivery's `signal`, and neither acknowledges nor releases.
@@ -326,7 +355,7 @@ The views leave out `params`, `context`, lease and wake state and `unacknowledge
 
 ## `createExecutionControl`
 
-`createExecutionControl(executions)` returns an `ExecutionControl` that cancels through `executions.cancel` and builds its result from `executions.get`. The local SDK and the `/cancel` route build theirs with it.
+`createExecutionControl(executions)` returns an `ExecutionControl` that cancels through `executions.cancel` and builds its result from `executions.get`, and clears divergences through `executions.clearDivergence`. The local SDK and the `/cancel` and `/clear-divergence` routes build theirs with it.
 
 ```ts
 interface ExecutionControl {
@@ -334,14 +363,19 @@ interface ExecutionControl {
     executionId: string,
     options?: { reason?: string; force?: boolean }
   ): Promise<CancelResult | undefined>;
+  clearDivergence(executionId: string): Promise<ClearDivergenceResult | undefined>;
 }
 
 type CancelResult =
   | { status: "requested"; execution: ActiveExecutionView }
   | TerminalExecutionView;
+
+type ClearDivergenceResult = { status: "cleared" } | { status: "not-diverged" };
 ```
 
 After the request is recorded, `cancel` reads the record once. It resolves with `requested` and the view at that read, or with the terminal view when the execution is terminal at that read, and with `undefined` for an unknown ID. It throws `ExecutionCancelRequestError`, a `TypeError`, for an empty ID, a `reason` that is not a string or a `force` that is not a boolean, before it calls `executions.cancel`.
+
+`clearDivergence` resolves with the result of `executions.clearDivergence`, or with `undefined` for an unknown ID. It throws a `TypeError` for an empty ID.
 
 ## `waitForExecutionOutcome`
 
@@ -357,33 +391,53 @@ abstract readStep(params: {
   stepKey: string;
 }): Promise<HeapRecord | null>;
 
+abstract listSteps(params: { executionId: string }): Promise<HeapStep[]>;
+
 abstract writeStep(params: {
   lease: ExecutionLease;
   stepKey: string;
   stepAttempt: number;
   done: boolean;
   stepResponseJson: string;
+  stepKind?: string; // stored as meta.kind
+  workflowVersion?: number; // recorded on the execution when it has none
   deleteWaitersOf?: readonly string[];
 }): Promise<HeapRecord | LeaseLost>;
 
 abstract recordCancellation(params: {
   lease: ExecutionLease;
-  steps: readonly { stepKey: string; stepAttempt: number; stepResponseJson: string }[];
+  steps: readonly {
+    stepKey: string;
+    stepAttempt: number;
+    stepResponseJson: string;
+    stepKind?: string;
+  }[];
+  workflowVersion?: number;
 }): Promise<(HeapRecord | null)[] | LeaseLost>;
+
+type HeapStep = { stepKey: string; kind?: string };
 ```
 
-`readStep` returns the latest attempt. `writeStep` is fenced by `lease`: if the lease is not current, nothing changes and it returns `lost`. A `done` record deletes the step's store, effect and join waiters in the same write, and also deletes the waiters of every step named in `deleteWaitersOf`. The driver passes `deleteWaitersOf` when it records a `step.all` or `step.race` decision, with the steps that the combinator's branches reached, so the waiters of abandoned branches go in the same write. `deleteWaitersOf` is ignored for a record that is not done or already exists. Records are keyed by execution, step key and attempt, and never change once written. Rewriting an existing record succeeds without changing it and resolves with the record as stored, so the caller can compare it with the value it wrote.
+`listSteps` lists every step key the execution has a record for, with the kind of its latest attempt, in no particular order. The driver reads it once at the start of each delivery, to check that replay requests every recorded step.
 
-`recordCancellation` records the delivery of the execution's cancellation request, fenced by `lease`, all-or-nothing. It writes each step's `done` record, deletes those steps' store, effect and join waiters, and sets the request's `deliveredAt`. An existing record at a step's attempt that is identical to the one requested is kept, as in `writeStep`. If any existing record differs, or is not done, the write changes nothing: no records, no waiter deletions and no `deliveredAt`. Either way the results list the records as stored, in the order of `steps`, with `null` for a step that has no record. The driver compares them with the records it wrote and ends the delivery with a `StepConflictError` on a difference. It throws if the execution has no request recorded. Waiters registered after it, by cleanup steps, wake the execution as usual.
+`readStep` returns the latest attempt. `writeStep` is fenced by `lease`: if the lease is not current, nothing changes and it returns `lost`. A `done` record deletes the step's store, effect and join waiters in the same write, and also deletes the waiters of every step named in `deleteWaitersOf`. The driver passes `deleteWaitersOf` when it records a `step.all` or `step.race` decision, with the steps that the combinator's branches reached, so the waiters of abandoned branches go in the same write. `deleteWaitersOf` is ignored for a record that is not done or already exists. Records are keyed by execution, step key and attempt, and never change once written. Rewriting an existing record succeeds without changing it and resolves with the record as stored, so the caller can compare it with the value it wrote. `stepKind` is stored with the record and returned as `meta.kind`. When `workflowVersion` is given and the execution has no version recorded, the same write records it.
+
+`recordCancellation` records the delivery of the execution's cancellation request, fenced by `lease`, all-or-nothing. It writes each step's `done` record, deletes those steps' store, effect and join waiters, and sets the request's `deliveredAt`. An existing record at a step's attempt that is identical to the one requested is kept, as in `writeStep`. If any existing record differs, or is not done, the write changes nothing: no records, no waiter deletions and no `deliveredAt`. Either way the results list the records as stored, in the order of `steps`, with `null` for a step that has no record. The driver compares them with the records it wrote and ends the delivery with a `StepConflictError` on a difference. It throws if the execution has no request recorded. Waiters registered after it, by cleanup steps, wake the execution as usual. It stores each step's `stepKind` and records `workflowVersion` as `writeStep` does, in the same write.
 
 ## `HeapRecord`
 
 ```ts
 type HeapRecord = {
   stepResponseJson: string;
-  meta: { attempt: number; done: boolean };
+  meta: {
+    attempt: number;
+    done: boolean;
+    kind?: string; // such as "run", "delay", "store.when" or "patched"; absent on records from before RFC 012
+  };
 };
 ```
+
+A delivery that requests a recorded key as a different kind of step diverges. The driver compares kinds only when the record has one.
 
 ## `JoinClient` (interface)
 
@@ -527,17 +581,18 @@ type WorkflowInvoker = {
   /** @deprecated The execution record is the source of truth for outcomes. */
   workflowEndEmitter: EventEmitter;
   deliver(
-    event: WorkflowEvent,
+    event: DeliveryEvent,
     options: {
       lease: ExecutionLease;
       signal: AbortSignal;
       cancellation?: ExecutionCancellation; // the record's request when the delivery was dispatched
+      workflowVersion?: number; // the record's workflow version, when one is recorded
     }
   ): Promise<WorkflowRunOutcome>;
 };
 ```
 
-The dispatcher passes the record's `cancellation` to `deliver`, and an invoker must pass it on to `WorkflowRunner.run`. An invoker that drops it runs the delivery as if no request were recorded.
+The dispatcher passes the record's `cancellation` and `workflowVersion` to `deliver`, and an invoker must pass both on to `WorkflowRunner.run`. An invoker that drops `cancellation` runs the delivery as if no request were recorded. An invoker that drops `workflowVersion` exposes the version the current code declares instead of the recorded one. An invoker must also return the outcome's `workflowVersion` and the `diverged` variant unchanged.
 
 `deliver` runs one delivery under `lease` and resolves with its outcome. Once `signal` aborts, the delivery runs no more workflow code and makes no more fenced writes, and rejects with an `InfrastructureError` whose cause is the signal's reason. An invoker that can stop a running step function should, and reject at once: the worker invoker kills its worker. It rejects, without an outcome, when the delivery hits an infrastructure error or the worker exits before replying. A worker exit rejects with a `WorkerExitedError`, and the dispatcher leaves the lease to expire. The dispatcher treats every other rejection as a retry reply and releases the lease. The dispatcher still emits terminal outcomes on `workflowEndEmitter` as an in-process fast path, which the local SDK and the HTTP routes use to read the record early; no guarantee depends on it.
 
@@ -545,7 +600,7 @@ The dispatcher passes the record's `cancellation` to `deliver`, and an invoker m
 
 | Class             | Type string          | Description                                         |
 | ----------------- | -------------------- | --------------------------------------------------- |
-| `StepKey`         | `"step-key"`         | Cache key for the current step                      |
+| `StepKey`         | `"step-key"`         | The current step's key, with its `kind` and whether the key came from the call site (`keyless`) |
 | `StepCacheCheck`  | `"cache-check"`      | Signals the runner to look up cached state          |
 | `StepResult`      | `"step-result"`      | Wraps a successful step return value                |
 | `StepError`       | `"step-error"`       | Wraps a caught error with optional retry policy     |
@@ -587,8 +642,13 @@ type WorkflowEvent<Params, Context> = {
   executionId: string;
   params: Params;
   context: Context;
+  workflowVersion: number; // the recorded version, or the declared one before any is recorded
 };
+
+type DeliveryEvent<Params, Context> = Omit<WorkflowEvent<Params, Context>, "workflowVersion">;
 ```
+
+`WorkflowGenerator` has an optional `workflowVersion` property, the version the workflow declares. `workflow({ version }, fn)` sets it.
 
 ## Middleware types
 

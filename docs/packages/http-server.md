@@ -10,7 +10,7 @@ bun add @yieldstar/http-server
 
 ## `createRoutes({ runtime, invoker?, logger, middleware?, observationMiddleware?, pollInterval?, basePath? })`
 
-Returns route handlers for `POST /trigger`, `POST /poll`, `POST /wait`, `POST /list`, `POST /cancel` and the deprecated `POST /events`. The routes object plugs directly into `Bun.serve({ routes })` or any router that accepts `Request` to `Response` handlers.
+Returns route handlers for `POST /trigger`, `POST /poll`, `POST /wait`, `POST /list`, `POST /cancel`, `POST /clear-divergence` and the deprecated `POST /events`. The routes object plugs directly into `Bun.serve({ routes })` or any router that accepts `Request` to `Response` handlers.
 
 ```ts
 import { createRoutes } from "@yieldstar/http-server";
@@ -29,11 +29,11 @@ Bun.serve({
 | `invoker`    | `WorkflowInvoker`      | Optional. When the dispatcher runs in this process, lets `/wait` and `/events` respond as soon as it records an outcome. No response depends on it |
 | `logger`     | `Logger`               | Pino logger                      |
 | `middleware` | `MiddlewareFunction[]` | Optional middleware chain for `/trigger` |
-| `observationMiddleware` | `ObservationMiddlewareFunction[]` | Optional. Allows or denies `/poll`, `/wait`, `/list`, `/events` and `/cancel` requests |
+| `observationMiddleware` | `ObservationMiddlewareFunction[]` | Optional. Allows or denies `/poll`, `/wait`, `/list`, `/events`, `/cancel` and `/clear-divergence` requests |
 | `pollInterval` | `number`             | Optional. How often `/wait` and `/events` read the record while they wait, in milliseconds. Defaults to `DEFAULT_OBSERVER_POLL_INTERVAL` (25) |
 | `basePath`   | `` `/${string}` ``     | Optional prefix for routes       |
 
-Every error response has the body `{ code, message }`. A route that throws, including a middleware function, responds `500` with code `INTERNAL_ERROR` and the fixed message `Internal error`, and logs the thrown error with `logger.error`. `ObservationErrorCode` is the union of the codes the observation routes and `/cancel` respond with.
+Every error response has the body `{ code, message }`. A route that throws, including a middleware function, responds `500` with code `INTERNAL_ERROR` and the fixed message `Internal error`, and logs the thrown error with `logger.error`. `ObservationErrorCode` is the union of the codes the observation routes, `/cancel` and `/clear-divergence` respond with.
 
 ### `POST /trigger`
 
@@ -61,7 +61,7 @@ Accepts `{ executionId, timeout? }`. Reads the record, and then waits until it i
 
 ### `POST /list`
 
-Accepts `{ workflowId?, status?, cursor?, limit? }`. Responds `200` with `{ executions, cursor? }`, a page of views newest first by admission. `limit` defaults to 50, and a value above 1000 is lowered to 1000. A field set to `null` is treated as absent. An invalid `workflowId`, `limit`, `status` or `cursor` responds `400` `INVALID_LIST_REQUEST`, as the local SDK's `list` throws `ExecutionListRequestError`.
+Accepts `{ workflowId?, status?, diverged?, cursor?, limit? }`. Responds `200` with `{ executions, cursor? }`, a page of views newest first by admission. `diverged: true` returns only diverged executions, and `false` only the others. `limit` defaults to 50, and a value above 1000 is lowered to 1000. A field set to `null` is treated as absent. An invalid `workflowId`, `limit`, `status`, `diverged` or `cursor` responds `400` `INVALID_LIST_REQUEST`, as the local SDK's `list` throws `ExecutionListRequestError`.
 
 A `/poll`, `/wait`, `/list` or `/events` body that is not a JSON object, has no `executionId` where one is needed, or has a negative `timeout` responds `400` `INVALID_OBSERVATION_REQUEST`. The views and pages are described in [Execution views](../manual/sdk-local.md#execution-views).
 
@@ -77,15 +77,27 @@ Accepts `{ executionId, reason?, force? }`. Runs observation middleware with `op
 | `400`  | `{ code: "INVALID_CANCEL_REQUEST", message }`   | The body is not a JSON object, `executionId` is missing or empty, `reason` is not a string, or `force` is not a boolean |
 | `401` or `403` | `{ code: "UNAUTHORIZED" \| "FORBIDDEN", message }` | Observation middleware denied the request, whether or not the execution exists |
 
+### `POST /clear-divergence`
+
+Accepts `{ executionId }`. Runs observation middleware with `operation: "clear-divergence"`, then removes the execution's `divergence` through `runtime.executions.clearDivergence` and makes it due now. See [Clearing a divergence](../manual/replay-stability.md#clearing-a-divergence).
+
+| Status | Body                                            | Cause                                                          |
+| ------ | ----------------------------------------------- | -------------------------------------------------------------- |
+| `200`  | `{ status: "cleared" }`                         | The divergence was removed and the execution is due now        |
+| `200`  | `{ status: "not-diverged" }`                    | The execution has no divergence. Nothing changed               |
+| `404`  | `{ code: "EXECUTION_NOT_FOUND", message }`      | No record has the ID                                           |
+| `400`  | `{ code: "INVALID_OBSERVATION_REQUEST", message }` | The body is not a JSON object, or `executionId` is missing or empty. Observation middleware does not run |
+| `401` or `403` | `{ code: "UNAUTHORIZED" \| "FORBIDDEN", message }` | Observation middleware denied the request, whether or not the execution exists |
+
 ### `POST /events`
 
 Deprecated: use `/wait`. Accepts `{ executionId }`. Blocks until the execution record is terminal, with no cap, polling the record and re-reading early when `invoker.workflowEndEmitter` fires. Returns the result encoded with the durable value codec, the recorded error encoded the same way with status `500` (a `WorkflowCancelledError` with the outcome's `reason` and `source` for a cancelled execution), or `404` `EXECUTION_NOT_FOUND`. The request's abort signal ends the wait. Observation middleware runs for `/events` with `operation: "events"`.
 
 ## Observation middleware
 
-An `ObservationMiddlewareFunction` receives `(req, request, logger)`, where `request` is an `ObservationRequest`, and resolves with `{ allow: true }` or `{ allow: false, status: 401 | 403 }`. The functions run in array order before the route reads any record, and the first denial responds `401` `UNAUTHORIZED` or `403` `FORBIDDEN`. For `poll`, `wait` and `events`, `request` carries the `executionId` and a `load()` function that reads the full `ExecutionRecord`. For `list`, it carries the `filter` and no `load`. For `cancel`, it carries the `executionId`, `force` and `load()`; a policy that should not let readers cancel must check `operation`. See [Observation middleware](../manual/http-server.md#observation-middleware).
+An `ObservationMiddlewareFunction` receives `(req, request, logger)`, where `request` is an `ObservationRequest`, and resolves with `{ allow: true }` or `{ allow: false, status: 401 | 403 }`. The functions run in array order before the route reads any record, and the first denial responds `401` `UNAUTHORIZED` or `403` `FORBIDDEN`. For `poll`, `wait` and `events`, `request` carries the `executionId` and a `load()` function that reads the full `ExecutionRecord`. For `list`, it carries the `filter`, including `diverged`, and no `load`. For `cancel`, it carries the `executionId`, `force` and `load()`; a policy that should not let readers cancel must check `operation`. For `clear-divergence`, it carries the `executionId` and `load()`; a policy that should not let readers clear divergences must check `operation` too. See [Observation middleware](../manual/http-server.md#observation-middleware).
 
-Observation middleware does not run for `/trigger`, and trigger middleware does not run for `/cancel`. A caller that trigger middleware allows can tell `existing` from `EXECUTION_REQUEST_MISMATCH` for another execution's ID, and so test guesses at that execution's `params`. Limit who may trigger with trigger middleware, or use execution IDs that other callers cannot guess.
+Observation middleware does not run for `/trigger`, and trigger middleware does not run for `/cancel` or `/clear-divergence`. A caller that trigger middleware allows can tell `existing` from `EXECUTION_REQUEST_MISMATCH` for another execution's ID, and so test guesses at that execution's `params`. Limit who may trigger with trigger middleware, or use execution IDs that other callers cannot guess.
 
 ## `createMiddleware(fn)`
 

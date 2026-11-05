@@ -39,6 +39,7 @@ const runtime = new SqliteRuntime(createSqliteDb({ path: "./.db/local.sqlite" })
 | Option              | Type           | Default      | Description                                                              |
 | ------------------- | -------------- | ------------ | ------------------------------------------------------------------------ |
 | `clock`             | `() => number` | `Date.now`   | Time source for every client operation and for delay and retry wake times |
+| `requireStepKeys`   | `boolean`      | `false`      | Rejects a keyless step that has no record with `WorkflowReplayError` (`STEP_KEY_REQUIRED`). See [`requireStepKeys`](../manual/replay-stability.md#requirestepkeys) |
 
 The runtime exposes five clients that share the database:
 
@@ -63,16 +64,21 @@ Keeping them in one database lets every guarantee that spans clients hold in a s
 - A new `start` inserts the target, already due and with its parent link, and the start request in one transaction. The request is looked up in the same transaction, so concurrent starts with one request ID admit one target.
 - `cancel` records the request on the execution and on every non-terminal, attached descendant in one transaction. A forced cancel's `cancelled` outcome, the deletion of the waiters the execution holds, and the wakes for its join waiters commit in the same transaction.
 - `recordCancellation` checks the lease, writes the step records, deletes those steps' store, effect and join waiters, and sets `cancellation_delivered_at` in one transaction.
+- A step write, or `recordCancellation`, records the delivery's workflow version in `workflow_version` in the same transaction, when the execution has none. A `diverged` acknowledgement records the version and the `divergence_*` columns, and sets `next_claim_at` to `NULL`, in one transaction.
 
 A database created before `list` has no `admission_sequence` column. `SqliteRuntime` adds it when it opens the file, fills it from each row's `rowid`, which follows insertion order as long as no row was deleted, and starts the counter above the largest value. The column allows `NULL` and has no default. A process still on an earlier version inserts rows without the column, and the trigger gives each of them the next number, so old and new processes can share the file during a rolling upgrade.
 
 Cancellation adds columns to two tables. `executions` gains `parent_detached` (`INTEGER NOT NULL DEFAULT 0`) and the request's `cancellation_reason`, `cancellation_source`, `cancellation_forced`, `cancellation_requested_at` and `cancellation_delivered_at`; `cancellation_requested_at` is `NULL` when no request is recorded. `start_requests` gains `detached` (`INTEGER NOT NULL DEFAULT 0`). An index on `executions(parent_execution_id)` finds an execution's children. `SqliteRuntime` adds the columns and the index when it opens a database created before cancellation, under the write lock, so processes that open the file together add each column once. Existing rows read as attached children and as requests that were not detached, with no cancellation request.
+
+Replay stability adds columns to two tables. `executions` gains `workflow_version` and the divergence's `divergence_code`, `divergence_step_key`, `divergence_workflow_version` and `divergence_detected_at`; `divergence_code` is `NULL` when the execution has no divergence. `step_responses` gains `step_kind`. `SqliteRuntime` adds the columns when it opens a database created before them, under the write lock, so processes that open the file together add each column once. Existing executions read as having no recorded version and no divergence, and existing step records have no kind, so a delivery does not compare their kind on replay.
 
 A row in `join_waiters` can stay for good when no step result follows it: a stale holder registers after the step was recorded, or a deploy removes a join step that was still waiting. Its only effect is one extra delivery of the joiner when the target finishes, and `getWaiters` may list it. The runtime does not remove such rows.
 
 Every process that shares one database must run a version with join support before any workflow uses `step.join` or `step.call`. A process on an earlier version acknowledges a terminal outcome without waking the join waiters on that execution, so their joiners wait until their deadline, or for good when they have none.
 
 Every process that shares one database must also run a version with cancellation support before anyone calls `cancel`. A worker on an earlier version does not receive the request with its delivery, so it runs the workflow as if no request were recorded. A process on an earlier version that starts a child does not propagate the parent's pending request to it, and one that acknowledges a delivery or updates a row leaves the cancellation columns as they are.
+
+Every process that shares one database must run a version with replay stability support before any execution is parked by a divergence. A process on an earlier version does not read the `divergence_*` columns. When it next writes the row, for example to record a wake, it computes `next_claim_at` without the divergence, so the parked execution is delivered again, by a process that does not check replay against the history.
 
 Every write runs as one synchronous `IMMEDIATE` transaction. Separate processes that open the same file, such as the app and its worker subprocesses, therefore serialize on SQLite's lock and see the same execution records.
 

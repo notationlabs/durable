@@ -16,7 +16,7 @@ import { createWorkflowRouter } from "yieldstar";
 import { RetryableError, ExecutionAdmissionError, WorkflowStartError, WorkflowJoinError } from "yieldstar";
 import { ExecutionListRequestError, HttpRouteError } from "yieldstar";
 import { WorkflowCancelledError, ExecutionCancelRequestError } from "yieldstar";
-import { WorkflowRaceError } from "yieldstar";
+import { WorkflowRaceError, WorkflowReplayError } from "yieldstar";
 import { WorkflowValueError, registerErrorClass, WORKFLOW_RESULT_STEP_KEY } from "yieldstar";
 import { WorkflowEffectError, EffectDeliveryError, EffectClientInvariantError } from "yieldstar";
 import { defineStore } from "yieldstar";
@@ -41,6 +41,8 @@ import type {
   ExecutionStatus,
   ExecutionParent,
   ExecutionCancellation,
+  ExecutionDivergence,
+  ExecutionDivergenceCode,
   ExecutionAdmissionErrorCode,
   TriggerAck,
   ExecutionObserver,
@@ -54,6 +56,8 @@ import type {
   ExecutionControl,
   CancelOptions,
   CancelResult,
+  ClearDivergenceResult,
+  ReplayErrorCode,
   Durable,
   DurableObject,
   DurableValue,
@@ -69,15 +73,21 @@ import type {
 } from "yieldstar";
 ```
 
-## `workflow(fn)` / `createWorkflow(fn)`
+## `workflow(fn)` / `workflow({ version }, fn)` / `createWorkflow(fn)`
 
 Defines a workflow. Returns a `WorkflowGenerator`. `Params` and `Result` are checked with `Durable<T>` (see [Step values](../manual/steps.md#step-values)), so a workflow whose params or result type holds a function is a type error. A generic `Result` cannot be checked, so a function that wraps `workflow` must give it a concrete result type.
 
 ```ts
 const w = workflow<Params, Result>(async function* (step, event, logger) {
-  return yield* step.run(() => compute());
+  return yield* step.run("compute", () => compute());
+});
+
+const v3 = workflow({ version: 3 }, async function* (step, event) {
+  event.workflowVersion; // the version recorded by the execution's first delivery
 });
 ```
+
+`version` is a non-negative integer, and defaults to 1. `workflow` throws a `TypeError` for any other value, or when the workflow function is missing. The returned generator's `workflowVersion` property holds the declared version. The first fenced write of an execution's first delivery records the version, and every later delivery exposes the recorded version as `event.workflowVersion`. See [Workflow versions](../manual/replay-stability.md#workflow-versions).
 
 | Type parameter | Constraint                    | Description                                  |
 | -------------- | ----------------------------- | -------------------------------------------- |
@@ -151,6 +161,12 @@ Thrown into workflow code at the first unfinished step once a cancellation reque
 
 Thrown by `step.race` when every branch fails, and by an empty race. `code` is `ALL_BRANCHES_FAILED`, and `errors` holds each branch's error in branch order. `errors` is a non-enumerable array, as on `AggregateError`, so a `failed` outcome keeps it – see [Concurrent Steps](../manual/concurrent-steps.md#steprace).
 
+## `WorkflowReplayError`
+
+Thrown to workflow code when a step cannot be recorded safely for replay. `err.code` is `"STEP_KEY_REQUIRED"` (a keyless step has no record and the runtime was created with `requireStepKeys: true`) or `"PATCH_IN_COMBINATOR"` (`step.patched` was called inside a `step.all` or `step.race` branch), and `err.stepKey` names the step. It is recorded as the step's error, so replay throws the same class and code. It is registered by default. See [Replay Stability](../manual/replay-stability.md).
+
+A divergence is not a `WorkflowReplayError`. It never reaches workflow code; see [Divergence](../manual/replay-stability.md#divergence).
+
 ## `WorkflowEffectError`
 
 Thrown to workflow code by `step.effect`. `err.code` is `"INVALID_EFFECT_REQUEST"` (the `effectId`, `operation`, `input`, `retryIn`, `maxAttempts`, `lookup`, `perform` or `failsOn` is invalid), `"EFFECT_REQUEST_MISMATCH"` (the effect already exists with a different `operation` or `input`) or `"EFFECT_OUTCOME_UNKNOWN"` (the outcome is still unknown after `maxAttempts` attempts). It is recorded as the step's error, so replay throws the same class and code. See [`step.effect`](../manual/steps.md#stepeffect).
@@ -169,7 +185,7 @@ Registers the class that recorded errors named `name` are revived as, in this pr
 
 ## `createLocalSdk<Router>(runtime, { invoker?, pollInterval? })`
 
-Creates a local SDK client that admits executions into `runtime` and reads them back with `poll`, `wait` and `list`, and cancels them with `cancel`. It implements `ExecutionObserver` and `ExecutionControl`. See [Local SDK](../manual/sdk-local.md).
+Creates a local SDK client that admits executions into `runtime` and reads them back with `poll`, `wait` and `list`, cancels them with `cancel`, and clears divergences with `clearDivergence`. It implements `ExecutionObserver` and `ExecutionControl`. See [Local SDK](../manual/sdk-local.md).
 
 ## `createHttpSdkFactory<Router>()`
 
@@ -190,15 +206,15 @@ const ConversationStore = defineStore("conversation", schema, {
 Available on the first argument of a workflow function:
 
 ```ts
-yield* step.run(fn);
 yield* step.run("key", fn);
 yield* step.run("key", fn, { schema });
+yield* step.run(fn); // deprecated: keyless
 
-yield* step.delay(ms);
 yield* step.delay("key", ms);
+yield* step.delay(ms); // deprecated: keyless
 
-yield* step.poll(opts, predicate);
 yield* step.poll("key", opts, predicate);
+yield* step.poll(opts, predicate); // deprecated: keyless
 
 const store = step.store(definition, { id }); // no yield*
 
@@ -219,7 +235,13 @@ yield* step.all("key", branches, { concurrency, mode: "fail-fast" });
 yield* step.all("key", branches, { concurrency, mode: "settle" });
 
 yield* step.race("key", branches);
+
+const applies = yield* step.patched("patch-id"); // boolean
 ```
+
+A keyless `step.run`, `step.delay` or `step.poll`, and a store's keyless `get()` and `when(selector)`, take their key from a hash of their call site. They are deprecated: the driver logs a warning when one has no record and runs, and a runtime created with `requireStepKeys: true` throws `WorkflowReplayError` (`STEP_KEY_REQUIRED`) instead of running it. See [Step keys](../manual/replay-stability.md#step-keys).
+
+`step.patched(id)` returns `true` when a marker for `id` is recorded, `false` without recording anything when the execution's history has steps that replay has not requested yet, and otherwise records a marker under the key `$$patch$$:<id>` and returns `true`. Inside a `step.all` or `step.race` branch it records and throws `WorkflowReplayError` (`PATCH_IN_COMBINATOR`). An ID that is not a string throws a `TypeError`, and an empty ID throws an `Error`. See [Patches](../manual/replay-stability.md#patches).
 
 `step.store` returns a `WorkflowStore` handle synchronously and records no step, so a loop or helper can request the same store again. `id` defaults to `event.executionId`. The handle has the readonly properties `definition`, `id` and `key`, and the durable operations `get`, `select`, `update`, `updateFrom`, `deleteFrom`, `when` and `take`, each of which creates a missing store from the definition's `initial` – see [Durable Stores](../manual/stores.md) and [Waiting on State](../manual/store-waiting.md). Helpers that take the step runner can type it as `StepRunner`.
 
