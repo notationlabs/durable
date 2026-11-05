@@ -2,7 +2,12 @@ import { EventEmitter } from "node:events";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { MemoryRuntime } from "@yieldstar/test-runtime";
 import { WAIT_REQUEST_CAP, createRoutes } from "@yieldstar/http-server";
-import { ExecutionListRequestError, workflow } from "yieldstar";
+import {
+  ExecutionListRequestError,
+  HttpRouteError,
+  createHttpSdkFactory,
+  workflow,
+} from "yieldstar";
 import {
   CardDeclinedError,
   LEASE,
@@ -386,5 +391,24 @@ describe("HTTP wait cap", () => {
     const error = await failing;
     expect(error).toBeInstanceOf(CardDeclinedError);
     expect(error).toMatchObject({ code: "CARD_DECLINED", message: "card declined" });
+  });
+});
+
+describe("HTTP SDK error responses", () => {
+  test("a 404 without EXECUTION_NOT_FOUND, such as from a wrong base path, throws HttpRouteError", async () => {
+    const runtime = new MemoryRuntime();
+    const { url } = serveRoutes(runtime);
+    await admit(runtime, "order-42");
+    const sdk = createHttpSdkFactory<any>()({ url: `${url}/wrong-base` });
+    for (const call of [
+      () => sdk.poll("order-42"),
+      () => sdk.wait("order-42", { timeout: 0 }),
+      () => sdk.waitForResult({ executionId: "order-42" }),
+    ]) {
+      const error = await call().catch((err) => err);
+      expect(error).toBeInstanceOf(HttpRouteError);
+      expect(error.status).toBe(404);
+      expect(error.code).toBeUndefined();
+    }
   });
 });

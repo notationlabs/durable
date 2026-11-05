@@ -59,6 +59,18 @@ export function createHttpSdkFactory<W extends WorkflowRouter>() {
       return decoding.value;
     };
 
+    /**
+     * Decodes a `/poll` or `/wait` response. Only a `404` with code
+     * `EXECUTION_NOT_FOUND` means the execution does not exist; any other
+     * `404`, such as one from a wrong base path, throws.
+     */
+    const decodeObservation = async <T>(res: Response): Promise<T | undefined> => {
+      if (res.ok) return (await decode(res)) as T;
+      const error = await routeError(res);
+      if (res.status === 404 && error.code === "EXECUTION_NOT_FOUND") return undefined;
+      throw error;
+    };
+
     /** One `/wait` request. The server caps how long it is held open. */
     const waitRequest = async (
       executionId: string,
@@ -68,9 +80,7 @@ export function createHttpSdkFactory<W extends WorkflowRouter>() {
         "wait",
         JSON.stringify(timeout === undefined ? { executionId } : { executionId, timeout })
       );
-      if (res.status === 404) return undefined;
-      if (!res.ok) throw await routeError(res);
-      return (await decode(res)) as WaitResult;
+      return decodeObservation<WaitResult>(res);
     };
 
     const sdk = {
@@ -126,12 +136,11 @@ export function createHttpSdkFactory<W extends WorkflowRouter>() {
       /**
        * The current view of an execution, or `undefined` if none exists.
        * @throws {HttpRouteError} for an error response other than `404`
+       * `EXECUTION_NOT_FOUND`
        */
       async poll(executionId: string): Promise<ExecutionView | undefined> {
         const res = await post("poll", JSON.stringify({ executionId }));
-        if (res.status === 404) return undefined;
-        if (!res.ok) throw await routeError(res);
-        return (await decode(res)) as ExecutionView;
+        return decodeObservation<ExecutionView>(res);
       },
 
       /**
@@ -141,6 +150,7 @@ export function createHttpSdkFactory<W extends WorkflowRouter>() {
        * `timeout` passes first, and with `undefined` for an unknown ID.
        * @throws {RangeError} for a negative timeout
        * @throws {HttpRouteError} for an error response other than `404`
+       * `EXECUTION_NOT_FOUND`
        */
       async wait(
         executionId: string,

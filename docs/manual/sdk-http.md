@@ -72,9 +72,11 @@ Errors map to the same results as in the local SDK where they can:
 
 | Server response                    | SDK result                                     |
 | ---------------------------------- | ---------------------------------------------- |
-| `404` from `/poll` or `/wait`      | `poll` and `wait` resolve with `undefined`     |
+| `404` `EXECUTION_NOT_FOUND` from `/poll` or `/wait` | `poll` and `wait` resolve with `undefined` |
 | `400` `INVALID_LIST_REQUEST`       | `list` throws `ExecutionListRequestError`      |
 | Any other error response           | Throws an `HttpRouteError`                     |
+
+A `404` without the code `EXECUTION_NOT_FOUND`, for example from a wrong `url` or a server without the observation routes, throws an `HttpRouteError`, so `waitForResult` does not report an existing execution as unknown.
 
 A negative `timeout` throws a `RangeError` before any request.
 
