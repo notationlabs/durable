@@ -7,6 +7,7 @@ import { expect, vi } from "vitest";
 import {
   ExecutionDispatcher,
   WorkflowRunner,
+  type ExecutionControl,
   type ExecutionObserver,
   type MiddlewareFunction,
   type Runtime,
@@ -85,7 +86,8 @@ type TriggerRequest = {
 };
 
 /** The surface both SDKs share, plus `triggerAndWait` built from each SDK's own API. */
-export type TestSdk = ExecutionObserver & {
+export type TestSdk = ExecutionObserver &
+  ExecutionControl & {
   kind: SdkKind;
   trigger(event: TriggerRequest): Promise<TriggerAck>;
   triggerAndWait(event: TriggerRequest): Promise<unknown>;
@@ -152,6 +154,7 @@ export function createTestSdk(
       poll: (executionId) => sdk.poll(executionId),
       wait: (executionId, waitOptions) => sdk.wait(executionId, waitOptions),
       list: (request) => sdk.list(request),
+      cancel: (executionId, cancelOptions) => sdk.cancel(executionId, cancelOptions),
     };
   }
   const { url, routes } = serveRoutes(runtime, options);
@@ -175,6 +178,7 @@ export function createTestSdk(
     poll: (executionId) => sdk.poll(executionId),
     wait: (executionId, waitOptions) => sdk.wait(executionId, waitOptions),
     list: (request) => sdk.list(request),
+    cancel: (executionId, cancelOptions) => sdk.cancel(executionId, cancelOptions),
   };
 }
 
