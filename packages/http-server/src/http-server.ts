@@ -2,6 +2,7 @@ import type { Logger } from "pino";
 import type {
   ExecutionAdmissionErrorCode,
   ExecutionClient,
+  ExecutionControl,
   ExecutionListRequest,
   ExecutionObserver,
   ExecutionRecord,
@@ -15,9 +16,12 @@ import {
   FreezableMap,
   MiddlewareEvent,
   MiddlewareFunction,
+  WorkflowCancelledError,
+  createExecutionControl,
   createExecutionObserver,
   durableValueCodec,
   encodeThrownValue,
+  prepareExecutionCancel,
   prepareExecutionListRequest,
   waitForExecutionOutcome,
 } from "@yieldstar/core";
@@ -37,11 +41,12 @@ export type ObservationErrorCode =
   | "EXECUTION_NOT_FOUND"
   | "INVALID_OBSERVATION_REQUEST"
   | "INVALID_LIST_REQUEST"
+  | "INVALID_CANCEL_REQUEST"
   | "UNAUTHORIZED"
   | "FORBIDDEN"
   | "INTERNAL_ERROR";
 
-/** What an observation route passes to observation middleware. */
+/** What an observation route or `/cancel` passes to observation middleware. */
 export type ObservationRequest =
   | {
       operation: "poll" | "wait" | "events";
@@ -55,11 +60,21 @@ export type ObservationRequest =
   | {
       operation: "list";
       filter: { workflowId?: string; status?: ExecutionStatus };
+    }
+  | {
+      operation: "cancel";
+      executionId: string;
+      force: boolean;
+      /**
+       * Reads the record. It resolves `undefined` for an unknown ID, so a
+       * policy that calls it can reveal whether the execution exists.
+       */
+      load(): Promise<ExecutionRecord | undefined>;
     };
 
 /**
- * Allows or denies an observation request. It runs before the route reads
- * any record. A denial responds `401` or `403`, never `404`.
+ * Allows or denies an observation or cancel request. It runs before the
+ * route reads any record. A denial responds `401` or `403`, never `404`.
  */
 export type ObservationMiddlewareFunction = (
   req: Request,
@@ -155,6 +170,7 @@ export const createTriggerHandler =
 type ObservationParams = {
   executions: ExecutionClient;
   observer: ExecutionObserver;
+  control: ExecutionControl;
   logger: Logger;
   observationMiddleware: ObservationMiddlewareFunction[];
   invoker?: Pick<WorkflowInvoker, "workflowEndEmitter">;
@@ -165,18 +181,20 @@ type ObservationParams = {
 /**
  * Reads an observation body, runs observation middleware, and then calls
  * `handle`. `parse` returns the request to authorize, or an error response.
+ * A body that is not a JSON object responds `400` with `invalidBodyCode`.
  */
 function observationRoute<T>(
   params: ObservationParams,
   parse: (body: Record<string, unknown>) => { request: ObservationRequest; value: T } | Response,
-  handle: (req: Request, value: T) => Promise<Response>
+  handle: (req: Request, value: T) => Promise<Response>,
+  invalidBodyCode: ObservationErrorCode = "INVALID_OBSERVATION_REQUEST"
 ): RouteHandler {
   return async (req) => {
     const { logger } = params;
     try {
       const decoding = durableValueCodec.decode(await req.text());
       if (decoding.status === "invalid" || !isDecodedObject(decoding.value)) {
-        return invalidObservationRequest("The body must be a JSON object");
+        return errorResponse(400, invalidBodyCode, "The body must be a JSON object");
       }
       const parsed = parse(decoding.value);
       if (parsed instanceof Response) return parsed;
@@ -185,7 +203,7 @@ function observationRoute<T>(
         if (decision?.allow === true) continue;
         return decision?.status === 401
           ? errorResponse(401, "UNAUTHORIZED", "Authentication required")
-          : errorResponse(403, "FORBIDDEN", "Observation denied");
+          : errorResponse(403, "FORBIDDEN", "Request denied");
       }
       return await handle(req, parsed.value);
     } catch (err) {
@@ -299,12 +317,53 @@ export const createEventsHandler = (params: ObservationParams): RouteHandler =>
       if (outcome.status === "failed") {
         return durableJson(encodeThrownValue(outcome.error), 500);
       }
+      if (outcome.status === "cancelled") {
+        const error = new WorkflowCancelledError({
+          reason: outcome.reason,
+          source: outcome.source,
+        });
+        return durableJson(encodeThrownValue(error), 500);
+      }
       const result = durableValueCodec.encode(outcome.result);
       if (result.status === "invalid") {
         return durableJson(encodeThrownValue(new Error(result.message)), 500);
       }
       return durableJson(result.canonical, 200);
     }
+  );
+
+/**
+ * `{ executionId, reason?, force? }`: records a cancellation request. Responds
+ * `202` with `{ status: "requested", execution }` while the execution is
+ * active, `200` with its terminal view (including after a forced cancel),
+ * `404` for an unknown ID, and `400` `INVALID_CANCEL_REQUEST` for a malformed
+ * body. It does not wait for the workflow to stop.
+ */
+export const createCancelHandler = (params: ObservationParams): RouteHandler =>
+  observationRoute(
+    params,
+    (body) => {
+      const prepared = prepareExecutionCancel(
+        body as { executionId: string; reason?: string; force?: boolean }
+      );
+      if (!prepared.ok) {
+        return errorResponse(400, "INVALID_CANCEL_REQUEST", prepared.message);
+      }
+      const { executionId } = prepared;
+      const request: ObservationRequest = {
+        operation: "cancel",
+        executionId,
+        force: prepared.request.force,
+        load: () => params.executions.get(executionId),
+      };
+      return { request, value: { executionId, options: prepared.request } };
+    },
+    async (_req, { executionId, options }) => {
+      const result = await params.control.cancel(executionId, options);
+      if (!result) return executionNotFound(executionId);
+      return durableResponse(result, result.status === "requested" ? 202 : 200);
+    },
+    "INVALID_CANCEL_REQUEST"
   );
 
 function errorResponse(
@@ -382,11 +441,11 @@ export function createRoutes(params: {
    */
   invoker?: Pick<WorkflowInvoker, "workflowEndEmitter">;
   logger: Logger;
-  /** Runs before admission on `/trigger`. It does not apply to observation routes. */
+  /** Runs before admission on `/trigger`. It does not apply to other routes. */
   middleware?: MiddlewareFunction[];
   /**
-   * Runs, in array order, before `/poll`, `/wait`, `/list` and `/events`
-   * read any record. The first denial wins.
+   * Runs, in array order, before `/poll`, `/wait`, `/list`, `/events` and
+   * `/cancel` read any record. The first denial wins.
    */
   observationMiddleware?: ObservationMiddlewareFunction[];
   /**
@@ -409,6 +468,7 @@ export function createRoutes(params: {
       notifier: invoker?.workflowEndEmitter,
       pollInterval,
     }),
+    control: createExecutionControl(executions),
     logger,
     observationMiddleware: params.observationMiddleware ?? [],
     invoker,
@@ -423,5 +483,6 @@ export function createRoutes(params: {
     [`${basePath}/wait`]: { POST: createWaitHandler(observation) },
     [`${basePath}/list`]: { POST: createListHandler(observation) },
     [`${basePath}/events`]: { POST: createEventsHandler(observation) },
+    [`${basePath}/cancel`]: { POST: createCancelHandler(observation) },
   };
 }
