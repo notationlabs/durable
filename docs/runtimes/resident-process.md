@@ -30,6 +30,8 @@ For Node, change the import to `@yieldstar/sqlite-runtime/node`. No other runtim
 | Situation                                            | Behavior                                                                                     |
 | ---------------------------------------------------- | -------------------------------------------------------------------------------------------- |
 | A trigger reuses an execution ID                     | Admission is rejected with `EXECUTION_ID_CONFLICT`; the HTTP route returns `409`             |
+| An idempotent trigger repeats a request              | The trigger returns `existing` and admits nothing; a different `workflowId` or `params` is rejected with `EXECUTION_REQUEST_MISMATCH` |
+| A caller waits from another process, or after a restart | `wait` reads the outcome from the execution record in the file                            |
 | A timer and a store commit wake the same execution   | The wakes merge on the record; the execution is delivered once, at the earlier time          |
 | A finished execution is claimed again                | The dispatcher returns the recorded outcome without forking a worker                         |
 | A delivery runs for longer than its lease            | The dispatcher renews the 30-second lease every 10 seconds, so a slow delivery keeps it      |

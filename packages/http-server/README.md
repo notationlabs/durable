@@ -156,20 +156,26 @@ const myMiddleware = createMiddleware(async (req, event, next) => {
 
 ### `createRoutes(options)`
 
-Creates the `POST /trigger` and `POST /events` route handlers.
+Creates the `POST /trigger`, `POST /poll`, `POST /wait`, `POST /list` and deprecated `POST /events` route handlers.
 
 Options:
 
 - `runtime`: The runtime whose `executions` client the routes admit into and read from
-- `invoker`: Optional. Lets `/events` respond as soon as the dispatcher acknowledges a delivery
+- `invoker`: Optional. When the dispatcher runs in this process, lets `/wait` and `/events` respond as soon as it records an outcome
 - `logger`: A Pino logger instance
-- `middleware`: Optional array of middleware functions
+- `middleware`: Optional array of middleware functions for `/trigger`
+- `observationMiddleware`: Optional array of functions that allow or deny `/poll`, `/wait`, `/list` and `/events` requests
 - `basePath`: Optional path to mount the routes on
 
 Responses:
 
-- `POST /trigger`: `202 { executionId }` once admission commits, `409 { code: "EXECUTION_ID_CONFLICT", message }` when the execution ID is already in use, `400 { code: "INVALID_EXECUTION_EVENT", message }` when `params` or `context` are not durable values
-- `POST /events`: blocks until the execution record is terminal; `200` with the result, `500` with the recorded error, both encoded with the durable value codec, `404` for an unknown execution ID
+- `POST /trigger`: `202 { executionId, status: "accepted" }` once admission commits, `200 { executionId, status: "existing" }` when an idempotent trigger matches an existing execution, `409` `EXECUTION_ID_CONFLICT` or `EXECUTION_REQUEST_MISMATCH` when the execution ID is in use, `400` `INVALID_EXECUTION_EVENT` when `params` or `context` are not durable values, `400` `IDEMPOTENT_TRIGGER_REQUIRES_ID` when an idempotent trigger has no ID
+- `POST /poll`: `200` with the execution's view, `404` `EXECUTION_NOT_FOUND`
+- `POST /wait`: `200` with the terminal view, or `{ status: "timed-out", execution }` after `timeout` or 8 seconds, whichever is shorter; `404` `EXECUTION_NOT_FOUND`
+- `POST /list`: `200 { executions, cursor? }`, newest first by admission
+- `POST /events`: deprecated; blocks until the execution record is terminal; `200` with the result, `500` with the recorded error, both encoded with the durable value codec, `404` for an unknown execution ID
+
+Error responses carry `{ code, message }`.
 
 ### `createMiddleware(handler)`
 

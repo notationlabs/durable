@@ -48,7 +48,7 @@ The worker replies with one of two messages, and the child process is killed aft
 
 The dispatcher renews the lease in the parent process for as long as the delivery runs. `@yieldstar/test-invoker` implements the same `deliver` contract in-process.
 
-The invoker still exposes a deprecated `workflowEndEmitter` (`EventEmitter`). The dispatcher emits terminal outcomes on it so the local SDK and `/events` route can re-read the execution record early; the record remains the source of truth.
+The invoker still exposes a deprecated `workflowEndEmitter` (`EventEmitter`). The dispatcher emits terminal outcomes on it so the local SDK's `wait` and the HTTP `/wait` and `/events` routes can re-read the execution record early; the record remains the source of truth.
 
 ## `createWorkflowWorker(runner, logger)`
 

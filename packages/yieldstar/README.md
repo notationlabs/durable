@@ -278,7 +278,7 @@ Top‑level exports from `yieldstar`:
 export { createLocalSdk } from "yieldstar";
 export { createHttpSdkFactory } from "yieldstar";
 export { createWorkflowRouter } from "yieldstar";
-export { RetryableError, ExecutionAdmissionError } from "yieldstar";
+export { RetryableError, ExecutionAdmissionError, ExecutionListRequestError, HttpRouteError } from "yieldstar";
 export { createWorkflow, workflow } from "yieldstar";
 export type { WorkflowFn } from "yieldstar";
 ```
@@ -327,11 +327,17 @@ Create a client that admits executions directly into a runtime. A running `Execu
 
 ```ts
 const sdk = createLocalSdk<Router>(runtime, { invoker?, pollInterval? });
-const { executionId } = await sdk.trigger({ workflowId, params?, context?, executionId? });
+const { executionId, status } = await sdk.trigger({ workflowId, params?, context?, executionId?, idempotent? });
 await sdk.triggerAndWait({ workflowId, params? });
+
+await sdk.poll(executionId);
+await sdk.wait(executionId, { timeout? });
+await sdk.list({ workflowId?, status?, cursor?, limit? });
 ```
 
-`trigger` resolves once admission commits. `triggerAndWait` resolves with the result recorded on the execution record, or rejects with the recorded error. Both throw `ExecutionAdmissionError` when the `executionId` is already in use (`EXECUTION_ID_CONFLICT`) or `params`/`context` are not durable values (`INVALID_EXECUTION_EVENT`).
+`trigger` resolves once admission commits, with `status: "accepted"`, or `"existing"` when an idempotent trigger matches an execution with the same `workflowId` and `params`. `triggerAndWait` is `trigger` followed by `wait`; it resolves with the result recorded on the execution record, or rejects with the recorded error. Both throw `ExecutionAdmissionError` when the `executionId` is already in use (`EXECUTION_ID_CONFLICT`, or `EXECUTION_REQUEST_MISMATCH` in idempotent mode), an idempotent trigger has no ID (`IDEMPOTENT_TRIGGER_REQUIRES_ID`), or `params`/`context` are not durable values (`INVALID_EXECUTION_EVENT`).
+
+`poll`, `wait` and `list` read the execution record, so they work from any process that shares the runtime's backend and after a restart. `wait` reads the record before it waits, and resolves with `{ status: "timed-out", execution }` when `timeout` passes first.
 
 ### HTTP SDK
 
@@ -341,10 +347,12 @@ Factory returning a client bound to a base URL.
 const createSdk = createHttpSdkFactory<Router>();
 const sdk = createSdk({ url, fetchOptions? });
 
-const exec = await sdk.trigger({ workflowId, params?, context?, executionId? });
+const exec = await sdk.trigger({ workflowId, params?, context?, executionId?, idempotent? });
 await exec.ack();
 const result = await exec.waitForResult();
 ```
+
+The HTTP SDK has the same `poll`, `wait` and `list` as the local SDK. Its `wait` repeats the server's capped `/wait` request until the execution is terminal or its own timeout passes.
 
 ### Router
 
@@ -385,7 +393,7 @@ See more examples in `test/*.test.ts`.
 - In loops, always add cache keys. Missing keys trigger loop detection.
 - `logger` is a Pino logger passed into workflows for observability.
 - HTTP middleware can read/set `event.context` before the execution is admitted.
-- Execution IDs are never reused. Triggering with an ID that was already admitted throws `ExecutionAdmissionError`.
+- Execution IDs are never reused. Triggering with an ID that was already admitted throws `ExecutionAdmissionError`, unless the trigger is idempotent and repeats the same request.
 
 ## Contributing
 
