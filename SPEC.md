@@ -11,7 +11,7 @@ const store = step.store(StoreDef, { id })
 yield* store.update("append:message-1", draft => {
   draft.messages.push(message)
 })
-const message = yield* store.when(s =>
+const message = yield* store.when("next-message", s =>
   s.messages.find(m => !m.processed)
 )
 ```
@@ -187,7 +187,9 @@ interface WorkflowStore<T> {
   readonly id: string
   readonly key: StoreKey
 
-  get(key?: string): AsyncGenerator<StepResponse, StoreSnapshot<T>>
+  get(key: string): AsyncGenerator<StepResponse, StoreSnapshot<T>>
+  /** @deprecated Keyless: the key is derived from the call site. */
+  get(): AsyncGenerator<StepResponse, StoreSnapshot<T>>
 
   select<R>(
     key: string,
@@ -210,6 +212,7 @@ interface WorkflowStore<T> {
     snapshot: StoreSnapshot<T>
   ): AsyncGenerator<StepResponse, StoreDeleteFromResult>
 
+  /** @deprecated Keyless: the key is derived from the call site. */
   when<R>(
     selector: StoreSelector<T, R | undefined | null | false>
   ): AsyncGenerator<StepResponse, NonNullable<R>>
@@ -263,7 +266,7 @@ snapshot.state
 snapshot.version
 ```
 
-If the key is omitted, YieldStar may use the call-site hash, following the same caveats as other step helpers. Explicit keys are required when a workflow can reach the same call site more than once before yielding.
+If the key is omitted, YieldStar uses the call-site hash as the step key. The keyless form is deprecated, as it is for other step helpers: editing the workflow file changes the hash, and the execution's next delivery then diverges from its recorded history (RFC 012). Pass an explicit key, and make it unique when a workflow can reach the same call site more than once.
 
 ## `select`
 
@@ -312,12 +315,12 @@ Update semantics:
 `when` is the durable wait primitive. It waits once for a condition and returns the selected value – it is not a subscription. It is the pure observe primitive: the store is never mutated by a `when`.
 
 ```ts
-const message = yield* store.when(s =>
+const message = yield* store.when("next-message", s =>
   s.messages.find(m => !m.processed)
 )
 ```
 
-The selector-only form uses the call-site hash as the durable step key. The keyed form is required when the same workflow can reach the same `when` call site more than once before yielding:
+The selector-only form uses the call-site hash as the durable step key, and is deprecated for the same reason as other keyless steps (RFC 012). Pass a key, and make it unique when the same workflow can reach the same `when` call site more than once:
 
 ```ts
 const message = yield* store.when(`next-message:${turn}`, s =>
