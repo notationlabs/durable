@@ -1,4 +1,5 @@
 import type {
+  ExecutionDivergenceState,
   ExecutionState,
   PreparedExecutionListRequest,
   SequencedExecutionState,
@@ -32,6 +33,11 @@ class ExecutionRow {
   cancellation_forced!: number | null;
   cancellation_requested_at!: number | null;
   cancellation_delivered_at!: number | null;
+  workflow_version!: number | null;
+  divergence_code!: string | null;
+  divergence_step_key!: string | null;
+  divergence_workflow_version!: number | null;
+  divergence_detected_at!: number | null;
 }
 
 class ExecutionIdRow {
@@ -43,7 +49,9 @@ class ExecutionIdRow {
  * nextClaimAt) so claimDue can find due executions through an index, and
  * `admission_sequence`, which orders `list`. A cancellation request is stored
  * in the `cancellation_*` columns; `cancellation_requested_at` is NULL when
- * there is none. Callers own the surrounding transaction.
+ * there is none. A divergence is stored in the `divergence_*` columns;
+ * `divergence_code` is NULL when there is none. Callers own the surrounding
+ * transaction.
  */
 export class ExecutionsDao {
   private db: SqliteDriver;
@@ -80,29 +88,34 @@ export class ExecutionsDao {
     `);
     this.setupAdmissionSequence();
     this.setupCancellation();
+    this.setupReplayStability();
   }
 
   /**
-   * Adds the cancellation columns and the index that finds an execution's
-   * children. The defaults make rows from before cancellation read as
-   * attached children with no request. The setup runs under the write lock
-   * and skips what exists, so processes that open the file together add each
-   * column once.
+   * Adds the workflow version and divergence columns. Rows from before them
+   * read as executions with no recorded version and no divergence.
    *
-   * Every process that shares the file must run a version with cancellation
-   * support before anything calls `cancel`. A process on an earlier version
-   * does not treat `cancelled` as terminal, cannot decode `step-cancelled`
-   * records or cancelled outcomes, and ignores cancellation requests.
+   * Every process that shares the file must run a version with replay
+   * stability support before a diverged execution is parked. A process on an
+   * earlier version does not read `divergence_*`, and would deliver a parked
+   * execution again when it next computes `next_claim_at`.
    */
-  private setupCancellation() {
-    const columns = [
-      "parent_detached INTEGER NOT NULL DEFAULT 0",
-      "cancellation_reason TEXT",
-      "cancellation_source TEXT",
-      "cancellation_forced INTEGER",
-      "cancellation_requested_at INTEGER",
-      "cancellation_delivered_at INTEGER",
-    ];
+  private setupReplayStability() {
+    this.addMissingColumns([
+      "workflow_version INTEGER",
+      "divergence_code TEXT",
+      "divergence_step_key TEXT",
+      "divergence_workflow_version INTEGER",
+      "divergence_detected_at INTEGER",
+    ]);
+  }
+
+  /**
+   * Adds each column that does not exist yet. It runs under the write lock
+   * and checks again there, so processes that open the file together add
+   * each column once.
+   */
+  private addMissingColumns(columns: readonly string[]) {
     const missing = () => {
       const existing = new Set(
         this.db
@@ -112,13 +125,33 @@ export class ExecutionsDao {
       );
       return columns.filter((column) => !existing.has(column.split(" ")[0]));
     };
-    if (missing().length > 0) {
-      runTransaction(this.db, () => {
-        for (const column of missing()) {
-          this.db.run(`ALTER TABLE executions ADD COLUMN ${column}`);
-        }
-      });
-    }
+    if (missing().length === 0) return;
+    runTransaction(this.db, () => {
+      for (const column of missing()) {
+        this.db.run(`ALTER TABLE executions ADD COLUMN ${column}`);
+      }
+    });
+  }
+
+  /**
+   * Adds the cancellation columns and the index that finds an execution's
+   * children. The defaults make rows from before cancellation read as
+   * attached children with no request.
+   *
+   * Every process that shares the file must run a version with cancellation
+   * support before anything calls `cancel`. A process on an earlier version
+   * does not treat `cancelled` as terminal, cannot decode `step-cancelled`
+   * records or cancelled outcomes, and ignores cancellation requests.
+   */
+  private setupCancellation() {
+    this.addMissingColumns([
+      "parent_detached INTEGER NOT NULL DEFAULT 0",
+      "cancellation_reason TEXT",
+      "cancellation_source TEXT",
+      "cancellation_forced INTEGER",
+      "cancellation_requested_at INTEGER",
+      "cancellation_delivered_at INTEGER",
+    ]);
     this.db.run(`
       CREATE INDEX IF NOT EXISTS idx_executions_parent
       ON executions(parent_execution_id) WHERE parent_execution_id IS NOT NULL;
@@ -254,12 +287,19 @@ export class ExecutionsDao {
         : request.status === "running"
           ? "AND lease_expires_at IS NOT NULL AND lease_expires_at > $now"
           : "AND status = $status AND (lease_expires_at IS NULL OR lease_expires_at <= $now)";
+    const divergedCondition =
+      request.diverged === undefined
+        ? ""
+        : request.diverged
+          ? "AND divergence_code IS NOT NULL"
+          : "AND divergence_code IS NULL";
     return this.db
       .query<ExecutionRow>(
         `SELECT * FROM executions
          WHERE ($workflowId IS NULL OR workflow_id = $workflowId)
            AND ($before IS NULL OR admission_sequence < $before)
            ${statusCondition}
+           ${divergedCondition}
          ORDER BY admission_sequence DESC
          LIMIT $limit`
       )
@@ -295,7 +335,9 @@ export class ExecutionsDao {
            next_claim_at, parent_execution_id, parent_step_key,
            parent_detached, cancellation_reason, cancellation_source,
            cancellation_forced, cancellation_requested_at,
-           cancellation_delivered_at
+           cancellation_delivered_at, workflow_version, divergence_code,
+           divergence_step_key, divergence_workflow_version,
+           divergence_detected_at
          ) VALUES (
            $executionId, $workflowId, $params, $context, $status, $outcome,
            $admittedAt, $updatedAt, $dueAt, $claimedDueAt, $leaseToken,
@@ -303,7 +345,9 @@ export class ExecutionsDao {
            $nextClaimAt, $parentExecutionId, $parentStepKey,
            $parentDetached, $cancellationReason, $cancellationSource,
            $cancellationForced, $cancellationRequestedAt,
-           $cancellationDeliveredAt
+           $cancellationDeliveredAt, $workflowVersion, $divergenceCode,
+           $divergenceStepKey, $divergenceWorkflowVersion,
+           $divergenceDetectedAt
          )
          ON CONFLICT(execution_id) DO NOTHING
          RETURNING execution_id`
@@ -340,7 +384,12 @@ export class ExecutionsDao {
            cancellation_source = $cancellationSource,
            cancellation_forced = $cancellationForced,
            cancellation_requested_at = $cancellationRequestedAt,
-           cancellation_delivered_at = $cancellationDeliveredAt
+           cancellation_delivered_at = $cancellationDeliveredAt,
+           workflow_version = $workflowVersion,
+           divergence_code = $divergenceCode,
+           divergence_step_key = $divergenceStepKey,
+           divergence_workflow_version = $divergenceWorkflowVersion,
+           divergence_detected_at = $divergenceDetectedAt
          WHERE execution_id = $executionId`
       )
       .run(toBindings(state));
@@ -381,6 +430,16 @@ function toState(row: ExecutionRow): ExecutionState {
             deliveredAt: toNumberOrNull(row.cancellation_delivered_at),
           }
         : null,
+    workflowVersion: toNumberOrNull(row.workflow_version),
+    divergence:
+      row.divergence_code !== null
+        ? {
+            code: row.divergence_code as ExecutionDivergenceState["code"],
+            stepKey: row.divergence_step_key,
+            workflowVersion: Number(row.divergence_workflow_version ?? 1),
+            detectedAt: Number(row.divergence_detected_at ?? 0),
+          }
+        : null,
   };
 }
 
@@ -407,6 +466,11 @@ function toBindings(state: ExecutionState) {
       state.cancellation === null ? null : state.cancellation.forced ? 1 : 0,
     $cancellationRequestedAt: state.cancellation?.requestedAt ?? null,
     $cancellationDeliveredAt: state.cancellation?.deliveredAt ?? null,
+    $workflowVersion: state.workflowVersion,
+    $divergenceCode: state.divergence?.code ?? null,
+    $divergenceStepKey: state.divergence?.stepKey ?? null,
+    $divergenceWorkflowVersion: state.divergence?.workflowVersion ?? null,
+    $divergenceDetectedAt: state.divergence?.detectedAt ?? null,
   };
 }
 

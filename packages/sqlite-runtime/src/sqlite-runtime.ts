@@ -16,6 +16,7 @@ export type SqliteRuntimeOptions = RuntimeOptions;
  */
 export class SqliteRuntime extends Runtime {
   readonly clock: () => number;
+  readonly requireStepKeys: boolean;
   readonly executions: SqliteExecutionClient;
   readonly effects: SqliteEffectClient;
   readonly heap: SqliteHeapClient;
@@ -26,6 +27,7 @@ export class SqliteRuntime extends Runtime {
     super();
     // Read Date.now lazily so fake timers installed later still apply.
     this.clock = options.clock ?? (() => Date.now());
+    this.requireStepKeys = options.requireStepKeys ?? false;
     this.executions = new SqliteExecutionClient(db, { clock: this.clock });
     this.heap = new SqliteHeapClient(db, { clock: this.clock });
     this.joins = new SqliteJoinClient(db);

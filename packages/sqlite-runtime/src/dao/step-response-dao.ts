@@ -1,4 +1,5 @@
 import type { SqliteDriver } from "../sqlite-driver";
+import { runTransaction } from "../sqlite-transaction";
 
 class StepReponseRow {
   execution_id!: string;
@@ -6,6 +7,12 @@ class StepReponseRow {
   step_attempt!: number;
   step_done!: 0 | 1;
   step_response!: string;
+  step_kind!: string | null;
+}
+
+class StepKindRow {
+  step_key!: string;
+  step_kind!: string | null;
 }
 
 export class StepResponsesDao {
@@ -29,6 +36,37 @@ export class StepResponsesDao {
       CREATE INDEX IF NOT EXISTS idx_execution_step_attempt 
       ON step_responses(execution_id, step_key, step_attempt DESC);
     `);
+    this.setupStepKind();
+  }
+
+  /**
+   * Adds `step_kind`, under the write lock and only once. Rows from before it
+   * have no kind, so a delivery does not compare their kind on replay.
+   */
+  private setupStepKind() {
+    const hasColumn = () =>
+      this.db
+        .query<{ name: string }>(`PRAGMA table_info(step_responses)`)
+        .all()
+        .some((column) => column.name === "step_kind");
+    if (hasColumn()) return;
+    runTransaction(this.db, () => {
+      if (!hasColumn()) this.db.run(`ALTER TABLE step_responses ADD COLUMN step_kind TEXT`);
+    });
+  }
+
+  /** Each step key of the execution, with the kind of its latest attempt. */
+  listSteps(executionId: string) {
+    return this.db
+      .query<StepKindRow>(
+        `SELECT step_key, step_kind FROM step_responses AS latest
+         WHERE execution_id = $executionId
+           AND step_attempt = (
+             SELECT MAX(step_attempt) FROM step_responses
+             WHERE execution_id = latest.execution_id AND step_key = latest.step_key
+           )`
+      )
+      .all({ $executionId: executionId });
   }
 
   getAllSteps() {
@@ -77,11 +115,12 @@ export class StepResponsesDao {
     stepKey: string,
     stepAttempt: number,
     stepDone: boolean,
-    stepResponseJson: string
+    stepResponseJson: string,
+    stepKind: string | null
   ) {
     const query = this.db.query(
-      `INSERT INTO step_responses (execution_id, step_key, step_attempt, step_done, step_response) 
-        VALUES ($executionId, $stepKey, $stepAttempt, $stepDone, $stepResponse)`
+      `INSERT INTO step_responses (execution_id, step_key, step_attempt, step_done, step_response, step_kind)
+        VALUES ($executionId, $stepKey, $stepAttempt, $stepDone, $stepResponse, $stepKind)`
     );
 
     query.run({
@@ -90,6 +129,7 @@ export class StepResponsesDao {
       $stepAttempt: stepAttempt,
       $stepDone: stepDone,
       $stepResponse: stepResponseJson,
+      $stepKind: stepKind,
     });
   }
 }

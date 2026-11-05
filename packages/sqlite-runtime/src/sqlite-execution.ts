@@ -2,6 +2,7 @@ import {
   acknowledgeExecution,
   becameTerminal,
   claimExecution,
+  clearExecutionDivergence,
   createExecutionState,
   createStartedExecution,
   executionNotFound,
@@ -27,6 +28,7 @@ import {
   type ExecutionCancelRequest,
   type ExecutionCancelResult,
   type ExecutionClaimFilter,
+  type ExecutionClearDivergenceResult,
   type ExecutionClient,
   type ExecutionLease,
   type ExecutionListPage,
@@ -205,6 +207,16 @@ export class SqliteExecutionClient implements ExecutionClient {
         }
       }
       return result!;
+    });
+  }
+
+  async clearDivergence(executionId: string): Promise<ExecutionClearDivergenceResult> {
+    return runTransaction(this.db, () => {
+      const state = this.executionsDao.getState(executionId);
+      if (!state) return executionNotFound(executionId);
+      const cleared = clearExecutionDivergence(state, this.clock());
+      if (cleared.state !== state) this.executionsDao.updateState(cleared.state);
+      return cleared.result;
     });
   }
 

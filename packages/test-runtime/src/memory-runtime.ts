@@ -7,6 +7,7 @@ import { MemoryStoreClient } from "./memory-store";
 
 export class MemoryRuntime extends Runtime {
   readonly clock: () => number;
+  readonly requireStepKeys: boolean;
   readonly executions: MemoryExecutionClient;
   readonly effects: MemoryEffectClient;
   readonly heap: MemoryHeapClient;
@@ -17,6 +18,7 @@ export class MemoryRuntime extends Runtime {
     super();
     // Read Date.now lazily so fake timers installed later still apply.
     this.clock = options?.clock ?? (() => Date.now());
+    this.requireStepKeys = options?.requireStepKeys ?? false;
     this.executions = new MemoryExecutionClient({
       clock: this.clock,
       onTerminal: (executionId) => this.joins.wakeWaiters(executionId),
@@ -41,6 +43,8 @@ export class MemoryRuntime extends Runtime {
       },
       markCancellationDelivered: (executionId) =>
         this.executions.markCancellationDelivered(executionId),
+      recordWorkflowVersion: (executionId, workflowVersion) =>
+        this.executions.recordWorkflowVersion(executionId, workflowVersion),
     });
   }
 }

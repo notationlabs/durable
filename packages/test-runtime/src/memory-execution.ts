@@ -2,6 +2,7 @@ import {
   acknowledgeExecution,
   becameTerminal,
   claimExecution,
+  clearExecutionDivergence,
   createExecutionState,
   createStartedExecution,
   executionNotFound,
@@ -18,6 +19,7 @@ import {
   prepareExecutionListRequest,
   prepareExecutionStart,
   propagatedCancellation,
+  recordWorkflowVersion,
   releaseExecutionLease,
   renewExecutionLease,
   requestExecutionCancellation,
@@ -31,6 +33,7 @@ import {
   type ExecutionCancelRequest,
   type ExecutionCancelResult,
   type ExecutionClaimFilter,
+  type ExecutionClearDivergenceResult,
   type ExecutionClient,
   type ExecutionLease,
   type ExecutionListPage,
@@ -198,6 +201,14 @@ export class MemoryExecutionClient implements ExecutionClient {
     return result!;
   }
 
+  async clearDivergence(executionId: string): Promise<ExecutionClearDivergenceResult> {
+    const state = this.executions.get(executionId);
+    if (!state) return executionNotFound(executionId);
+    const cleared = clearExecutionDivergence(state, this.clock());
+    this.executions.set(executionId, cleared.state);
+    return cleared.result;
+  }
+
   private children(executionId: string): ExecutionState[] {
     return [...this.executions.values()].filter(
       (state) =>
@@ -216,6 +227,17 @@ export class MemoryExecutionClient implements ExecutionClient {
     const state = this.executions.get(executionId);
     if (!state) throw new Error(`Execution "${executionId}" does not exist`);
     this.executions.set(executionId, markCancellationDelivered(state, this.clock()));
+  }
+
+  /**
+   * @internal Synchronously records the workflow version on an execution
+   * that has none, for the heap's fenced writes. The caller checks the lease
+   * first.
+   */
+  recordWorkflowVersion(executionId: string, workflowVersion: number | undefined) {
+    const state = this.executions.get(executionId);
+    if (!state) return;
+    this.executions.set(executionId, recordWorkflowVersion(state, workflowVersion));
   }
 
   /**
