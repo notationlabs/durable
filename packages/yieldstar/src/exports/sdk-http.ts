@@ -23,6 +23,7 @@ import {
   ExecutionPrunedError,
   WorkflowCancelledError,
   durableValueCodec,
+  isDuration,
   prepareExecutionCancel,
 } from "@yieldstar/core";
 import { HttpRouteError } from "./errors";
@@ -45,7 +46,7 @@ export function createHttpSdkFactory<W extends WorkflowRouter>() {
     url: string;
     fetchOptions?: Omit<RequestInit, "body" | "method">;
   }) => {
-    const post = (route: string, body: string) => {
+    const post = (route: string, body: string, signal?: AbortSignal) => {
       const headers = new Headers(params.fetchOptions?.headers);
       headers.set("content-type", "application/json");
       return fetch(`${params.url}/${route}`, {
@@ -53,6 +54,7 @@ export function createHttpSdkFactory<W extends WorkflowRouter>() {
         method: "POST",
         headers,
         body,
+        ...(signal ? { signal } : {}),
       });
     };
 
@@ -82,12 +84,16 @@ export function createHttpSdkFactory<W extends WorkflowRouter>() {
 
     const waitRequest = async (
       executionId: string,
-      timeout: number | undefined
+      timeout: number | undefined,
+      signal: AbortSignal | undefined
     ): Promise<WaitResult | undefined> => {
       const res = await post(
         "wait",
-        JSON.stringify(timeout === undefined ? { executionId } : { executionId, timeout })
+        JSON.stringify(timeout === undefined ? { executionId } : { executionId, timeout }),
+        signal
       );
+      // A response that arrives as the signal aborts is discarded.
+      signal?.throwIfAborted();
       return decodeObservation<WaitResult>(res);
     };
 
@@ -133,8 +139,7 @@ export function createHttpSdkFactory<W extends WorkflowRouter>() {
           throw error;
         }
 
-        const body = (await res.json()) as TriggerAck;
-        const ack: TriggerAck = { executionId: body.executionId, status: body.status };
+        const ack = (await res.json()) as TriggerAck;
         return {
           ...ack,
           ack: async () => ack,
@@ -158,7 +163,9 @@ export function createHttpSdkFactory<W extends WorkflowRouter>() {
        * so this repeats requests until the execution is terminal or
        * `timeout` passes. Resolves with `timed-out` and the current view when
        * `timeout` passes first, at once with the pruned view of a pruned
-       * execution, and with `undefined` for an unknown ID.
+       * execution, and with `undefined` for an unknown ID. Aborting `signal`
+       * aborts the current request, and `wait` rejects with the signal's
+       * reason.
        * @throws {RangeError} for a negative timeout
        * @throws {HttpRouteError} for an error response other than `404`
        * `EXECUTION_NOT_FOUND`
@@ -168,15 +175,19 @@ export function createHttpSdkFactory<W extends WorkflowRouter>() {
         options?: ExecutionWaitOptions
       ): Promise<WaitResult | undefined> {
         const timeout = options?.timeout ?? Infinity;
-        if (typeof timeout !== "number" || Number.isNaN(timeout) || timeout < 0) {
+        // Checked before any request, so the error matches the local SDK's.
+        if (!isDuration(timeout)) {
           throw new RangeError("timeout must be a non-negative number of milliseconds");
         }
+        const signal = options?.signal;
         const deadline = Date.now() + timeout;
         while (true) {
+          signal?.throwIfAborted();
           const remaining = Math.max(0, deadline - Date.now());
           const result = await waitRequest(
             executionId,
-            remaining === Infinity ? undefined : remaining
+            remaining === Infinity ? undefined : remaining,
+            signal
           );
           if (result?.status !== "timed-out" || Date.now() >= deadline) {
             return result;

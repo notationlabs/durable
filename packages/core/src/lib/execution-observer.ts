@@ -1,6 +1,4 @@
-import type { ExecutionClient, ExecutionRecord } from "../base/execution";
-import { isTerminalExecutionStatus } from "../base/execution";
-import { isPrunedExecution, type PrunedExecutionRecord } from "../base/retention";
+import type { ExecutionClient } from "../base/execution";
 import {
   isPrunedExecutionView,
   isTerminalExecutionView,
@@ -9,8 +7,7 @@ import {
   type ExecutionWaitOptions,
 } from "../base/observation";
 
-/** How often `wait` reads the record, in milliseconds. */
-export const DEFAULT_OBSERVER_POLL_INTERVAL = 25;
+const DEFAULT_POLL_INTERVAL = 25;
 
 /**
  * A signal, keyed by execution ID, that an execution may have changed, such
@@ -23,7 +20,11 @@ export type ExecutionNotifier = {
 };
 
 export type ExecutionObserverOptions = {
-  /** @default DEFAULT_OBSERVER_POLL_INTERVAL */
+  /**
+   * How often `wait` reads the record, in milliseconds. It must be greater
+   * than zero.
+   * @default 25
+   */
   pollInterval?: number;
   /** An optional fast path. No result depends on it. */
   notifier?: ExecutionNotifier;
@@ -31,16 +32,18 @@ export type ExecutionObserverOptions = {
 
 /**
  * Observes executions through `executions`. `wait` reads the record, and then
- * reads it again every `pollInterval` until it is terminal, so it returns
- * outcomes recorded by any process sharing the backend, before or after the
- * call, and across a restart.
+ * reads it again every `pollInterval` until it is terminal or pruned, so it
+ * returns outcomes recorded by any process sharing the backend, before or
+ * after the call, and across a restart.
  */
 export function createExecutionObserver(
   executions: Pick<ExecutionClient, "get" | "list">,
   options: ExecutionObserverOptions = {}
 ): ExecutionObserver {
-  const pollInterval = options.pollInterval ?? DEFAULT_OBSERVER_POLL_INTERVAL;
-  assertDuration("pollInterval", pollInterval);
+  const pollInterval = options.pollInterval ?? DEFAULT_POLL_INTERVAL;
+  if (!isPositiveInterval(pollInterval)) {
+    throw new RangeError("pollInterval must be a positive, finite number of milliseconds");
+  }
 
   return {
     async poll(executionId) {
@@ -50,16 +53,48 @@ export function createExecutionObserver(
 
     async wait(executionId, waitOptions?: ExecutionWaitOptions) {
       const timeout = waitOptions?.timeout ?? Infinity;
-      assertDuration("timeout", timeout);
-      const record = await waitForExecutionRecord(executions, executionId, {
-        pollInterval,
-        notifier: options.notifier,
-        deadline: Date.now() + timeout,
-      });
-      if (!record) return undefined;
-      const view = toExecutionView(record);
-      if (isTerminalExecutionView(view) || isPrunedExecutionView(view)) return view;
-      return { status: "timed-out", execution: view };
+      if (!isDuration(timeout)) {
+        throw new RangeError("timeout must be a non-negative number of milliseconds");
+      }
+      const deadline = Date.now() + timeout;
+      const { notifier } = options;
+      const signal = waitOptions?.signal;
+      // A notification that arrives while the record is being read must still
+      // cut the next sleep short, so it is remembered until then.
+      let notified = false;
+      let wake: (() => void) | undefined;
+      const onNotify = () => {
+        notified = true;
+        wake?.();
+      };
+      const onAbort = () => wake?.();
+      notifier?.on(executionId, onNotify);
+      signal?.addEventListener("abort", onAbort);
+      try {
+        while (true) {
+          signal?.throwIfAborted();
+          notified = false;
+          const record = await executions.get(executionId);
+          if (!record) return undefined;
+          const view = toExecutionView(record);
+          if (isTerminalExecutionView(view) || isPrunedExecutionView(view)) return view;
+          const remaining = deadline - Date.now();
+          if (remaining <= 0) return { status: "timed-out", execution: view };
+          if (notified || signal?.aborted) continue;
+          await new Promise<void>((resolve) => {
+            const timer = setTimeout(done, Math.min(pollInterval, remaining));
+            function done() {
+              clearTimeout(timer);
+              wake = undefined;
+              resolve();
+            }
+            wake = done;
+          });
+        }
+      } finally {
+        notifier?.off(executionId, onNotify);
+        signal?.removeEventListener("abort", onAbort);
+      }
     },
 
     async list(request) {
@@ -72,105 +107,12 @@ export function createExecutionObserver(
   };
 }
 
-/**
- * Reads the record until it is terminal or pruned, or `deadline` passes, and
- * returns the last read. Returns undefined if no record exists. Rejects with
- * the signal's reason once `signal` aborts.
- */
-export async function waitForExecutionRecord(
-  executions: Pick<ExecutionClient, "get">,
-  executionId: string,
-  options: {
-    pollInterval: number;
-    /** A `Date.now()` time. */
-    deadline: number;
-    notifier?: ExecutionNotifier;
-    signal?: AbortSignal;
-  }
-): Promise<ExecutionRecord | PrunedExecutionRecord | undefined> {
-  const { notifier, signal } = options;
-  // A notification that arrives while the record is being read must still
-  // cut the next sleep short, so it is remembered until then.
-  let notified = false;
-  let wake: (() => void) | undefined;
-  const onNotify = () => {
-    notified = true;
-    wake?.();
-  };
-  const onAbort = () => wake?.();
-  const unsubscribe = notifier && subscribe(notifier, executionId, onNotify);
-  signal?.addEventListener("abort", onAbort);
-  try {
-    while (true) {
-      signal?.throwIfAborted();
-      notified = false;
-      const record = await executions.get(executionId);
-      if (!record || isPrunedExecution(record) || isTerminalExecutionStatus(record.status)) {
-        return record;
-      }
-      const remaining = options.deadline - Date.now();
-      if (remaining <= 0) return record;
-      if (notified || signal?.aborted) continue;
-      await new Promise<void>((resolve) => {
-        const timer = setTimeout(done, Math.min(options.pollInterval, remaining));
-        function done() {
-          clearTimeout(timer);
-          wake = undefined;
-          resolve();
-        }
-        wake = done;
-      });
-    }
-  } finally {
-    unsubscribe?.();
-    signal?.removeEventListener("abort", onAbort);
-  }
+/** Whether `value` is a non-negative number of milliseconds, as a wait `timeout` must be. */
+export function isDuration(value: unknown): value is number {
+  return typeof value === "number" && !Number.isNaN(value) && value >= 0;
 }
 
-type Subscription = { listener: () => void; waiters: Set<() => void> };
-
-const subscriptions = new WeakMap<ExecutionNotifier, Map<string, Subscription>>();
-
-/**
- * Returns a function that removes `waiter`. All waits on one notifier and ID
- * share one listener, so many waits on one ID stay under an `EventEmitter`'s
- * listener limit. The listener is removed when the last waiter leaves.
- */
-function subscribe(
-  notifier: ExecutionNotifier,
-  executionId: string,
-  waiter: () => void
-): () => void {
-  let byId = subscriptions.get(notifier);
-  if (!byId) {
-    byId = new Map();
-    subscriptions.set(notifier, byId);
-  }
-  let subscription = byId.get(executionId);
-  if (!subscription) {
-    const waiters = new Set<() => void>();
-    subscription = {
-      waiters,
-      listener: () => {
-        for (const notify of [...waiters]) notify();
-      },
-    };
-    byId.set(executionId, subscription);
-    notifier.on(executionId, subscription.listener);
-  }
-  const { waiters, listener } = subscription;
-  waiters.add(waiter);
-  return () => {
-    waiters.delete(waiter);
-    if (waiters.size === 0 && byId.get(executionId) === subscription) {
-      byId.delete(executionId);
-      notifier.off(executionId, listener);
-    }
-  };
-}
-
-function assertDuration(name: string, value: unknown) {
-  if (typeof value !== "number" || Number.isNaN(value) || value < 0) {
-    throw new RangeError(`${name} must be a non-negative number of milliseconds`);
-  }
+/** Whether `value` is a positive, finite number of milliseconds, as a poll interval or wait cap must be. */
+export function isPositiveInterval(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0;
 }

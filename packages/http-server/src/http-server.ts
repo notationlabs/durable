@@ -7,12 +7,10 @@ import type {
   ExecutionObserver,
   ExecutionRecord,
   ExecutionStatus,
-  PreparedExecutionListRequest,
   PrunedExecutionRecord,
   WorkflowInvoker,
 } from "@yieldstar/core";
 import {
-  DEFAULT_OBSERVER_POLL_INTERVAL,
   ExecutionListRequestError,
   ExecutionPrunedError,
   FreezableMap,
@@ -23,21 +21,18 @@ import {
   createExecutionObserver,
   durableValueCodec,
   encodeThrownValue,
+  isDuration,
+  isPositiveInterval,
   prepareExecutionCancel,
   prepareExecutionListRequest,
-  waitForExecutionOutcome,
 } from "@yieldstar/core";
 import { executeMiddlewareChain } from "./middleware";
 
 export type RouteHandler = (request: Request) => Response | Promise<Response>;
 export type Routes = Record<string, { POST: RouteHandler }>;
 
-/**
- * The longest the server holds a `/wait` request open, in milliseconds. It is
- * below Bun's default 10-second idle timeout. A capped wait returns
- * `timed-out`.
- */
-export const WAIT_REQUEST_CAP = 8_000;
+/** Below Bun's default 10-second idle timeout. */
+const DEFAULT_MAX_WAIT = 8_000;
 
 export type ObservationErrorCode =
   | "EXECUTION_NOT_FOUND"
@@ -181,7 +176,7 @@ export const createTriggerHandler =
             );
           }
           return errorResponse(
-            admissionStatus[admission.code] ?? 400,
+            admissionStatus[admission.code],
             admission.code,
             admission.message
           );
@@ -198,9 +193,7 @@ type ObservationParams = {
   control: ExecutionControl;
   logger: Logger;
   observationMiddleware: ObservationMiddlewareFunction[];
-  invoker?: Pick<WorkflowInvoker, "workflowEndEmitter">;
-  pollInterval: number;
-  waitCap: number;
+  maxWait: number;
 };
 
 /**
@@ -270,18 +263,16 @@ export const createPollHandler = (params: ObservationParams): RouteHandler =>
 
 /**
  * `{ executionId, timeout? }`: `200` with a `WaitResult`, or `404`. The wait
- * is capped at `waitCap`, and a capped wait returns `timed-out`. A pruned
- * execution responds at once with its pruned view.
+ * is capped at `maxWait`, and a capped wait returns `timed-out`. A pruned
+ * execution responds at once with its pruned view. The request's abort
+ * signal ends the wait.
  */
 export const createWaitHandler = (params: ObservationParams): RouteHandler =>
   observationRoute(
     params,
     (body) => {
       const { timeout } = body;
-      if (
-        timeout !== undefined &&
-        (typeof timeout !== "number" || Number.isNaN(timeout) || timeout < 0)
-      ) {
+      if (timeout !== undefined && !isDuration(timeout)) {
         return invalidObservationRequest(
           "timeout must be a non-negative number of milliseconds"
         );
@@ -292,12 +283,15 @@ export const createWaitHandler = (params: ObservationParams): RouteHandler =>
         request: parsed.request,
         value: {
           executionId: parsed.value,
-          timeout: Math.min(timeout ?? Infinity, params.waitCap),
+          timeout: Math.min(timeout ?? Infinity, params.maxWait),
         },
       };
     },
-    async (_req, { executionId, timeout }) => {
-      const result = await params.observer.wait(executionId, { timeout });
+    async (req, { executionId, timeout }) => {
+      const result = await params.observer.wait(executionId, {
+        timeout,
+        signal: req.signal,
+      });
       return result ? durableResponse(result, 200) : executionNotFound(executionId);
     }
   );
@@ -310,22 +304,17 @@ export const createListHandler = (params: ObservationParams): RouteHandler =>
   observationRoute(
     params,
     (body) => {
-      const request: ExecutionListRequest = {};
-      for (const key of ["workflowId", "status", "diverged", "cursor", "limit"] as const) {
-        if (body[key] !== undefined) (request as Record<string, unknown>)[key] = body[key];
-      }
-      let prepared: PreparedExecutionListRequest;
+      const request = body as ExecutionListRequest;
       try {
-        prepared = prepareExecutionListRequest(request);
+        const { workflowId, status, diverged } = prepareExecutionListRequest(request);
+        return {
+          request: { operation: "list", filter: { workflowId, status, diverged } },
+          value: request,
+        };
       } catch (err) {
         if (!(err instanceof ExecutionListRequestError)) throw err;
         return errorResponse(400, "INVALID_LIST_REQUEST", err.message);
       }
-      const filter: { workflowId?: string; status?: ExecutionStatus | "pruned"; diverged?: boolean } = {};
-      if (prepared.workflowId !== undefined) filter.workflowId = prepared.workflowId;
-      if (prepared.status !== undefined) filter.status = prepared.status;
-      if (prepared.diverged !== undefined) filter.diverged = prepared.diverged;
-      return { request: { operation: "list", filter }, value: request };
     },
     async (_req, request) => durableResponse(await params.observer.list(request), 200)
   );
@@ -342,16 +331,9 @@ export const createEventsHandler = (params: ObservationParams): RouteHandler =>
     params,
     (body) => parseExecutionRequest(params, "events", body),
     async (req, executionId) => {
-      let outcome;
-      try {
-        outcome = await waitForExecutionOutcome(params.executions, executionId, {
-          emitter: params.invoker?.workflowEndEmitter,
-          pollInterval: params.pollInterval,
-          signal: req.signal,
-        });
-      } catch (err) {
-        if (!(err instanceof ExecutionPrunedError)) throw err;
-        return errorResponse(410, "EXECUTION_PRUNED", err.message);
+      const outcome = await params.observer.wait(executionId, { signal: req.signal });
+      if (outcome?.status === "pruned") {
+        return errorResponse(410, "EXECUTION_PRUNED", new ExecutionPrunedError(outcome).message);
       }
       if (!outcome) return executionNotFound(executionId);
       if (outcome.status === "failed") {
@@ -363,6 +345,9 @@ export const createEventsHandler = (params: ObservationParams): RouteHandler =>
           source: outcome.source,
         });
         return durableJson(encodeThrownValue(error), 500);
+      }
+      if (outcome.status === "timed-out") {
+        throw new Error(`Execution "${executionId}" is still ${outcome.execution.status}`);
       }
       const result = durableValueCodec.encode(outcome.result);
       if (result.status === "invalid") {
@@ -520,29 +505,43 @@ export function createRoutes(params: {
    */
   observationMiddleware?: ObservationMiddlewareFunction[];
   /**
-   * How often `/wait` and `/events` read the record while they wait, in
-   * milliseconds.
-   * @default DEFAULT_OBSERVER_POLL_INTERVAL
+   * How often each open `/wait` and `/events` request reads the record, in
+   * milliseconds. It must be greater than zero.
+   * @default 25
    */
   pollInterval?: number;
-  /** @internal For tests. Overrides `WAIT_REQUEST_CAP`. */
-  waitCap?: number;
+  /**
+   * The longest the server holds a `/wait` request open, in milliseconds. A
+   * request that reaches it responds `timed-out`, and the HTTP SDK repeats
+   * it. Keep it below the server's idle timeout (10 seconds by default in
+   * Bun). It must be greater than zero.
+   * @default 8000
+   */
+  maxWait?: number;
 }): Routes {
   const { logger, runtime, invoker, middleware = [], basePath = "" } = params;
+  // A deployment that already guards /trigger gains open observation routes on
+  // upgrade, including /list, which returns every execution's outcome.
+  if (middleware.length > 0 && params.observationMiddleware === undefined) {
+    logger.warn(
+      "createRoutes has trigger middleware but no observationMiddleware, so /poll, /wait, /list, /events, /cancel and /clear-divergence accept every request. Pass observationMiddleware, or [] to allow every request on purpose."
+    );
+  }
   const { executions } = runtime;
-  const pollInterval = params.pollInterval ?? DEFAULT_OBSERVER_POLL_INTERVAL;
+  const maxWait = params.maxWait ?? DEFAULT_MAX_WAIT;
+  if (!isPositiveInterval(maxWait)) {
+    throw new RangeError("maxWait must be a positive, finite number of milliseconds");
+  }
   const observation: ObservationParams = {
     executions,
     observer: createExecutionObserver(executions, {
       notifier: invoker?.workflowEndEmitter,
-      pollInterval,
+      pollInterval: params.pollInterval,
     }),
     control: createExecutionControl(executions),
     logger,
     observationMiddleware: params.observationMiddleware ?? [],
-    invoker,
-    pollInterval,
-    waitCap: params.waitCap ?? WAIT_REQUEST_CAP,
+    maxWait,
   };
   return {
     [`${basePath}/trigger`]: {

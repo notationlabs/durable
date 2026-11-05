@@ -14,7 +14,7 @@ import {
 export const DEFAULT_EXECUTION_LIST_LIMIT = 50;
 export const MAX_EXECUTION_LIST_LIMIT = 1_000;
 
-export const EXECUTION_STATUSES: readonly ExecutionStatus[] = [
+const EXECUTION_STATUSES: readonly ExecutionStatus[] = [
   "admitted",
   "running",
   "suspended",
@@ -35,8 +35,8 @@ export type PreparedExecutionListRequest = {
 
 /**
  * An execution with the admission sequence its adapter assigned. Adapters
- * assign each new execution a sequence greater than every earlier one,
- * including executions since deleted, in the same atomic write as its insert.
+ * assign each new execution a sequence greater than that of every execution
+ * in the backend, in the same atomic write as its insert.
  */
 export type SequencedExecutionState = {
   state: ExecutionState;
@@ -45,8 +45,7 @@ export type SequencedExecutionState = {
 
 /**
  * Validates a list request and decodes its cursor. A limit above
- * `MAX_EXECUTION_LIST_LIMIT` is lowered to it. A `null` field is treated as
- * absent, since JSON clients send `null` for a field they leave out.
+ * `MAX_EXECUTION_LIST_LIMIT` is lowered to it.
  * @throws {ExecutionListRequestError} for an invalid filter, limit or cursor
  */
 export function prepareExecutionListRequest(
@@ -56,12 +55,7 @@ export function prepareExecutionListRequest(
   if (!isPlainObject(request)) {
     throw new ExecutionListRequestError("A list request must be an object");
   }
-  const fields = request as Record<string, unknown>;
-  const workflowId = fields.workflowId ?? undefined;
-  const status = fields.status ?? undefined;
-  const cursor = fields.cursor ?? undefined;
-  const limit = fields.limit ?? undefined;
-  const diverged = fields.diverged ?? undefined;
+  const { workflowId, status, cursor, limit, diverged } = request as Record<string, unknown>;
   if (workflowId !== undefined && typeof workflowId !== "string") {
     throw new ExecutionListRequestError("workflowId must be a string");
   }
@@ -83,17 +77,16 @@ export function prepareExecutionListRequest(
   ) {
     throw new ExecutionListRequestError("limit must be a positive integer");
   }
-  const prepared: PreparedExecutionListRequest = {
+  return {
+    workflowId,
+    status: status as ExecutionStatus | "pruned" | undefined,
+    diverged,
+    beforeSequence: cursor === undefined ? undefined : decodeExecutionListCursor(cursor),
     limit: Math.min(
       (limit as number | undefined) ?? DEFAULT_EXECUTION_LIST_LIMIT,
       MAX_EXECUTION_LIST_LIMIT
     ),
   };
-  if (workflowId !== undefined) prepared.workflowId = workflowId;
-  if (status !== undefined) prepared.status = status as ExecutionStatus | "pruned";
-  if (diverged !== undefined) prepared.diverged = diverged;
-  if (cursor !== undefined) prepared.beforeSequence = decodeExecutionListCursor(cursor);
-  return prepared;
 }
 
 /** A pruned execution matches only `status: "pruned"`. */
@@ -127,41 +120,18 @@ export function toExecutionListPage(
     executions: page.map(({ state }) => toExecutionRecordOrTombstone(state, now)),
   };
   if (matches.length > request.limit) {
-    result.cursor = encodeExecutionListCursor(page[page.length - 1].admissionSequence);
+    result.cursor = String(page[page.length - 1].admissionSequence);
   }
   return result;
-}
-
-const CURSOR_PREFIX = "v1:";
-
-function encodeExecutionListCursor(admissionSequence: number): string {
-  return toBase64Url(`${CURSOR_PREFIX}${admissionSequence}`);
 }
 
 function decodeExecutionListCursor(cursor: unknown): number {
   if (typeof cursor !== "string") {
     throw new ExecutionListRequestError("cursor must be a string");
   }
-  const decoded = fromBase64Url(cursor);
-  const match = decoded?.startsWith(CURSOR_PREFIX)
-    ? /^\d+$/.exec(decoded.slice(CURSOR_PREFIX.length))
-    : null;
-  const sequence = match ? Number(match[0]) : NaN;
+  const sequence = /^\d+$/.test(cursor) ? Number(cursor) : NaN;
   if (!Number.isSafeInteger(sequence)) {
     throw new ExecutionListRequestError("cursor is not a list cursor");
   }
   return sequence;
-}
-
-function toBase64Url(text: string): string {
-  return btoa(text).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-}
-
-function fromBase64Url(value: string): string | undefined {
-  if (!/^[A-Za-z0-9_-]*$/.test(value)) return undefined;
-  try {
-    return atob(value.replace(/-/g, "+").replace(/_/g, "/"));
-  } catch {
-    return undefined;
-  }
 }

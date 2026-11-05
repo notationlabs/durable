@@ -9,7 +9,7 @@ import type {
 import { isPrunedExecution } from "./retention";
 import type { ExecutionTombstone, PrunedExecutionRecord } from "./retention";
 
-export type ExecutionViewBase = {
+type ExecutionViewBase = {
   executionId: string;
   workflowId: string;
   admittedAt: number;
@@ -54,6 +54,11 @@ export type ExecutionWaitOptions = {
    * until the execution is terminal.
    */
   timeout?: number;
+  /**
+   * Ends the wait. `wait` stops reading the record and rejects with the
+   * signal's reason.
+   */
+  signal?: AbortSignal;
 };
 
 export type ExecutionViewPage = {
@@ -107,6 +112,8 @@ export interface ExecutionObserver {
    * the outcome, or with `timed-out` and the current view when `timeout`
    * passes first. Resolves at once with the pruned view of a pruned
    * execution, and with `undefined` for an unknown ID.
+   * Rejects with the signal's reason once `signal` aborts.
+   * @throws {RangeError} for a negative timeout
    */
   wait(
     executionId: string,
@@ -116,6 +123,7 @@ export interface ExecutionObserver {
   /**
    * Pages through executions, newest first by admission sequence. Pruned
    * executions are left out unless `status` is `pruned`.
+   * @throws {ExecutionListRequestError} for an invalid limit, status or cursor
    */
   list(request?: ExecutionListRequest): Promise<ExecutionViewPage>;
 }

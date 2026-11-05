@@ -337,14 +337,14 @@ const { executionId, status } = await sdk.trigger({ workflowId, params?, context
 await sdk.triggerAndWait({ workflowId, params? });
 
 await sdk.poll(executionId);
-await sdk.wait(executionId, { timeout? });
+await sdk.wait(executionId, { timeout?, signal? });
 await sdk.list({ workflowId?, status?, cursor?, limit? });
 await sdk.cancel(executionId, { reason?, force? });
 ```
 
 `trigger` resolves once admission commits, with `status: "accepted"`, or `"existing"` when an idempotent trigger matches an execution with the same `workflowId` and `params`. `triggerAndWait` is `trigger` followed by `wait`; it resolves with the result recorded on the execution record, or rejects with the recorded error. Both throw `ExecutionAdmissionError` when the `executionId` is already in use (`EXECUTION_ID_CONFLICT`, or `EXECUTION_REQUEST_MISMATCH` in idempotent mode), an idempotent trigger has no ID (`IDEMPOTENT_TRIGGER_REQUIRES_ID`), or `params`/`context` are not durable values (`INVALID_EXECUTION_EVENT`). An idempotent trigger whose ID belongs to a pruned execution throws `EXECUTION_PRUNED`. `triggerAndWait` throws `ExecutionPrunedError` for an execution that was pruned before the wait read its outcome.
 
-`poll`, `wait` and `list` read the execution record, so they work from any process that shares the runtime's backend and after a restart. `wait` reads the record before it waits, and resolves with `{ status: "timed-out", execution }` when `timeout` passes first. When the runtime has a retention policy, a pruned execution's view is `{ status: "pruned", executionId, workflowId, terminalStatus, prunedAt }`, and `list` leaves pruned executions out unless `status` is `"pruned"`.
+`poll`, `wait` and `list` read the execution record, so they work from any process that shares the runtime's backend and after a restart. `wait` reads the record before it waits, and resolves with `{ status: "timed-out", execution }` when `timeout` passes first. When `signal` aborts, `wait` stops reading and rejects with the signal's reason. When the runtime has a retention policy, a pruned execution's view is `{ status: "pruned", executionId, workflowId, terminalStatus, prunedAt }`, and `list` leaves pruned executions out unless `status` is `"pruned"`.
 
 `cancel` records a cancellation request and returns without waiting for the workflow to stop. The workflow receives `WorkflowCancelledError` at its next unfinished step, and ends `cancelled` if it lets the error escape. `force: true` records `cancelled` at once without running workflow code. The request also reaches every child the workflow started, except children started with `{ detached: true }`.
 
