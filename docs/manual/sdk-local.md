@@ -73,7 +73,7 @@ When the ID is not in use, the trigger is admitted as usual and returns `"accept
 - If `workflowId` and `params` match, the trigger admits nothing and returns `"existing"` with the same `executionId`. This is true whatever the execution's status, including `completed` and `failed`, and also when the first trigger was not idempotent.
 - If either differs, the trigger throws `EXECUTION_REQUEST_MISMATCH`, and the record is unchanged.
 
-`params` match when they are equal after a round trip through the durable value codec, so the key order of plain objects does not matter. Missing `params` and `{}` do not match. `context` is not compared, because it carries per-request data such as an authentication token. Of two idempotent triggers with the same request that run at the same time, one returns `"accepted"` and the other `"existing"`.
+`params` match when their canonical durable value encodings are equal. The encoding sorts the keys of plain objects, so their key order does not matter. Missing `params` and `{}` do not match. `context` is not compared, because it carries per-request data such as an authentication token. Of two idempotent triggers with the same request that run at the same time, one returns `"accepted"` and the other `"existing"`.
 
 So the retry for `order-42` returns `"existing"`, and the server can call [`wait`](#sdkwait) on `order-42`. A trigger that reuses `order-42` with a different amount throws `EXECUTION_REQUEST_MISMATCH`, and the caller knows to choose a new ID.
 
