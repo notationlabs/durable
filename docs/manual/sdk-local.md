@@ -79,6 +79,8 @@ So the retry for `order-42` returns `"existing"`, and the server can call [`wait
 
 Without `idempotent`, a used ID still throws `EXECUTION_ID_CONFLICT`.
 
+`TriggerEvent` requires `executionId` when `idempotent` is `true`, so leaving it out is a type error. Admission still checks it, so an untyped caller, such as an HTTP client, gets `IDEMPOTENT_TRIGGER_REQUIRES_ID`.
+
 ## `sdk.triggerAndWait`
 
 `trigger` followed by `wait` without a timeout. It returns the workflow's return value.

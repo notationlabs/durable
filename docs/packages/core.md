@@ -460,11 +460,12 @@ type WorkflowInvoker = {
 ```ts
 type TriggerEvent<WorkflowId, Params> = {
   workflowId: WorkflowId;
-  executionId?: string;
   params: Params;
   context?: Record<string, any>;
-  idempotent?: boolean; // requires executionId
-};
+} & (
+  | { executionId?: string; idempotent?: false }
+  | { executionId: string; idempotent: true }
+);
 
 type TriggerAck = {
   executionId: string;

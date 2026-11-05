@@ -7,32 +7,26 @@ export type MiddlewareEventContext = FreezableMap<any, any>;
 export type TriggerEvent<
   WorkflowId extends string,
   Params extends EventParams = EventParams
-> = Params extends void
-  ? {
-      workflowId: WorkflowId;
-      executionId?: string;
-      params?: undefined;
-      context?: Record<string, any>;
+> = (Params extends void
+  ? { workflowId: WorkflowId; params?: undefined; context?: Record<string, any> }
+  : { workflowId: WorkflowId; params: Params; context?: Record<string, any> }) &
+  TriggerIdempotency;
+
+/**
+ * `idempotent: true` requires `executionId`, so omitting it is a type error.
+ * Admission still rejects it at runtime with `IDEMPOTENT_TRIGGER_REQUIRES_ID`
+ * for callers without these types, such as HTTP clients.
+ */
+type TriggerIdempotency =
+  | { executionId?: string; idempotent?: false }
+  | {
+      executionId: string;
       /**
        * Makes a repeat of the trigger safe. When `executionId` is in use,
        * the trigger returns `existing` if the workflow ID and params match,
-       * and fails with `EXECUTION_REQUEST_MISMATCH` otherwise. Requires
-       * `executionId`.
+       * and fails with `EXECUTION_REQUEST_MISMATCH` otherwise.
        */
-      idempotent?: boolean;
-    }
-  : {
-      workflowId: WorkflowId;
-      executionId?: string;
-      params: Params;
-      context?: Record<string, any>;
-      /**
-       * Makes a repeat of the trigger safe. When `executionId` is in use,
-       * the trigger returns `existing` if the workflow ID and params match,
-       * and fails with `EXECUTION_REQUEST_MISMATCH` otherwise. Requires
-       * `executionId`.
-       */
-      idempotent?: boolean;
+      idempotent: true;
     };
 
 /**

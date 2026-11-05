@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, test } from "vitest";
-import { ExecutionAdmissionError } from "yieldstar";
+import type { EventContext } from "@yieldstar/core";
+import { MemoryRuntime } from "@yieldstar/test-runtime";
+import { ExecutionAdmissionError, createLocalSdk, workflow } from "yieldstar";
 import {
   backendKinds,
   cleanup,
@@ -126,3 +128,25 @@ for (const sdkKind of sdkKinds) {
     });
   }
 }
+
+test("idempotent: true without an executionId is a type error, and admission still rejects it", async () => {
+  const router = {
+    "charge-order": workflow<{ orderId: number }, string, EventContext>(async function* () {
+      return "receipt";
+    }),
+  };
+  const sdk = createLocalSdk<typeof router>(new MemoryRuntime());
+  const ack = await sdk.trigger({
+    workflowId: "charge-order",
+    executionId: "order-42",
+    params: { orderId: 42 },
+    idempotent: true,
+  });
+  expect(ack).toEqual({ executionId: "order-42", status: "accepted" });
+
+  const untyped = sdk.trigger(
+    // @ts-expect-error idempotent: true requires executionId
+    { workflowId: "charge-order", params: { orderId: 42 }, idempotent: true }
+  );
+  await expect(untyped).rejects.toMatchObject({ code: "IDEMPOTENT_TRIGGER_REQUIRES_ID" });
+});

@@ -104,4 +104,4 @@ try {
 | `params`      | `Record<string, any>` | Depends on workflow type | Input data accessible via `event.params` inside the workflow |
 | `executionId` | `string`              | No                       | Custom execution ID. The runtime chooses one if omitted      |
 | `context`     | `Record<string, any>` | No                       | Additional context passed through middleware                 |
-| `idempotent`  | `boolean`             | No                       | Makes a repeat of the same request return `"existing"`. Requires `executionId` |
+| `idempotent`  | `boolean`             | No                       | Makes a repeat of the same request return `"existing"`. Requires `executionId`; `true` without one is a type error |
