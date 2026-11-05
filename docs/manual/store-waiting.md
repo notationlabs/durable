@@ -7,14 +7,14 @@ Two primitives suspend a workflow until a store reaches some condition: `when` o
 `when` waits once for a condition and returns the selected value. It does not mutate the store.
 
 ```ts
-const message = yield* store.when((s) =>
+const message = yield* store.when("next-message", (s) =>
   s.messages.find((m) => !m.processed)
 );
 ```
 
 If the selector already returns a truthy value, the workflow continues immediately. Otherwise the execution suspends. On a missing store, `when` first creates it from the definition's `initial`, and the selector runs against that state. When a later write touches something the selector read, the workflow replays and the selector re-evaluates.
 
-Inside a loop, pass an explicit key – the same call site is reached more than once, so the call-site key collides:
+Inside a loop, put something that identifies the iteration in the key, because each key must be unique within the execution. The selector-only form, `store.when(selector)`, takes its key from its call site and is deprecated (see [Step keys](./replay-stability.md#step-keys)):
 
 ```ts
 const message = yield* store.when(`next-message:${turn}`, (s) =>

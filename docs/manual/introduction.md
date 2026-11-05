@@ -8,10 +8,10 @@ Workflows are checkpointed with primitives such as `yield* step.run()` and `yiel
 import { workflow } from "yieldstar";
 
 const checkout = workflow(async function* (step) {
-  const order = yield* step.run(() => createOrder());
-  yield* step.delay(30_000);
-  const payment = yield* step.run(() => chargeCard(order.id));
-  return yield* step.run(() => confirmOrder(order.id, payment.id));
+  const order = yield* step.run("create-order", () => createOrder());
+  yield* step.delay("cooling-off", 30_000);
+  const payment = yield* step.run("charge-card", () => chargeCard(order.id));
+  return yield* step.run("confirm-order", () => confirmOrder(order.id, payment.id));
 });
 ```
 

@@ -97,6 +97,22 @@ const result = await sdk.cancel("order-42", { reason: "abandoned" });
 
 `cancel` checks its arguments before it sends a request, and throws `ExecutionCancelRequestError` for an empty execution ID, a `reason` that is not a string, or a `force` that is not a boolean.
 
+## `sdk.clearDivergence`
+
+Behaves as the [local SDK's `clearDivergence`](./sdk-local.md#sdkcleardivergence) does, and posts to `/clear-divergence`.
+
+```ts
+const result = await sdk.clearDivergence("order-42");
+```
+
+| Server response                     | SDK result                                           |
+| ----------------------------------- | ---------------------------------------------------- |
+| `200` with `{ status: "cleared" }` or `{ status: "not-diverged" }` | Resolves with that result |
+| `404` `EXECUTION_NOT_FOUND`         | Resolves with `undefined`                            |
+| Any other error response, such as a middleware denial | Throws an `HttpRouteError`         |
+
+`clearDivergence` throws a `TypeError` for an empty execution ID before it sends a request.
+
 ## `HttpRouteError`
 
 `HttpRouteError` is the error for a response that has no more specific error, such as an observation middleware denial. It carries the response's `status`, and its `code` when the body has one.
