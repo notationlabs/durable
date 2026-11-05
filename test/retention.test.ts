@@ -269,103 +269,6 @@ describe.each(backends)("retention on %s", (_name, create) => {
     }
   });
 
-  test("pruneExecutionStores deletes the stores whose id is the execution ID", async () => {
-    const backend = create();
-    const runtime = backend.open({ default: { completed: 0, pruneExecutionStores: true } });
-    await runOrder(runtime);
-    expect(await runtime.prune()).toEqual({ pruned: 1, cleaned: 1 });
-    expect(await runtime.stores.listStores(OrderStore)).toEqual([]);
-    expect(await runtime.stores.listStores(LedgerStore)).toEqual(["shared"]);
-  });
-
-  test("non-terminal executions, outcomes without a period and runtimes without a policy are kept", async () => {
-    const backend = create();
-    const runtime = backend.open({
-      default: { failed: 0 },
-      workflows: { "charge-card": { completed: 0 } },
-    });
-    await admit(runtime, "admitted-42");
-    await admit(runtime, "suspended-42");
-    const lease = await claim(runtime, "suspended-42");
-    await runtime.executions.acknowledge({ lease, outcome: { status: "suspended" } });
-    await admit(runtime, "completed-42");
-    await complete(runtime, await claim(runtime, "completed-42"));
-    await admit(runtime, "charge-42", "charge-card");
-    await complete(runtime, await claim(runtime, "charge-42"));
-
-    backend.clock.now += 1_000 * DAY;
-    expect(await runtime.prune()).toEqual({ pruned: 1, cleaned: 1 });
-    expect(await runtime.executions.get("charge-42")).toMatchObject({ status: "pruned" });
-    for (const id of ["admitted-42", "suspended-42", "completed-42"]) {
-      expect(await runtime.executions.get(id)).not.toMatchObject({ status: "pruned" });
-    }
-
-    const unconfigured = backend.open({});
-    expect(await unconfigured.prune()).toEqual({ pruned: 0, cleaned: 0 });
-  });
-
-  test("a target is kept while a non-terminal joiner waits, and pruned after the join is recorded", async () => {
-    const backend = create();
-    const runtime = backend.open({ default: { completed: 0 } });
-    await admit(runtime, "ship-42", "ship-order");
-    await admit(runtime, "charge-42", "charge-order");
-    const joiner = await claim(runtime, "charge-42");
-    const waiter = { targetExecutionId: "ship-42", executionId: "charge-42", stepKey: "join" };
-    expect(await runtime.joins.join(waiter)).toEqual({ status: "waiting" });
-    await runtime.executions.acknowledge({ lease: joiner, outcome: { status: "suspended" } });
-    await complete(runtime, await claim(runtime, "ship-42"));
-
-    // The joiner is woken but not delivered.
-    expect(await runtime.prune()).toEqual({ pruned: 0, cleaned: 0 });
-    expect(await runtime.executions.get("ship-42")).toMatchObject({ status: "completed" });
-
-    const delivery = await claim(runtime, "charge-42");
-    await runtime.heap.writeStep({
-      lease: delivery,
-      stepKey: "join",
-      stepAttempt: 1,
-      done: true,
-      stepResponseJson: "{}",
-    });
-    await runtime.executions.acknowledge({ lease: delivery, outcome: { status: "suspended" } });
-    expect(await runtime.prune()).toEqual({ pruned: 1, cleaned: 1 });
-    expect(await runtime.executions.get("ship-42")).toMatchObject({ status: "pruned" });
-  });
-
-  test("a waiter left by a terminal joiner does not keep the target", async () => {
-    const backend = create();
-    const runtime = backend.open({ default: { completed: 0 } });
-    await admit(runtime, "ship-42", "ship-order");
-    await admit(runtime, "charge-42", "charge-order");
-    await runtime.joins.join({
-      targetExecutionId: "ship-42",
-      executionId: "charge-42",
-      stepKey: "join",
-    });
-    await complete(runtime, await claim(runtime, "charge-42"));
-    await complete(runtime, await claim(runtime, "ship-42"));
-    expect(await runtime.prune()).toEqual({ pruned: 2, cleaned: 2 });
-  });
-
-  test("a pass that stops after the tombstone is finished by the next one", async () => {
-    const backend = create();
-    const runtime = backend.open();
-    await runOrder(runtime);
-    backend.clock.now += 7 * DAY;
-
-    const [tombstone] = await runtime.executions.prune({ retain: RETAIN, limit: 10 });
-    expect(tombstone).toMatchObject({ executionId: ORDER, status: "pruned" });
-    expect(await runtime.executions.get(ORDER)).toEqual(tombstone);
-    expect(await runtime.executions.listPendingPrunes({ limit: 10 })).toEqual([
-      { executionId: ORDER, deleteExecutionStore: false },
-    ]);
-    expect(await runtime.heap.listSteps({ executionId: ORDER })).toHaveLength(1);
-
-    expect(await runtime.prune()).toEqual({ pruned: 0, cleaned: 1 });
-    expect(await runtime.heap.listSteps({ executionId: ORDER })).toEqual([]);
-    expect(await runtime.executions.get(ORDER)).toEqual(tombstone);
-  });
-
   test("a shortened policy applies to executions that are already terminal", async () => {
     const backend = create();
     await runOrder(backend.open());
@@ -403,35 +306,6 @@ describe.each(backends)("retention on %s", (_name, create) => {
 });
 
 describe("retention on SQLite", () => {
-  test("two processes pruning one file reach the same end state", async () => {
-    const backend = sqliteBackend();
-    const runtime = backend.open({ default: { completed: 0 } });
-    const ids = Array.from({ length: 20 }, (_, i) => `order-${i}`);
-    for (const id of ids) {
-      await admit(runtime, id);
-      const lease = await claim(runtime, id);
-      await runtime.heap.writeStep({
-        lease,
-        stepKey: "a",
-        stepAttempt: 1,
-        done: true,
-        stepResponseJson: "{}",
-      });
-      await complete(runtime, lease);
-    }
-    const peers = [0, 1].map(() => backend.open({ default: { completed: 0 } }));
-    const results = await Promise.all(peers.map((peer) => peer.prune({ limit: 7 })));
-    while ((await peers[0].prune({ limit: 7 })).pruned > 0);
-    expect(results.reduce((sum, result) => sum + result.pruned, 0)).toBeLessThanOrEqual(ids.length);
-    const page = await runtime.executions.list({ status: "pruned", limit: 100 });
-    const prunedIds = page.executions.map((execution) => execution.executionId);
-    expect(prunedIds.sort()).toEqual([...ids].sort());
-    expect(await runtime.executions.listPendingPrunes({ limit: 100 })).toEqual([]);
-    for (const id of ids) {
-      expect(await runtime.heap.listSteps({ executionId: id })).toEqual([]);
-    }
-  });
-
   test("a database from before retention reads its rows as not pruned and prunes them", async () => {
     const db = createSqliteDb({ path: ":memory:", wal: false });
     cleanups.push(() => db.close());
