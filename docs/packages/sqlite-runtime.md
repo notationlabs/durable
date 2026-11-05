@@ -55,11 +55,11 @@ Keeping them in one database lets every guarantee that spans clients hold in a s
 - An effect settlement and the wakes for its waiters commit together.
 - The heap write that records a step's result deletes that step's store and effect waiters.
 - Admission inserts the record already due, so the record and its first wake commit together.
-- Admission assigns the record the next `admission_sequence`, which orders `list`, in the same transaction as the insert. The transaction holds the write lock, so two processes never assign the same number.
+- Admission assigns the record the next `admission_sequence`, which orders `list`, in the same statement as the insert. A trigger on `executions` takes the number from a single-row counter table, `execution_admission_counter`. The insert holds the write lock, so two processes never assign the same number. The counter only increases, so a number is not reissued after a row is deleted.
 - An idempotent admission reads an existing record in the same transaction as its insert, so of two concurrent repeats one is accepted and the other sees its record.
 - A new `start` inserts the target, already due and with its parent link, and the start request in one transaction. The request is looked up in the same transaction, so concurrent starts with one request ID admit one target.
 
-A database created before `list` has no `admission_sequence` column. `SqliteRuntime` adds it when it opens the file, and fills it from each row's `rowid`, which follows insertion order as long as no row was deleted.
+A database created before `list` has no `admission_sequence` column. `SqliteRuntime` adds it when it opens the file, fills it from each row's `rowid`, which follows insertion order as long as no row was deleted, and starts the counter above the largest value. The column allows `NULL` and has no default. A process still on an earlier version inserts rows without the column, and the trigger gives each of them the next number, so old and new processes can share the file during a rolling upgrade.
 
 Every write runs as one synchronous `IMMEDIATE` transaction. Separate processes that open the same file, such as the app and its worker subprocesses, therefore serialize on SQLite's lock and see the same execution records.
 

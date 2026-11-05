@@ -66,38 +66,75 @@ export class ExecutionsDao {
         next_claim_at INTEGER,
         parent_execution_id TEXT,
         parent_step_key TEXT,
-        admission_sequence INTEGER NOT NULL
+        admission_sequence INTEGER
       );
       CREATE INDEX IF NOT EXISTS idx_executions_next_claim_at
       ON executions(next_claim_at) WHERE next_claim_at IS NOT NULL;
     `);
-    this.addAdmissionSequence();
-    this.db.run(`
-      CREATE UNIQUE INDEX IF NOT EXISTS idx_executions_admission_sequence
-      ON executions(admission_sequence);
-      CREATE INDEX IF NOT EXISTS idx_executions_workflow_admission_sequence
-      ON executions(workflow_id, admission_sequence);
-    `);
+    this.setupAdmissionSequence();
   }
 
   /**
-   * Databases created before `list` have no admission sequence. Their rows
-   * take their rowid, which SQLite assigns in insertion order while no row
-   * has been deleted. The check runs under the write lock, so processes that
-   * open the file together add the column once.
+   * Sets up the admission sequence, which orders `list`. Every insert,
+   * including one from a process still on a version from before `list`,
+   * leaves `admission_sequence` NULL, and an AFTER INSERT trigger sets it to
+   * the next value of a single-row counter in the same statement. The column
+   * has no default and allows NULL, so an older process's insert succeeds
+   * during a rolling upgrade. The counter only increases, so a sequence is
+   * never reissued after a row is deleted.
+   *
+   * Rows from before `list` take their rowid, which SQLite assigns in
+   * insertion order while no row has been deleted, and the counter starts
+   * above them. The setup runs under the write lock and skips what exists, so
+   * processes that open the file together set it up once. The trigger is
+   * created last, so its presence means the setup is complete.
    */
-  private addAdmissionSequence() {
+  private setupAdmissionSequence() {
+    const isSetUp = () =>
+      this.db
+        .query<{ name: string }>(
+          `SELECT name FROM sqlite_master
+           WHERE type = 'trigger' AND name = 'trg_executions_admission_sequence'`
+        )
+        .all().length > 0;
     const hasColumn = () =>
       this.db
         .query<{ name: string }>(`PRAGMA table_info(executions)`)
         .all()
         .some((column) => column.name === "admission_sequence");
-    if (hasColumn()) return;
+    if (isSetUp()) return;
     runTransaction(this.db, () => {
-      if (hasColumn()) return;
+      if (isSetUp()) return;
+      if (!hasColumn()) {
+        this.db.run(`
+          ALTER TABLE executions ADD COLUMN admission_sequence INTEGER;
+          UPDATE executions SET admission_sequence = rowid;
+        `);
+      }
       this.db.run(`
-        ALTER TABLE executions ADD COLUMN admission_sequence INTEGER NOT NULL DEFAULT 0;
-        UPDATE executions SET admission_sequence = rowid;
+        CREATE TABLE IF NOT EXISTS execution_admission_counter (
+          id INTEGER PRIMARY KEY CHECK (id = 1),
+          last_sequence INTEGER NOT NULL
+        );
+        INSERT OR IGNORE INTO execution_admission_counter (id, last_sequence)
+        SELECT 1, COALESCE(MAX(admission_sequence), 0) FROM executions;
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_executions_admission_sequence
+        ON executions(admission_sequence);
+        CREATE INDEX IF NOT EXISTS idx_executions_workflow_admission_sequence
+        ON executions(workflow_id, admission_sequence);
+        CREATE TRIGGER trg_executions_admission_sequence
+        AFTER INSERT ON executions
+        WHEN NEW.admission_sequence IS NULL
+        BEGIN
+          UPDATE execution_admission_counter
+          SET last_sequence = last_sequence + 1
+          WHERE id = 1;
+          UPDATE executions
+          SET admission_sequence = (
+            SELECT last_sequence FROM execution_admission_counter WHERE id = 1
+          )
+          WHERE execution_id = NEW.execution_id;
+        END;
       `);
     });
   }
@@ -180,9 +217,9 @@ export class ExecutionsDao {
   }
 
   /**
-   * Returns false when the execution ID is already in use. A new execution
-   * takes the next admission sequence; the caller's IMMEDIATE transaction
-   * holds the write lock, so no other process reads the same maximum.
+   * Returns false when the execution ID is already in use. The admission
+   * sequence trigger gives a new execution the next sequence in the same
+   * statement.
    */
   insertState(state: ExecutionState): boolean {
     const result = this.db
@@ -191,14 +228,12 @@ export class ExecutionsDao {
            execution_id, workflow_id, params, context, status, outcome,
            admitted_at, updated_at, due_at, claimed_due_at, lease_token,
            lease_expires_at, unacknowledged_delivery_count, redeliver_at,
-           next_claim_at, parent_execution_id, parent_step_key,
-           admission_sequence
+           next_claim_at, parent_execution_id, parent_step_key
          ) VALUES (
            $executionId, $workflowId, $params, $context, $status, $outcome,
            $admittedAt, $updatedAt, $dueAt, $claimedDueAt, $leaseToken,
            $leaseExpiresAt, $unacknowledgedDeliveryCount, $redeliverAt,
-           $nextClaimAt, $parentExecutionId, $parentStepKey,
-           (SELECT COALESCE(MAX(admission_sequence), 0) + 1 FROM executions)
+           $nextClaimAt, $parentExecutionId, $parentStepKey
          )
          ON CONFLICT(execution_id) DO NOTHING`
       )

@@ -124,3 +124,65 @@ test("a database created before list gives its executions admission sequences in
     db.close();
   }
 });
+
+function admissionSequences(db: SqliteDb) {
+  return Object.fromEntries(
+    db
+      .query<{ execution_id: string; admission_sequence: number }>(
+        `SELECT execution_id, admission_sequence FROM executions`
+      )
+      .all()
+      .map((row) => [row.execution_id, Number(row.admission_sequence)])
+  );
+}
+
+async function admitCharge(runtime: SqliteRuntime, executionId: string) {
+  expect(
+    await runtime.executions.admit({
+      executionId,
+      workflowId: "charge-order",
+      params: {},
+      context: new Map(),
+    })
+  ).toEqual({ status: "accepted", executionId });
+}
+
+test("an insert that omits admission_sequence, as a process from before list makes, takes the next sequence", async () => {
+  const db = createSqliteDb({ path: ":memory:", wal: false });
+  try {
+    const runtime = new SqliteRuntime(db);
+    await admitCharge(runtime, "new-1");
+    db.run(`
+      INSERT INTO executions (execution_id, workflow_id, params, context, status, admitted_at, updated_at)
+      VALUES ('old-code', 'charge-order', '{}', '[]', 'admitted', 0, 0);
+    `);
+    await admitCharge(runtime, "new-2");
+
+    expect(admissionSequences(db)).toEqual({ "new-1": 1, "old-code": 2, "new-2": 3 });
+    const page = await runtime.executions.list();
+    expect(page.executions.map((record) => record.executionId)).toEqual([
+      "new-2",
+      "old-code",
+      "new-1",
+    ]);
+  } finally {
+    db.close();
+  }
+});
+
+test("a deleted execution's admission sequence is not reissued", async () => {
+  const db = createSqliteDb({ path: ":memory:", wal: false });
+  try {
+    const runtime = new SqliteRuntime(db);
+    await admitCharge(runtime, "first");
+    await admitCharge(runtime, "newest");
+    db.run(`DELETE FROM executions WHERE execution_id = 'newest'`);
+    // A runtime opened after the delete continues from the counter, not the remaining rows.
+    const reopened = new SqliteRuntime(db);
+    await admitCharge(reopened, "after-delete");
+
+    expect(admissionSequences(db)).toEqual({ first: 1, "after-delete": 3 });
+  } finally {
+    db.close();
+  }
+});
