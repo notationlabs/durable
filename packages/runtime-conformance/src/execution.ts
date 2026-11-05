@@ -2312,6 +2312,8 @@ export function registerExecutionClientConformance({
         harness,
       }) => {
         const peer = (await harness.createPeer?.()) ?? runtime;
+        // An adapter that admits synchronously runs these one after the
+        // other; overlap needs separate processes.
         const results = await Promise.all([
           runtime.executions.admit(charge),
           peer.executions.admit(charge),

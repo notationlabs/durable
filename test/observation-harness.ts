@@ -209,6 +209,49 @@ export function spawnDispatcher(path: string): ChildProcess {
   return child;
 }
 
+/**
+ * Starts `test/fixtures/observation/admit.mjs` in its own process, once per
+ * request, against the SQLite file. Each process opens the file, and all of
+ * them call `admit` together once every one is ready. Resolves with each
+ * process's admission result, in request order.
+ */
+export async function admitFromProcesses(path: string, requests: unknown[]) {
+  const children = requests.map((request) => {
+    const child = spawn(
+      process.execPath,
+      [
+        new URL("./fixtures/observation/admit.mjs", import.meta.url).pathname,
+        path,
+        JSON.stringify(request),
+      ],
+      { stdio: ["pipe", "pipe", "inherit"] }
+    );
+    cleanups.push(() => {
+      child.kill("SIGKILL");
+    });
+    const lines = (async function* () {
+      let buffered = "";
+      for await (const chunk of child.stdout!) {
+        buffered += chunk;
+        let end: number;
+        while ((end = buffered.indexOf("\n")) !== -1) {
+          yield buffered.slice(0, end);
+          buffered = buffered.slice(end + 1);
+        }
+      }
+    })();
+    return { child, lines };
+  });
+  const next = async (lines: AsyncGenerator<string>) => {
+    const { value, done } = await lines.next();
+    if (done) throw new Error("The admit process exited before it answered");
+    return value;
+  };
+  for (const { lines } of children) expect(await next(lines)).toBe("ready");
+  for (const { child } of children) child.stdin!.write("go\n");
+  return Promise.all(children.map(async ({ lines }) => JSON.parse(await next(lines))));
+}
+
 export async function admit(
   runtime: Runtime,
   executionId: string,

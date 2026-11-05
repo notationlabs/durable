@@ -3,6 +3,7 @@ import type { EventContext } from "@yieldstar/core";
 import { MemoryRuntime } from "@yieldstar/test-runtime";
 import { ExecutionAdmissionError, createLocalSdk, workflow } from "yieldstar";
 import {
+  admitFromProcesses,
   backendKinds,
   cleanup,
   complete,
@@ -101,6 +102,8 @@ for (const sdkKind of sdkKinds) {
       test("two concurrent idempotent triggers with the same request admit one execution", async () => {
         const { runtime, peer, sdk, count } = setup();
         const other = createTestSdk(sdkKind, peer);
+        // SQLite admits synchronously, so in one process these do not overlap.
+        // The cross-process test below makes them overlap.
         const results = await Promise.all([sdk.trigger(order), other.trigger(order)]);
         expect(results.map((result) => result.status).sort()).toEqual(["accepted", "existing"]);
         expect(results.map((result) => result.executionId)).toEqual(["order-42", "order-42"]);
@@ -150,3 +153,21 @@ test("idempotent: true without an executionId is a type error, and admission sti
   );
   await expect(untyped).rejects.toMatchObject({ code: "IDEMPOTENT_TRIGGER_REQUIRES_ID" });
 });
+
+test(
+  "two processes that admit the same idempotent request at once on one SQLite file admit one execution",
+  { timeout: 15_000 },
+  async () => {
+    const backend = openBackend("sqlite");
+    for (let round = 0; round < 5; round++) {
+      const request = { ...order, executionId: `order-${round}` };
+      const results = await admitFromProcesses(backend.path!, [request, request]);
+      expect(results.map((result) => result.status).sort()).toEqual(["accepted", "existing"]);
+      for (const result of results) expect(result.executionId).toBe(request.executionId);
+    }
+    const { executions } = await backend.runtime.executions.list();
+    expect(executions.map((record) => record.executionId).sort()).toEqual(
+      Array.from({ length: 5 }, (_, round) => `order-${round}`)
+    );
+  }
+);
