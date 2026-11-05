@@ -22,6 +22,7 @@ export const manual: DocCategory = {
         { label: "Concurrent Steps", slug: "manual/concurrent-steps" },
         { label: "Retries", slug: "manual/retries" },
         { label: "Cancellation", slug: "manual/cancellation" },
+        { label: "Replay Stability", slug: "manual/replay-stability" },
       ],
     },
     {
