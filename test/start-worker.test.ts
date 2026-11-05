@@ -5,7 +5,7 @@ import { afterEach, expect, test } from "vitest";
 import type { Logger } from "pino";
 import {
   ExecutionDispatcher,
-  waitForExecutionOutcome,
+  createExecutionObserver,
   type DispatcherOptions,
 } from "@yieldstar/core";
 import { createWorkflowInvoker } from "@yieldstar/worker-invoker";
@@ -63,8 +63,8 @@ function setup(options: Partial<DispatcherOptions> = {}) {
     expect(admitted).toEqual({ status: "accepted", executionId: "order-42" });
   };
 
-  const outcomeOf = (executionId: string) =>
-    waitForExecutionOutcome(runtime.executions, executionId, { pollInterval: 5 });
+  const observer = createExecutionObserver(runtime.executions, { pollInterval: 5 });
+  const outcomeOf = (executionId: string) => observer.wait(executionId);
 
   const starts = () =>
     readFileSync(join(dir, "starts"), "utf8")
@@ -93,7 +93,7 @@ test("step.start through worker processes and SQLite: the caller records the tar
   const { shipment } = (callerOutcome as { result: { shipment: string } }).result;
   expect(shipOrderIds()).toEqual([shipment]);
 
-  expect(await outcomeOf(shipment)).toEqual({
+  expect(await outcomeOf(shipment)).toMatchObject({
     status: "completed",
     result: { orderId: 42, courier: "courier-1", tenant: "acme" },
   });
@@ -164,7 +164,10 @@ test("a cancellation request reaches workflow code in a worker process, and the 
   await runtime.executions.cancel({ executionId: "order-42", reason: "abandoned" });
   dispatcher.start();
 
-  expect(await outcomeOf("order-42")).toEqual({ status: "cancelled", reason: "abandoned" });
+  expect(await outcomeOf("order-42")).toMatchObject({
+    status: "cancelled",
+    reason: "abandoned",
+  });
   const release = await runtime.heap.readStep({ executionId: "order-42", stepKey: "release" });
   expect(JSON.parse(release!.stepResponseJson)).toMatchObject({ result: "released: abandoned" });
 });

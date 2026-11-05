@@ -56,9 +56,12 @@ import {
  * Records are stored encoded, so reads are isolated from caller mutation.
  */
 export class MemoryExecutionClient implements ExecutionClient {
+  /**
+   * In admission order, since nothing deletes from it and `set` on an
+   * existing key keeps its position. An execution's admission sequence is its
+   * position plus one.
+   */
   private executions = new Map<string, ExecutionState>();
-  /** Execution IDs in admission order: an ID's admission sequence is its index plus one. */
-  private admissionOrder: string[] = [];
   /** Keyed by startRequestKey. */
   private startRequests = new Map<string, StartRequestState>();
   private clock: () => number;
@@ -99,7 +102,8 @@ export class MemoryExecutionClient implements ExecutionClient {
     }
     const existing = this.executions.get(prepared.executionId);
     if (existing) return matchExecutionAdmission(existing, prepared);
-    this.insert(
+    this.executions.set(
+      prepared.executionId,
       createExecutionState({
         executionId: prepared.executionId,
         workflowId: request.workflowId,
@@ -129,7 +133,7 @@ export class MemoryExecutionClient implements ExecutionClient {
     while (this.executions.has(created.target.executionId)) {
       created = createStartedExecution({ start, caller, now: this.clock() });
     }
-    this.insert(created.target);
+    this.executions.set(created.target.executionId, created.target);
     this.startRequests.set(key, created.startRequest);
     return { status: "accepted", executionId: created.target.executionId };
   }
@@ -143,16 +147,14 @@ export class MemoryExecutionClient implements ExecutionClient {
     const prepared = prepareExecutionListRequest(request);
     const now = this.clock();
     const matches: SequencedExecutionState[] = [];
-    const before = Math.min(
-      prepared.beforeSequence ?? Infinity,
-      this.admissionOrder.length + 1
-    );
+    const states = [...this.executions.values()];
+    const before = Math.min(prepared.beforeSequence ?? Infinity, states.length + 1);
     for (
       let sequence = before - 1;
       sequence >= 1 && matches.length <= prepared.limit;
       sequence--
     ) {
-      const state = this.executions.get(this.admissionOrder[sequence - 1])!;
+      const state = states[sequence - 1];
       if (matchesExecutionListRequest(state, prepared, now)) {
         matches.push({ state, admissionSequence: sequence });
       }
@@ -270,11 +272,6 @@ export class MemoryExecutionClient implements ExecutionClient {
    */
   getState(executionId: string): ExecutionState | undefined {
     return this.executions.get(executionId);
-  }
-
-  private insert(state: ExecutionState) {
-    this.executions.set(state.executionId, state);
-    this.admissionOrder.push(state.executionId);
   }
 
   async claimDue(request: {

@@ -169,7 +169,6 @@ export {
   DEFAULT_DISPATCHER_CONCURRENCY,
   ExecutionDispatcher,
 } from "./lib/execution-dispatcher";
-export { waitForExecutionOutcome } from "./lib/wait-for-outcome";
 export {
   ExecutionCancelRequestError,
   createExecutionControl,
@@ -182,7 +181,6 @@ export type {
   ExecutionControl,
   ExecutionObserver,
   ExecutionView,
-  ExecutionViewBase,
   ExecutionViewPage,
   ExecutionWaitOptions,
   TerminalExecutionView,
@@ -193,17 +191,13 @@ export type {
   ExecutionNotifier,
   ExecutionObserverOptions,
 } from "./lib/execution-observer";
-export {
-  DEFAULT_OBSERVER_POLL_INTERVAL,
-  createExecutionObserver,
-} from "./lib/execution-observer";
+export { createExecutionObserver, isDuration, isPositiveInterval } from "./lib/execution-observer";
 export type {
   PreparedExecutionListRequest,
   SequencedExecutionState,
 } from "./lib/execution-list";
 export {
   DEFAULT_EXECUTION_LIST_LIMIT,
-  EXECUTION_STATUSES,
   MAX_EXECUTION_LIST_LIMIT,
   matchesExecutionListRequest,
   prepareExecutionListRequest,

@@ -5,7 +5,7 @@ import type {
   SequencedExecutionState,
 } from "@yieldstar/core";
 import { nextClaimAt } from "@yieldstar/core";
-import type { SqliteDriver } from "../sqlite-driver";
+import type { SqliteDriver, SqliteParameters } from "../sqlite-driver";
 import { runTransaction } from "../sqlite-transaction";
 
 class ExecutionRow {
@@ -27,7 +27,6 @@ class ExecutionRow {
   parent_execution_id!: string | null;
   parent_step_key!: string | null;
   parent_detached!: number;
-  admission_sequence!: number;
   cancellation_reason!: string | null;
   cancellation_source!: string | null;
   cancellation_forced!: number | null;
@@ -40,18 +39,23 @@ class ExecutionRow {
   divergence_detected_at!: number | null;
 }
 
+class SequencedExecutionRow extends ExecutionRow {
+  sequence!: number;
+}
+
 class ExecutionIdRow {
   execution_id!: string;
 }
 
 /**
  * Persists every ExecutionState field, plus `next_claim_at` (derived with
- * nextClaimAt) so claimDue can find due executions through an index, and
- * `admission_sequence`, which orders `list`. A cancellation request is stored
- * in the `cancellation_*` columns; `cancellation_requested_at` is NULL when
- * there is none. A divergence is stored in the `divergence_*` columns;
- * `divergence_code` is NULL when there is none. Callers own the surrounding
- * transaction.
+ * nextClaimAt) so claimDue can find due executions through an index. The
+ * table's `rowid` is the admission sequence that orders `list`: SQLite
+ * assigns it under the write lock, one more than the largest rowid in the
+ * table. A cancellation request is stored in the `cancellation_*` columns;
+ * `cancellation_requested_at` is NULL when there is none. A divergence is
+ * stored in the `divergence_*` columns; `divergence_code` is NULL when there
+ * is none. Callers own the surrounding transaction.
  */
 export class ExecutionsDao {
   private db: SqliteDriver;
@@ -80,13 +84,15 @@ export class ExecutionsDao {
         redeliver_at INTEGER,
         next_claim_at INTEGER,
         parent_execution_id TEXT,
-        parent_step_key TEXT,
-        admission_sequence INTEGER
+        parent_step_key TEXT
       );
       CREATE INDEX IF NOT EXISTS idx_executions_next_claim_at
       ON executions(next_claim_at) WHERE next_claim_at IS NOT NULL;
+      CREATE INDEX IF NOT EXISTS idx_executions_workflow_id
+      ON executions(workflow_id);
+      CREATE INDEX IF NOT EXISTS idx_executions_status
+      ON executions(status);
     `);
-    this.setupAdmissionSequence();
     this.setupCancellation();
     this.setupReplayStability();
   }
@@ -158,70 +164,6 @@ export class ExecutionsDao {
     `);
   }
 
-  /**
-   * Sets up the admission sequence that orders `list`. Inserts leave
-   * `admission_sequence` NULL, and an AFTER INSERT trigger sets it from a
-   * single-row counter in the same statement. The column has no default and
-   * allows NULL, so inserts from processes on older versions still succeed
-   * during a rolling upgrade. The counter only increases, so a sequence is
-   * never reused after a delete.
-   *
-   * Existing rows take their rowid, which follows insertion order if no row
-   * has been deleted, and the counter starts above them. The setup runs under
-   * the write lock and skips what already exists, so processes that open the
-   * file together set it up once. The trigger is created last, so its
-   * presence means the setup is complete.
-   */
-  private setupAdmissionSequence() {
-    const isSetUp = () =>
-      this.db
-        .query<{ name: string }>(
-          `SELECT name FROM sqlite_master
-           WHERE type = 'trigger' AND name = 'trg_executions_admission_sequence'`
-        )
-        .all().length > 0;
-    const hasColumn = () =>
-      this.db
-        .query<{ name: string }>(`PRAGMA table_info(executions)`)
-        .all()
-        .some((column) => column.name === "admission_sequence");
-    if (isSetUp()) return;
-    runTransaction(this.db, () => {
-      if (isSetUp()) return;
-      if (!hasColumn()) {
-        this.db.run(`
-          ALTER TABLE executions ADD COLUMN admission_sequence INTEGER;
-          UPDATE executions SET admission_sequence = rowid;
-        `);
-      }
-      this.db.run(`
-        CREATE TABLE IF NOT EXISTS execution_admission_counter (
-          id INTEGER PRIMARY KEY CHECK (id = 1),
-          last_sequence INTEGER NOT NULL
-        );
-        INSERT OR IGNORE INTO execution_admission_counter (id, last_sequence)
-        SELECT 1, COALESCE(MAX(admission_sequence), 0) FROM executions;
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_executions_admission_sequence
-        ON executions(admission_sequence);
-        CREATE INDEX IF NOT EXISTS idx_executions_workflow_admission_sequence
-        ON executions(workflow_id, admission_sequence);
-        CREATE TRIGGER trg_executions_admission_sequence
-        AFTER INSERT ON executions
-        WHEN NEW.admission_sequence IS NULL
-        BEGIN
-          UPDATE execution_admission_counter
-          SET last_sequence = last_sequence + 1
-          WHERE id = 1;
-          UPDATE executions
-          SET admission_sequence = (
-            SELECT last_sequence FROM execution_admission_counter WHERE id = 1
-          )
-          WHERE execution_id = NEW.execution_id;
-        END;
-      `);
-    });
-  }
-
   getState(executionId: string): ExecutionState | undefined {
     const row = this.db
       .query<ExecutionRow>(
@@ -237,7 +179,7 @@ export class ExecutionsDao {
       .query<ExecutionRow>(
         `SELECT * FROM executions
          WHERE parent_execution_id = $parentExecutionId AND parent_detached = 0
-         ORDER BY admission_sequence`
+         ORDER BY rowid`
       )
       .all({ $parentExecutionId: parentExecutionId })
       .map(toState);
@@ -272,60 +214,59 @@ export class ExecutionsDao {
 
   /**
    * Up to `limit + 1` executions that match the request, newest first. `now`
-   * is used to decide which executions are `running`.
+   * is used to decide which executions are `running`. Only the conditions the
+   * request uses are added, so SQLite can read a filter through the
+   * `workflow_id` or `status` index, whose entries are in rowid order.
    */
   listStates(
     request: PreparedExecutionListRequest,
     now: number
   ): SequencedExecutionState[] {
+    const conditions: string[] = [];
+    const bindings: SqliteParameters = { $limit: request.limit + 1 };
+    if (request.workflowId !== undefined) {
+      conditions.push("workflow_id = $workflowId");
+      bindings.$workflowId = request.workflowId;
+    }
+    if (request.beforeSequence !== undefined) {
+      conditions.push("rowid < $before");
+      bindings.$before = request.beforeSequence;
+    }
     // `running` is derived from a live lease, so the other statuses exclude
     // executions whose lease has not expired.
-    const statusCondition =
-      request.status === undefined
-        ? ""
-        : request.status === "running"
-          ? "AND lease_expires_at IS NOT NULL AND lease_expires_at > $now"
-          : "AND status = $status AND (lease_expires_at IS NULL OR lease_expires_at <= $now)";
-    const divergedCondition =
-      request.diverged === undefined
-        ? ""
-        : request.diverged
-          ? "AND divergence_code IS NOT NULL"
-          : "AND divergence_code IS NULL";
+    if (request.status === "running") {
+      conditions.push("lease_expires_at IS NOT NULL AND lease_expires_at > $now");
+      bindings.$now = now;
+    } else if (request.status !== undefined) {
+      conditions.push(
+        "status = $status AND (lease_expires_at IS NULL OR lease_expires_at <= $now)"
+      );
+      bindings.$status = request.status;
+      bindings.$now = now;
+    }
+    if (request.diverged !== undefined) {
+      conditions.push(
+        request.diverged ? "divergence_code IS NOT NULL" : "divergence_code IS NULL"
+      );
+    }
     return this.db
-      .query<ExecutionRow>(
-        `SELECT * FROM executions
-         WHERE ($workflowId IS NULL OR workflow_id = $workflowId)
-           AND ($before IS NULL OR admission_sequence < $before)
-           ${statusCondition}
-           ${divergedCondition}
-         ORDER BY admission_sequence DESC
+      .query<SequencedExecutionRow>(
+        `SELECT *, rowid AS sequence FROM executions
+         ${conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : ""}
+         ORDER BY rowid DESC
          LIMIT $limit`
       )
-      .all({
-        $workflowId: request.workflowId ?? null,
-        $before: request.beforeSequence ?? null,
-        $limit: request.limit + 1,
-        ...(request.status === undefined
-          ? {}
-          : request.status === "running"
-            ? { $now: now }
-            : { $now: now, $status: request.status }),
-      })
+      .all(bindings)
       .map((row) => ({
         state: toState(row),
-        admissionSequence: Number(row.admission_sequence),
+        admissionSequence: Number(row.sequence),
       }));
   }
 
-  /**
-   * Returns false when the execution ID is already in use. The insert is
-   * detected from its RETURNING row, not from `changes`, because Bun before
-   * 1.4 counts the admission sequence trigger's updates in `changes`.
-   */
+  /** Returns false when the execution ID is already in use. */
   insertState(state: ExecutionState): boolean {
-    const inserted = this.db
-      .query<{ execution_id: string }>(
+    const result = this.db
+      .query(
         `INSERT INTO executions (
            execution_id, workflow_id, params, context, status, outcome,
            admitted_at, updated_at, due_at, claimed_due_at, lease_token,
@@ -347,16 +288,15 @@ export class ExecutionsDao {
            $divergenceStepKey, $divergenceWorkflowVersion,
            $divergenceDetectedAt
          )
-         ON CONFLICT(execution_id) DO NOTHING
-         RETURNING execution_id`
+         ON CONFLICT(execution_id) DO NOTHING`
       )
-      .get({
+      .run({
         ...toBindings(state),
         $parentExecutionId: state.parent?.executionId ?? null,
         $parentStepKey: state.parent?.stepKey ?? null,
         $parentDetached: state.parent?.detached ? 1 : 0,
       });
-    return inserted !== undefined;
+    return Number(result.changes) === 1;
   }
 
   /** Leaves the parent link as inserted: it is immutable. */

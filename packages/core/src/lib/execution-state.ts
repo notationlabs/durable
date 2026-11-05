@@ -887,9 +887,8 @@ export function executionIdConflict(executionId: string) {
 /**
  * Answers an admission whose ID is already in use by `existing`, whatever its
  * status. Without idempotent mode it is `EXECUTION_ID_CONFLICT`. In
- * idempotent mode it is `existing` when the workflow IDs match and the params
- * are equal after a round trip through the durable value codec, and
- * `EXECUTION_REQUEST_MISMATCH` otherwise. Context is not compared. The
+ * idempotent mode it is `existing` when the workflow IDs and the canonical
+ * params encodings are equal, and `EXECUTION_REQUEST_MISMATCH` otherwise. Context is not compared. The
  * existing record is never changed.
  */
 export function matchExecutionAdmission(
@@ -904,7 +903,7 @@ export function matchExecutionAdmission(
   if (!prepared.idempotent) return executionIdConflict(prepared.executionId);
   if (
     existing.workflowId === prepared.workflowId &&
-    roundTripParams(existing.params) === roundTripParams(prepared.encoded.params)
+    existing.params === prepared.encoded.params
   ) {
     return { status: "existing", executionId: existing.executionId };
   }
@@ -913,13 +912,6 @@ export function matchExecutionAdmission(
     code: "EXECUTION_REQUEST_MISMATCH",
     message: `Execution "${prepared.executionId}" was admitted with a different workflow ID or params`,
   };
-}
-
-function roundTripParams(encoded: string) {
-  const decoding = durableValueCodec.decode(encoded);
-  if (decoding.status === "invalid") return encoded;
-  const encoding = durableValueCodec.encode(decoding.value);
-  return encoding.status === "encoded" ? encoding.canonical : encoded;
 }
 
 export function executionNotFound(executionId: string) {
