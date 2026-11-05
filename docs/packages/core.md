@@ -16,9 +16,9 @@ A runtime bundles the five clients that hold durable state, and the clock they a
 abstract class Runtime {
   abstract readonly clock: () => number; // shared by every client and by delay and retry steps
   abstract readonly executions: ExecutionClient;
-  abstract readonly effects: EffectClient; // step.effect's effect records (RFC 005)
+  abstract readonly effects: EffectClient; // step.effect's effect records
   abstract readonly heap: HeapClient;
-  abstract readonly joins: JoinClient; // step.join's waiters (RFC 009)
+  abstract readonly joins: JoinClient; // step.join's waiters
   abstract readonly stores: StoreClient;
 }
 
@@ -186,7 +186,7 @@ Runtime adapter authors can import the storage-neutral state machine that `Sqlit
 
 ## `durableValueCodec`
 
-The one codec for every durable value (RFC 004). It validates values, encodes them as canonical JSON and decodes them back unchanged. Execution `params`, `context` and outcomes are stored with it, and `ExecutionClient.start` compares params by their canonical encoding.
+The one codec for every durable value. It validates values, encodes them as canonical JSON and decodes them back unchanged. Execution `params`, `context` and outcomes are stored with it, and `ExecutionClient.start` compares params by their canonical encoding.
 
 ```ts
 type DurableValue =
