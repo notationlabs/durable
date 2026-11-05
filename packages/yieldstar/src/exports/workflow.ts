@@ -20,7 +20,6 @@ import { createStepRunner } from "../internal/step-runner";
 import {
   StepRuntimeCall,
   StepStoreWaitRequest,
-  StepUnfinishedRecord,
   executeRuntimeCall,
   type RuntimeClients,
   infrastructure,
@@ -279,22 +278,9 @@ export function workflow<
         while (
           stepResponse instanceof StepRuntimeCall ||
           stepResponse instanceof StepEffectCall ||
-          stepResponse instanceof StepStoreWaitRequest ||
-          stepResponse instanceof StepUnfinishedRecord
+          stepResponse instanceof StepStoreWaitRequest
         ) {
           stopIfAborted(signal);
-          if (stepResponse instanceof StepUnfinishedRecord) {
-            await writeStep({
-              stepKey,
-              stepAttempt,
-              done: false,
-              stepResponseJson: encodeStepRecord(stepResponse.response, stepKey).json,
-            });
-            stepAttempt++;
-            iteratorResult = await workflowIterator.next();
-            stepResponse = iteratorResult.value;
-            continue;
-          }
           if (stepResponse instanceof StepStoreWaitRequest) {
             const { waiter } = stepResponse;
             // 1. Record the unfinished step. A timed wait's deadline must be

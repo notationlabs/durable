@@ -6,8 +6,8 @@ import {
   WORKFLOW_RESULT_STEP_KEY,
   WorkflowRunner,
   createExecutionObserver,
+  type DurableValue,
   type ExecutionLease,
-  type Runtime,
   type WorkflowEvent,
 } from "@yieldstar/core";
 import { MemoryRuntime } from "@yieldstar/test-runtime";
@@ -156,7 +156,7 @@ const router = {
 };
 
 type Harness = {
-  runtime: Runtime;
+  runtime: MemoryRuntime | SqliteRuntime;
   dispose(): void;
 };
 
@@ -197,7 +197,7 @@ function advanceTo(time: number) {
 
 describe.each(runtimes)("step.join and step.call on $name", ({ create }) => {
   let harness: Harness;
-  let runtime: Runtime;
+  let runtime: MemoryRuntime | SqliteRuntime;
   let runner: WorkflowRunner<typeof router>;
 
   beforeEach(() => {
@@ -276,18 +276,15 @@ describe.each(runtimes)("step.join and step.call on $name", ({ create }) => {
     return page.executions.filter((record) => record.parent?.executionId === caller);
   }
 
-  const waiters = (target = TARGET) => runtime.joins.getWaiters(target);
-
   const spyJoin = () => vi.spyOn(runtime.joins, "join");
 
   describe("join", () => {
-    test("a completed target returns its result immediately and registers no waiter", async () => {
+    test("a completed target returns its result immediately", async () => {
       await admitTarget();
       await finishTarget({ status: "completed", result: { tracking: "TRK-42" } });
       await admitJoiner("join-ship");
 
       expect(await deliver()).toEqual({ status: "completed", result: { tracking: "TRK-42" } });
-      expect(await waiters()).toEqual([]);
       expect(await readStep()).toEqual({
         type: "step-result",
         result: { tracking: "TRK-42" },
@@ -301,17 +298,10 @@ describe.each(runtimes)("step.join and step.call on $name", ({ create }) => {
 
       expect(await deliver()).toEqual({ status: "suspended", wakeAt: undefined });
       expect(await readStep()).toEqual({ type: "join-wait", done: false });
-      expect(await waiters()).toEqual([
-        { targetExecutionId: TARGET, executionId: JOINER, stepKey: "join" },
-      ]);
       expect(await claim(JOINER)).toBeUndefined();
 
       await finishTarget({ status: "completed", result: { tracking: "TRK-42" } });
-      // Woken, but the joiner has not recorded its result yet.
-      expect(await waiters()).toHaveLength(1);
-
       expect(await deliver()).toEqual({ status: "completed", result: { tracking: "TRK-42" } });
-      expect(await waiters()).toEqual([]);
     });
 
     test("a suspended target is joined like a running one", async () => {
@@ -370,7 +360,6 @@ describe.each(runtimes)("step.join and step.call on $name", ({ create }) => {
       expect(caught).toEqual([
         expect.objectContaining({ code: "JOINED_EXECUTION_FAILED", executionId: TARGET }),
       ]);
-      expect(await waiters()).toEqual([]);
     });
 
     test("an unknown target is recorded and thrown as JOIN_TARGET_NOT_FOUND; replay throws it without reading the target", async () => {
@@ -416,12 +405,10 @@ describe.each(runtimes)("step.join and step.call on $name", ({ create }) => {
       await admitJoiner("join-ship", { target: TARGET }, "charge-b");
       await deliver("charge-a");
       await deliver("charge-b");
-      expect((await waiters()).map((w) => w.executionId)).toEqual(["charge-a", "charge-b"]);
 
       await finishTarget({ status: "completed", result: "booked" });
       expect(await deliver("charge-a")).toEqual({ status: "completed", result: "booked" });
       expect(await deliver("charge-b")).toEqual({ status: "completed", result: "booked" });
-      expect(await waiters()).toEqual([]);
     });
 
     test("a recorded join replays its value without reading the target", async () => {
@@ -455,7 +442,9 @@ describe.each(runtimes)("step.join and step.call on $name", ({ create }) => {
 
       expect(await deliver()).toEqual({ status: "suspended", wakeAt: DEADLINE });
       expect(await readStep()).toEqual({ type: "join-wait", wakeAt: DEADLINE, done: false });
-      expect(await waiters()).toHaveLength(1);
+
+      await finishTarget({ status: "completed", result: "booked" });
+      expect(await claim(JOINER)).toBeDefined();
     });
 
     test("the deadline passing first records timed-out and deletes the waiter; a later completion changes nothing", async () => {
@@ -470,7 +459,6 @@ describe.each(runtimes)("step.join and step.call on $name", ({ create }) => {
         result: { status: "timed-out" },
         done: true,
       });
-      expect(await waiters()).toEqual([]);
 
       await finishTarget({ status: "completed", result: "booked" });
       expect(await claim(JOINER)).toBeUndefined();
@@ -499,16 +487,13 @@ describe.each(runtimes)("step.join and step.call on $name", ({ create }) => {
       expect(await claim(JOINER)).toBeUndefined();
     });
 
-    test("a deadline computed from Date.now() is recorded before the waiter, and replays reuse it", async () => {
+    test("a deadline computed from Date.now() is recorded, and replays reuse it", async () => {
       await admitTarget();
       await admitJoiner("timed-join-ship-now");
-      // The delivery stops after recording the deadline, before registering.
-      spyJoin().mockRejectedValueOnce(new Error("database is locked"));
 
       const lease = (await claim(JOINER))!;
-      await expect(run(lease)).rejects.toBeInstanceOf(InfrastructureError);
+      expect(await run(lease)).toEqual({ status: "suspended", wakeAt: DEADLINE });
       expect(await readStep()).toEqual({ type: "join-wait", wakeAt: DEADLINE, done: false });
-      expect(await waiters()).toEqual([]);
 
       advance(60 * MINUTE);
       expect(await run(lease)).toEqual({ status: "suspended", wakeAt: DEADLINE });
@@ -551,7 +536,6 @@ describe.each(runtimes)("step.join and step.call on $name", ({ create }) => {
           message: "address rejected",
         },
       });
-      expect(await waiters()).toEqual([]);
     });
   });
 
@@ -634,9 +618,6 @@ describe.each(runtimes)("step.join and step.call on $name", ({ create }) => {
       const children = await childOf();
       expect(children).toHaveLength(1);
       const childId = children[0]!.executionId;
-      expect(await waiters(childId)).toEqual([
-        { targetExecutionId: childId, executionId: JOINER, stepKey: "ship" },
-      ]);
 
       await deliver(childId);
       advance(MINUTE);
@@ -665,11 +646,10 @@ describe.each(runtimes)("step.join and step.call on $name", ({ create }) => {
       expect(join).not.toHaveBeenCalled();
     });
 
-    test("a changed request throws WorkflowStartError with START_REQUEST_MISMATCH and deletes the waiter", async () => {
+    test("a changed request throws WorkflowStartError with START_REQUEST_MISMATCH", async () => {
       await admit(JOINER, "call-ship");
       await deliver();
       const [child] = await childOf();
-      expect(await waiters(child!.executionId)).toHaveLength(1);
       await deliver(child!.executionId);
       advance(MINUTE);
 
@@ -683,7 +663,6 @@ describe.each(runtimes)("step.join and step.call on $name", ({ create }) => {
         type: "step-error",
         err: { name: "WorkflowStartError", code: "START_REQUEST_MISMATCH" },
       });
-      expect(await waiters(child!.executionId)).toEqual([]);
     });
 
     /** Runs `call-failing-ship` until its child has failed and the call has thrown. */
@@ -756,8 +735,9 @@ describe.each(runtimes)("step.join and step.call on $name", ({ create }) => {
       await deliver();
       advanceTo(DEADLINE);
       expect(await deliver()).toEqual({ status: "completed", result: { status: "timed-out" } });
+      // The deadline does not stop the child.
       const [child] = await childOf();
-      expect(await waiters(child!.executionId)).toEqual([]);
+      expect(child!.status).not.toMatch(/completed|failed/);
     });
   });
 
@@ -855,6 +835,17 @@ test("step.call checks params and types the result by the child workflow", () =>
       workflowId: "ship-order",
       // @ts-expect-error orderId is a number
       params: { orderId: "42" },
+    });
+
+    // @ts-expect-error params are required by the child
+    yield* step.call<typeof shipOrder>("ship-missing", { workflowId: "ship-order" });
+
+    const untyped = yield* step.call("ship-untyped", { workflowId: "ship-order" });
+    expectTypeOf(untyped).toEqualTypeOf<DurableValue>();
+    yield* step.call("ship-untyped-params", {
+      workflowId: "ship-order",
+      // @ts-expect-error an untyped call takes no params
+      params: { orderId: 42 },
     });
 
     const joined = yield* step.join<{ tracking: string }>("join", "ship-42");

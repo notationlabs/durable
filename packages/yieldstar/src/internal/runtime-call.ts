@@ -53,19 +53,6 @@ export class StepStoreWaitRequest extends StepStoreWait {
   }
 }
 
-/**
- * Yielded by a step that must make `response` durable before it registers a
- * waiter, such as a timed join recording its deadline. The driver writes
- * `response` as the step's unfinished record and resumes the step.
- */
-export class StepUnfinishedRecord extends StepResponse {
-  static type = "unfinished-record";
-  readonly type = "unfinished-record";
-  constructor(readonly response: StepResponse) {
-    super();
-  }
-}
-
 /** Marks an error thrown by a workflow-supplied callback run by a client. */
 export class StepCallbackError extends Error {
   constructor(cause: unknown) {
