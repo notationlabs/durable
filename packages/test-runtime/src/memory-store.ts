@@ -263,6 +263,16 @@ export class MemoryStoreClient extends CasStoreClient {
     }
   }
 
+  /**
+   * Deletes every waiter an execution registered. Called synchronously by a
+   * forced cancel, so the waiters go with that write.
+   */
+  deleteWaitersForExecution(executionId: string) {
+    for (const [key, waiter] of [...this.waiters.entries()]) {
+      if (waiter.executionId === executionId) this.waiters.delete(key);
+    }
+  }
+
   private wakeMatchingWaiters(params: {
     storeName: string;
     storeId: string;

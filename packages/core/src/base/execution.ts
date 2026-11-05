@@ -6,14 +6,43 @@ export type ExecutionStatus =
   | "running"
   | "suspended"
   | "completed"
-  | "failed";
+  | "failed"
+  | "cancelled";
 
 export type ExecutionOutcome =
   | { status: "completed"; result: unknown }
-  | { status: "failed"; error: Error };
+  | { status: "failed"; error: Error }
+  | {
+      status: "cancelled";
+      reason?: string;
+      /** The execution where the cancellation began, when it was propagated. */
+      source?: string;
+    };
 
-/** The execution and step that started an execution with `step.start`. */
-export type ExecutionParent = { executionId: string; stepKey: string };
+/**
+ * The execution and step that started an execution with `step.start` or
+ * `step.call`. A `detached` child receives no cancellation propagated from
+ * its parent.
+ */
+export type ExecutionParent = {
+  executionId: string;
+  stepKey: string;
+  detached: boolean;
+};
+
+/**
+ * A cancellation request recorded on an execution. It stays on the record
+ * whatever the outcome.
+ */
+export type ExecutionCancellation = {
+  reason?: string;
+  /** The execution where the cancellation began, when it was propagated. */
+  source?: string;
+  forced: boolean;
+  requestedAt: number;
+  /** Set when the cancellation is delivered to workflow code. */
+  deliveredAt?: number;
+};
 
 /**
  * The durable record of one workflow execution. Admission creates it and
@@ -25,10 +54,11 @@ export type ExecutionParent = { executionId: string; stepKey: string };
  *   earlier delivery was acknowledged as suspended, and to `admitted`
  *   otherwise.
  * - `suspended`: the latest acknowledged delivery suspended the workflow.
- * - `completed` and `failed` are terminal. `outcome` is present only in these
- *   states.
+ * - `completed`, `failed` and `cancelled` are terminal. `outcome` is present
+ *   only in these states.
  *
  * `parent` is present, and immutable, only on executions admitted by `start`.
+ * `cancellation` is present once `cancel` has recorded a request.
  */
 export interface ExecutionRecord {
   executionId: string;
@@ -42,6 +72,7 @@ export interface ExecutionRecord {
   /** Consecutive deliveries that ended without an acknowledgement. */
   unacknowledgedDeliveryCount: number;
   parent?: ExecutionParent;
+  cancellation?: ExecutionCancellation;
 }
 
 export type ExecutionAdmissionErrorCode =
@@ -94,14 +125,18 @@ export function isLeaseLost(value: unknown): value is LeaseLost {
  * - `completed`: the workflow returned a result;
  * - `suspended`: the unfinished step is recorded, and `wakeAt`, when present,
  *   is the earliest time a paused step needs the execution to run again;
- * - `failed`: workflow code threw an uncaught error.
+ * - `failed`: workflow code threw an uncaught error;
+ * - `cancelled`: the delivery carried a cancellation request and workflow
+ *   code threw `WorkflowCancelledError`. The acknowledgement records the
+ *   request's `reason` and `source` as the outcome.
  *
  * Infrastructure errors are never outcomes: the delivery rejects instead.
  */
 export type WorkflowRunOutcome =
   | { status: "completed"; result: unknown }
   | { status: "suspended"; wakeAt?: number }
-  | { status: "failed"; error: Error };
+  | { status: "failed"; error: Error }
+  | { status: "cancelled" };
 
 export type ExecutionAdmissionRequest = {
   executionId?: string;
@@ -152,6 +187,12 @@ export type ExecutionStartRequest = {
   requestId: { executionId: string; stepKey: string };
   workflowId: string;
   params?: DurableObject;
+  /**
+   * Records the parent link as detached, so the target receives no
+   * cancellation propagated from the caller. Compared on a repeat.
+   * @default false
+   */
+  detached?: boolean;
 };
 
 export type ExecutionStartResult =
@@ -165,6 +206,24 @@ export type ExecutionStartResult =
 export type ExecutionWakeResult =
   | { status: "requested" }
   | { status: "ignored" }
+  | {
+      status: "rejected";
+      code: "EXECUTION_NOT_FOUND";
+      message: string;
+    };
+
+export type ExecutionCancelRequest = {
+  executionId: string;
+  reason?: string;
+  /** Records `cancelled` at once, without running workflow code. */
+  force?: boolean;
+};
+
+export type ExecutionCancelResult =
+  /** The request is recorded and the execution is not terminal. */
+  | { status: "requested" }
+  /** The execution is terminal: a forced cancel's outcome, or the outcome it already had. */
+  | ExecutionOutcome
   | {
       status: "rejected";
       code: "EXECUTION_NOT_FOUND";
@@ -211,6 +270,14 @@ export interface ExecutionClient {
    * params return `INVALID_START_PARAMETERS` and admit nothing. Not fenced.
    */
   start(request: ExecutionStartRequest): Promise<ExecutionStartResult>;
+
+  /**
+   * Records a cancellation request on the execution and its non-detached
+   * descendants, all-or-nothing. A graceful request makes the execution due;
+   * a forced one records `cancelled` at once. A terminal execution is not
+   * changed, and its outcome is returned.
+   */
+  cancel(request: ExecutionCancelRequest): Promise<ExecutionCancelResult>;
 
   /**
    * Requests a wake from outside a delivery, such as a store commit. Wakes not
@@ -357,6 +424,27 @@ export class InfrastructureError extends Error {
 
 export function isTerminalExecutionStatus(
   status: ExecutionStatus
-): status is "completed" | "failed" {
-  return status === "completed" || status === "failed";
+): status is "completed" | "failed" | "cancelled" {
+  return status === "completed" || status === "failed" || status === "cancelled";
+}
+
+/**
+ * Thrown into workflow code at the first unfinished step when a cancellation
+ * is delivered. If it escapes, the execution ends `cancelled`.
+ */
+export class WorkflowCancelledError extends Error {
+  readonly reason?: string;
+  /** The execution whose cancellation caused this one, when propagated. */
+  readonly source?: string;
+
+  constructor(options?: { reason?: string; source?: string }) {
+    super(
+      options?.reason === undefined
+        ? "Execution was cancelled"
+        : `Execution was cancelled: ${options.reason}`
+    );
+    this.name = "WorkflowCancelledError";
+    if (options?.reason !== undefined) this.reason = options.reason;
+    if (options?.source !== undefined) this.source = options.source;
+  }
 }

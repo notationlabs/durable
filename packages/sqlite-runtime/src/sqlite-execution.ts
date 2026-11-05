@@ -9,16 +9,22 @@ import {
   matchExecutionAdmission,
   matchStartRequest,
   prepareExecutionAdmission,
+  prepareExecutionCancel,
   prepareExecutionListRequest,
   prepareExecutionStart,
+  propagatedCancellation,
   releaseExecutionLease,
   renewExecutionLease,
+  requestExecutionCancellation,
   requestExecutionWake,
   toExecutionListPage,
   toExecutionRecord,
   type ExecutionAcknowledgeResult,
   type ExecutionAdmissionRequest,
   type ExecutionAdmissionResult,
+  type CancellationRequest,
+  type ExecutionCancelRequest,
+  type ExecutionCancelResult,
   type ExecutionClaimFilter,
   type ExecutionClient,
   type ExecutionLease,
@@ -33,9 +39,11 @@ import {
   type ExecutionWakeResult,
   type WorkflowRunOutcome,
 } from "@yieldstar/core";
+import { EffectWaitersDao } from "./dao/effect-waiters-dao";
 import { ExecutionsDao } from "./dao/executions-dao";
 import { JoinWaitersDao } from "./dao/join-waiters-dao";
 import { StartRequestsDao } from "./dao/start-requests-dao";
+import { StoreWaitersDao } from "./dao/store-waiters-dao";
 import type { SqliteDriver } from "./sqlite-driver";
 import { runTransaction } from "./sqlite-transaction";
 
@@ -55,6 +63,8 @@ export class SqliteExecutionClient implements ExecutionClient {
   private executionsDao: ExecutionsDao;
   private startRequestsDao: StartRequestsDao;
   private joinWaitersDao: JoinWaitersDao;
+  private storeWaitersDao: StoreWaitersDao;
+  private effectWaitersDao: EffectWaitersDao;
   private clock: () => number;
 
   constructor(db: SqliteDriver, options: SqliteExecutionClientOptions = {}) {
@@ -62,6 +72,8 @@ export class SqliteExecutionClient implements ExecutionClient {
     this.executionsDao = new ExecutionsDao(db);
     this.startRequestsDao = new StartRequestsDao(db);
     this.joinWaitersDao = new JoinWaitersDao(db);
+    this.storeWaitersDao = new StoreWaitersDao(db);
+    this.effectWaitersDao = new EffectWaitersDao(db);
     // Read Date.now lazily so fake timers installed later still apply.
     this.clock = options.clock ?? (() => Date.now());
   }
@@ -163,6 +175,56 @@ export class SqliteExecutionClient implements ExecutionClient {
     });
   }
 
+  async cancel(request: ExecutionCancelRequest): Promise<ExecutionCancelResult> {
+    const prepared = prepareExecutionCancel(request);
+    if (!prepared.ok) throw new TypeError(`Invalid cancel request: ${prepared.message}`);
+
+    // The request and its propagation to every descendant share one
+    // IMMEDIATE transaction, so they commit all-or-nothing.
+    return runTransaction(this.db, () => {
+      const target = this.executionsDao.getState(prepared.executionId);
+      if (!target) return executionNotFound(prepared.executionId);
+
+      const now = this.clock();
+      const pending: { state: ExecutionState; request: CancellationRequest }[] = [
+        { state: target, request: prepared.request },
+      ];
+      let result: ExecutionCancelResult | undefined;
+      while (pending.length > 0) {
+        const { state, request } = pending.shift()!;
+        const applied = requestExecutionCancellation(state, request, now);
+        result ??= applied.result;
+        if (applied.state !== state) this.executionsDao.updateState(applied.state);
+        if (applied.terminal) this.onForceCancelled(state.executionId);
+        if (!applied.propagate) continue;
+        const propagated = propagatedCancellation(applied.state);
+        for (const child of this.executionsDao.getAttachedChildStates(state.executionId)) {
+          if (isTerminalExecutionStatus(child.status)) continue;
+          pending.push({ state: child, request: propagated });
+        }
+      }
+      return result!;
+    });
+  }
+
+  /**
+   * Deletes the waiters a force-cancelled execution holds and wakes its join
+   * waiters, inside the cancel's transaction. The join waiters stay
+   * registered until each joiner records its step.
+   */
+  private onForceCancelled(executionId: string) {
+    this.storeWaitersDao.deleteExecutionWaiters(executionId);
+    this.effectWaitersDao.deleteExecutionWaiters(executionId);
+    this.joinWaitersDao.deleteExecutionWaiters(executionId);
+    this.wakeJoinWaiters(executionId);
+  }
+
+  private wakeJoinWaiters(executionId: string) {
+    for (const joiner of this.joinWaitersDao.getWaitingExecutionIds(executionId)) {
+      this.wakeInTransaction(joiner);
+    }
+  }
+
   async claimDue(request: {
     limit: number;
     duration: number;
@@ -250,11 +312,7 @@ export class SqliteExecutionClient implements ExecutionClient {
         if (next.state !== state) {
           this.executionsDao.updateState(next.state);
           if (isTerminalExecutionStatus(next.state.status)) {
-            for (const joiner of this.joinWaitersDao.getWaitingExecutionIds(
-              state.executionId
-            )) {
-              this.wakeInTransaction(joiner);
-            }
+            this.wakeJoinWaiters(state.executionId);
           }
         }
         return next.result;

@@ -20,6 +20,11 @@ export class MemoryRuntime extends Runtime {
     this.executions = new MemoryExecutionClient({
       clock: this.clock,
       onTerminal: (executionId) => this.joins.wakeWaiters(executionId),
+      onForceCancelled: (executionId) => {
+        this.stores.deleteWaitersForExecution(executionId);
+        this.effects.deleteWaitersForExecution(executionId);
+        this.joins.deleteWaitersForExecution(executionId);
+      },
     });
     this.joins = new MemoryJoinClient({ executions: this.executions });
     this.stores = new MemoryStoreClient({ executions: this.executions });
@@ -34,6 +39,8 @@ export class MemoryRuntime extends Runtime {
         this.effects.deleteWaitersForStep(step);
         this.joins.deleteWaitersForStep(step);
       },
+      markCancellationDelivered: (executionId) =>
+        this.executions.markCancellationDelivered(executionId),
     });
   }
 }

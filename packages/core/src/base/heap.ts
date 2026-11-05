@@ -29,4 +29,18 @@ export abstract class HeapClient {
     done: boolean;
     stepResponseJson: string;
   }): Promise<HeapRecord | LeaseLost>;
+
+  /**
+   * Records a cancellation's delivery in one fenced write: each step's `done`
+   * record, the deletion of those steps' waiters, and `deliveredAt`. If an
+   * existing record conflicts, it writes nothing and returns the existing records.
+   */
+  abstract recordCancellation(params: {
+    lease: ExecutionLease;
+    steps: readonly {
+      stepKey: string;
+      stepAttempt: number;
+      stepResponseJson: string;
+    }[];
+  }): Promise<(HeapRecord | null)[] | LeaseLost>;
 }

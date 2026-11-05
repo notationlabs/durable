@@ -546,7 +546,7 @@ export function registerJoinClientConformance({
           params: { orderId: 42 },
         });
         if (started.status !== "accepted") throw new Error(started.message);
-        const parent = { executionId: "charge-42", stepKey: "call:ship" };
+        const parent = { executionId: "charge-42", stepKey: "call:ship", detached: false };
 
         const record = await peer.executions.get(started.executionId);
         expect(record!.parent).toEqual(parent);

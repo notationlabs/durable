@@ -76,12 +76,16 @@ interface ExecutionRecord {
   workflowId: string;
   params: EventParams;
   context: EventContext;
-  status: "admitted" | "running" | "suspended" | "completed" | "failed";
-  outcome?: { status: "completed"; result: unknown } | { status: "failed"; error: Error };
+  status: "admitted" | "running" | "suspended" | "completed" | "failed" | "cancelled";
+  outcome?:
+    | { status: "completed"; result: unknown }
+    | { status: "failed"; error: Error }
+    | { status: "cancelled"; reason?: string; source?: string };
   admittedAt: number;
   updatedAt: number;
   unacknowledgedDeliveryCount: number; // consecutive deliveries that ended without an outcome
-  parent?: { executionId: string; stepKey: string }; // set when step.start or step.call admitted it
+  parent?: { executionId: string; stepKey: string; detached: boolean }; // set when step.start or step.call admitted it
+  cancellation?: ExecutionCancellation; // set when cancel recorded a request
 }
 ```
 
@@ -92,10 +96,13 @@ interface ExecutionRecord {
 | `suspended` | The latest delivery paused on a delay, retry, store wait, effect wait or join |
 | `completed` | The workflow returned. `outcome.result` holds the return value       |
 | `failed`    | Workflow code threw an uncaught error. `outcome.error` holds it      |
+| `cancelled` | The workflow let a delivered `WorkflowCancelledError` escape, or a forced cancel ended it. `outcome.reason` and `outcome.source` hold the request's |
 
-`completed` and `failed` are terminal and permanent. A finished execution never runs workflow code again: a later delivery returns the recorded outcome.
+`completed`, `failed` and `cancelled` are terminal and permanent. A finished execution never runs workflow code again: a later delivery returns the recorded outcome.
 
-An execution started by another workflow with [`step.start`](./steps.md#stepstart) or [`step.call`](./steps.md#stepcall) records the caller's execution ID and step key as `parent`. The link never changes, and executions created by a trigger have none.
+An execution started by another workflow with [`step.start`](./steps.md#stepstart) or [`step.call`](./steps.md#stepcall) records the caller's execution ID and step key as `parent`, and whether the child was started with `detached: true`. The link never changes, and executions created by a trigger have none.
+
+`cancellation` holds the request that [`cancel`](./cancellation.md) recorded, with its `reason`, `source`, `forced`, `requestedAt` and, once the workflow has received it, `deliveredAt`. It stays on the record whatever the outcome.
 
 **Execution IDs are unique for the lifetime of the runtime.** A trigger may supply its own `executionId`, and the runtime reserves it unchanged; otherwise the runtime chooses one. Reusing an ID that was ever admitted, including one whose execution failed, is rejected with `EXECUTION_ID_CONFLICT`. An [idempotent trigger](./sdk-local.md#idempotent-trigger) that repeats the same request returns the existing execution instead, and admits nothing. This matters because the ID is how a replay finds its own recorded steps, so a reused ID would replay another execution's results.
 

@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { WorkflowRunner } from "@yieldstar/core";
 import { SqliteRuntime } from "@yieldstar/sqlite-runtime";
 import { createWorkflowWorker } from "@yieldstar/worker-invoker";
-import { workflow } from "yieldstar";
+import { WorkflowCancelledError, workflow } from "yieldstar";
 
 const { createSqliteDb } =
   "Bun" in globalThis
@@ -24,6 +24,16 @@ const router = {
   "ship-order": workflow(async function* (step, event) {
     const courier = yield* step.run("book-courier", () => "courier-1");
     return { orderId: event.params.orderId, courier, tenant: event.context.get("tenant") };
+  }),
+  "await-payment": workflow(async function* (step) {
+    try {
+      yield* step.delay("wait", 24 * 60 * 60_000);
+    } catch (err) {
+      yield* step.run("release", () =>
+        err instanceof WorkflowCancelledError ? `released: ${err.reason}` : "not cancelled"
+      );
+      throw err;
+    }
   }),
 };
 

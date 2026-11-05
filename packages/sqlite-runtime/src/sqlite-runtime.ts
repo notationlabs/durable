@@ -27,7 +27,7 @@ export class SqliteRuntime extends Runtime {
     // Read Date.now lazily so fake timers installed later still apply.
     this.clock = options.clock ?? (() => Date.now());
     this.executions = new SqliteExecutionClient(db, { clock: this.clock });
-    this.heap = new SqliteHeapClient(db);
+    this.heap = new SqliteHeapClient(db, { clock: this.clock });
     this.joins = new SqliteJoinClient(db);
     this.stores = new SqliteStoreClient({ db, executions: this.executions });
     this.effects = new SqliteEffectClient({

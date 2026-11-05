@@ -70,7 +70,7 @@ const { executionId, status } = await sdk.trigger({
 
 When the ID is not in use, the trigger is admitted as usual and returns `"accepted"`. When the ID is in use, the runtime compares the request with the record:
 
-- If `workflowId` and `params` match, the trigger admits nothing and returns `"existing"` with the same `executionId`. This is true whatever the execution's status, including `completed` and `failed`, and also when the first trigger was not idempotent.
+- If `workflowId` and `params` match, the trigger admits nothing and returns `"existing"` with the same `executionId`. This is true whatever the execution's status, including `completed`, `failed` and `cancelled`, and also when the first trigger was not idempotent.
 - If either differs, the trigger throws `EXECUTION_REQUEST_MISMATCH`, and the record is unchanged.
 
 `params` match when their canonical durable value encodings are equal. The encoding sorts the keys of plain objects, so their key order does not matter. Missing `params` and `{}` do not match. `context` is not compared, because it carries per-request data such as an authentication token. Of two idempotent triggers with the same request that run at the same time, one returns `"accepted"` and the other `"existing"`.
@@ -92,7 +92,7 @@ const result = await sdk.triggerAndWait({
 });
 ```
 
-The promise settles from the execution record, not from an in-memory event, so it settles even if another process ran the execution or the worker restarted. It does not need an `invoker`. If the record is `failed`, the promise rejects with the recorded error. The error keeps its `name`, `message`, `stack`, a string `code`, its `cause` and its durable fields, and it is revived as its class when that class is registered with `registerErrorClass` (see [Errors in step records](./steps.md#errors-in-step-records)).
+The promise settles from the execution record, not from an in-memory event, so it settles even if another process ran the execution or the worker restarted. It does not need an `invoker`. If the record is `failed`, the promise rejects with the recorded error. The error keeps its `name`, `message`, `stack`, a string `code`, its `cause` and its durable fields, and it is revived as its class when that class is registered with `registerErrorClass` (see [Errors in step records](./steps.md#errors-in-step-records)). If the record is `cancelled`, the promise rejects with a `WorkflowCancelledError` that carries the outcome's `reason` and `source`.
 
 ## `sdk.poll`
 
@@ -107,7 +107,7 @@ if (execution?.status === "running") {
 
 ## `sdk.wait`
 
-Reads the execution record, and then waits for it to reach `completed` or `failed`. It resolves with the terminal view.
+Reads the execution record, and then waits for it to reach `completed`, `failed` or `cancelled`. It resolves with the terminal view.
 
 ```ts
 const execution = await sdk.wait("order-abc123", { timeout: 30_000 });
@@ -118,6 +118,8 @@ if (!execution) {
   // execution.execution is the current view, for example "suspended"
 } else if (execution.status === "failed") {
   throw execution.error;
+} else if (execution.status === "cancelled") {
+  // execution.reason and execution.source are the cancellation's
 } else {
   return execution.result;
 }
@@ -163,6 +165,41 @@ The order is the order in which the backend admitted the executions, not `admitt
 
 `list` throws `ExecutionListRequestError` (`code: "INVALID_LIST_REQUEST"`) for a `workflowId` that is not a string, a `limit` that is not a positive integer, an unknown `status`, or a malformed `cursor`.
 
+## `sdk.cancel`
+
+Records a [cancellation](./cancellation.md) request and returns without waiting for the workflow to stop.
+
+```ts
+const result = await sdk.cancel("order-42", { reason: "abandoned" });
+
+if (!result) {
+  // no record has this ID
+} else if (result.status === "requested") {
+  // result.execution is the current view, with result.execution.cancellation set
+} else {
+  // the execution is terminal: result is its terminal view
+}
+```
+
+| Option   | Type      | Default | Description                                                              |
+| -------- | --------- | ------- | ------------------------------------------------------------------------ |
+| `reason` | `string`  | –       | Optional. Recorded with the request and carried by `WorkflowCancelledError` |
+| `force`  | `boolean` | `false` | Records `cancelled` at once, without running workflow code (see [Forced cancellation](./cancellation.md#forced-cancellation)) |
+
+`cancel` resolves with a `CancelResult`, or `undefined` for an unknown ID:
+
+```ts
+type CancelResult =
+  | { status: "requested"; execution: ActiveExecutionView }
+  | TerminalExecutionView;
+```
+
+- A graceful request on an active execution resolves with `requested` and the view read after the request was recorded.
+- A forced request resolves with the `cancelled` view.
+- An execution that is already terminal is not changed, and `cancel` resolves with its view. This includes an execution that reached a terminal status between recording the request and reading the view.
+
+`cancel` throws `ExecutionCancelRequestError`, a `TypeError`, for an empty execution ID, a `reason` that is not a string, or a `force` that is not a boolean. It records nothing in that case.
+
 ## Execution views
 
 `poll`, `wait` and `list` return views of the execution record:
@@ -174,7 +211,8 @@ type ExecutionViewBase = {
   workflowId: string;
   admittedAt: number;
   updatedAt: number;
-  parent?: { executionId: string; stepKey: string };
+  parent?: { executionId: string; stepKey: string; detached: boolean };
+  cancellation?: ExecutionCancellation;
 };
 
 type ActiveExecutionView = ExecutionViewBase & {
@@ -183,7 +221,8 @@ type ActiveExecutionView = ExecutionViewBase & {
 
 type TerminalExecutionView =
   | (ExecutionViewBase & { status: "completed"; result: unknown })
-  | (ExecutionViewBase & { status: "failed"; error: Error });
+  | (ExecutionViewBase & { status: "failed"; error: Error })
+  | (ExecutionViewBase & { status: "cancelled"; reason?: string; source?: string });
 
 type ExecutionView = ActiveExecutionView | TerminalExecutionView;
 
@@ -194,9 +233,9 @@ type WaitResult =
 type ExecutionViewPage = { executions: ExecutionView[]; cursor?: string };
 ```
 
-`parent` is present on executions started by [`step.start`](./steps.md#stepstart) or [`step.call`](./steps.md#stepcall), and names the caller's execution ID and step key. A view leaves out `params`, `context`, lease and wake state and `unacknowledgedDeliveryCount`. Operators can read those with `runtime.executions.get`. `admittedAt` and `updatedAt` come from the clock of the process that wrote them, so use them for display only.
+`parent` is present on executions started by [`step.start`](./steps.md#stepstart) or [`step.call`](./steps.md#stepcall), and names the caller's execution ID and step key, and whether the child was started detached. `cancellation` is present once a cancellation request is recorded (see [Requesting cancellation](./cancellation.md#requesting-cancellation)). A view leaves out `params`, `context`, lease and wake state and `unacknowledgedDeliveryCount`. Operators can read those with `runtime.executions.get`. `admittedAt` and `updatedAt` come from the clock of the process that wrote them, so use them for display only.
 
-Both the local SDK and the [HTTP SDK](./sdk-http.md) implement the `ExecutionObserver` interface (`poll`, `wait` and `list`), which `yieldstar` exports with these types. Code that only reads executions can take an `ExecutionObserver` and work with either SDK.
+Both the local SDK and the [HTTP SDK](./sdk-http.md) implement the `ExecutionObserver` interface (`poll`, `wait` and `list`) and the `ExecutionControl` interface (`cancel`), which `yieldstar` exports with these types. Code that only reads executions can take an `ExecutionObserver` and work with either SDK.
 
 ## Trigger event shape
 

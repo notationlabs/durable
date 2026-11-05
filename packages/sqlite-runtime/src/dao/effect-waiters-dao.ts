@@ -60,4 +60,10 @@ export class EffectWaitersDao {
       )
       .run({ $executionId: executionId, $stepKey: stepKey });
   }
+
+  deleteExecutionWaiters(executionId: string) {
+    this.db
+      .query(`DELETE FROM effect_waiters WHERE execution_id = $executionId`)
+      .run({ $executionId: executionId });
+  }
 }

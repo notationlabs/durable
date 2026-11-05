@@ -10,7 +10,7 @@ bun add @yieldstar/http-server
 
 ## `createRoutes({ runtime, invoker?, logger, middleware?, observationMiddleware?, pollInterval?, maxWait?, basePath? })`
 
-Returns route handlers for `POST /trigger`, `POST /poll`, `POST /wait`, `POST /list` and the deprecated `POST /events`. The routes object plugs directly into `Bun.serve({ routes })` or any router that accepts `Request` to `Response` handlers.
+Returns route handlers for `POST /trigger`, `POST /poll`, `POST /wait`, `POST /list`, `POST /cancel` and the deprecated `POST /events`. The routes object plugs directly into `Bun.serve({ routes })` or any router that accepts `Request` to `Response` handlers.
 
 ```ts
 import { createRoutes } from "@yieldstar/http-server";
@@ -29,12 +29,12 @@ Bun.serve({
 | `invoker`    | `WorkflowInvoker`      | Optional. When the dispatcher runs in this process, lets `/wait` and `/events` respond as soon as it records an outcome. No response depends on it |
 | `logger`     | `Logger`               | Pino logger                      |
 | `middleware` | `MiddlewareFunction[]` | Optional middleware chain for `/trigger` |
-| `observationMiddleware` | `ObservationMiddlewareFunction[]` | Optional. Allows or denies `/poll`, `/wait`, `/list` and `/events` requests. Without it they accept every request, and `createRoutes` logs a warning if `middleware` is set |
+| `observationMiddleware` | `ObservationMiddlewareFunction[]` | Optional. Allows or denies `/poll`, `/wait`, `/list`, `/events` and `/cancel` requests. Without it they accept every request, and `createRoutes` logs a warning if `middleware` is set |
 | `pollInterval` | `number`             | Optional. How often each open `/wait` and `/events` request reads the record, in milliseconds. Defaults to 25. A value that is not a finite number greater than zero throws a `RangeError` |
 | `maxWait`    | `number`               | Optional. The longest the server holds a `/wait` request open, in milliseconds. Defaults to 8000. A value that is not a finite number greater than zero throws a `RangeError` |
 | `basePath`   | `` `/${string}` ``     | Optional prefix for routes       |
 
-Every error response has the body `{ code, message }`. A route that throws, including a middleware function, responds `500` with code `INTERNAL_ERROR` and the fixed message `Internal error`, and logs the thrown error with `logger.error`. `ObservationErrorCode` is the union of the codes the observation routes respond with.
+Every error response has the body `{ code, message }`. A route that throws, including a middleware function, responds `500` with code `INTERNAL_ERROR` and the fixed message `Internal error`, and logs the thrown error with `logger.error`. `ObservationErrorCode` is the union of the codes the observation routes and `/cancel` respond with.
 
 ### `POST /trigger`
 
@@ -68,15 +68,27 @@ Accepts `{ workflowId?, status?, cursor?, limit? }`. Responds `200` with `{ exec
 
 A `/poll`, `/wait`, `/list` or `/events` body that is not a JSON object, has no `executionId` where one is needed, or has a negative `timeout` responds `400` `INVALID_OBSERVATION_REQUEST`. The views and pages are described in [Execution views](../manual/sdk-local.md#execution-views).
 
+### `POST /cancel`
+
+Accepts `{ executionId, reason?, force? }`. Runs observation middleware with `operation: "cancel"`, then records a [cancellation](../manual/cancellation.md) request through `runtime.executions.cancel` and reads the record once to build the response. It does not wait for the workflow to stop.
+
+| Status | Body                                            | Cause                                                          |
+| ------ | ----------------------------------------------- | -------------------------------------------------------------- |
+| `202`  | `{ status: "requested", execution }`            | The request is recorded and the execution is active. `execution` is its view |
+| `200`  | The terminal `ExecutionView`                    | The execution is terminal: a forced cancel ended it, or it had already ended. A terminal execution is not changed |
+| `404`  | `{ code: "EXECUTION_NOT_FOUND", message }`      | No record has the ID                                           |
+| `400`  | `{ code: "INVALID_CANCEL_REQUEST", message }`   | The body is not a JSON object, `executionId` is missing or empty, `reason` is not a string, or `force` is not a boolean |
+| `401` or `403` | `{ code: "UNAUTHORIZED" \| "FORBIDDEN", message }` | Observation middleware denied the request, whether or not the execution exists |
+
 ### `POST /events`
 
-Deprecated: use `/wait`. Accepts `{ executionId }`. Blocks until the execution record is terminal, with no cap, polling the record every `pollInterval` and re-reading early when `invoker.workflowEndEmitter` fires. Returns the result encoded with the durable value codec, the recorded error encoded the same way with status `500`, or `404` `EXECUTION_NOT_FOUND`. The request's abort signal ends the wait. Observation middleware runs for `/events` with `operation: "events"`.
+Deprecated: use `/wait`. Accepts `{ executionId }`. Blocks until the execution record is terminal, with no cap, polling the record every `pollInterval` and re-reading early when `invoker.workflowEndEmitter` fires. Returns the result encoded with the durable value codec, the recorded error encoded the same way with status `500` (a `WorkflowCancelledError` with the outcome's `reason` and `source` for a cancelled execution), or `404` `EXECUTION_NOT_FOUND`. The request's abort signal ends the wait. Observation middleware runs for `/events` with `operation: "events"`.
 
 ## Observation middleware
 
-An `ObservationMiddlewareFunction` receives `(req, request, logger)`, where `request` is an `ObservationRequest`, and resolves with `{ allow: true }` or `{ allow: false, status: 401 | 403 }`. The functions run in array order before the route reads any record, and the first denial responds `401` `UNAUTHORIZED` or `403` `FORBIDDEN`. For `poll`, `wait` and `events`, `request` carries the `executionId` and a `load()` function that reads the full `ExecutionRecord`. For `list`, it carries the `filter` and no `load`. See [Observation middleware](../manual/http-server.md#observation-middleware).
+An `ObservationMiddlewareFunction` receives `(req, request, logger)`, where `request` is an `ObservationRequest`, and resolves with `{ allow: true }` or `{ allow: false, status: 401 | 403 }`. The functions run in array order before the route reads any record, and the first denial responds `401` `UNAUTHORIZED` or `403` `FORBIDDEN`. For `poll`, `wait` and `events`, `request` carries the `executionId` and a `load()` function that reads the full `ExecutionRecord`. For `list`, it carries the `filter` and no `load`. For `cancel`, it carries the `executionId`, `force` and `load()`; a policy that should not let readers cancel must check `operation`. See [Observation middleware](../manual/http-server.md#observation-middleware).
 
-Observation middleware does not run for `/trigger`. A caller that trigger middleware allows can tell `existing` from `EXECUTION_REQUEST_MISMATCH` for another execution's ID, and so test guesses at that execution's `params`. Limit who may trigger with trigger middleware, or use execution IDs that other callers cannot guess.
+Observation middleware does not run for `/trigger`, and trigger middleware does not run for `/cancel`. A caller that trigger middleware allows can tell `existing` from `EXECUTION_REQUEST_MISMATCH` for another execution's ID, and so test guesses at that execution's `params`. Limit who may trigger with trigger middleware, or use execution IDs that other callers cannot guess.
 
 ## `createMiddleware(fn)`
 

@@ -43,6 +43,7 @@ export interface JoinClient {
 
 export type WorkflowJoinErrorCode =
   | "JOINED_EXECUTION_FAILED"
+  | "JOINED_EXECUTION_CANCELLED"
   | "JOIN_TARGET_NOT_FOUND"
   | "JOIN_SELF";
 
@@ -52,6 +53,8 @@ export type WorkflowJoinErrorCode =
  * `executionId`.
  * - `JOINED_EXECUTION_FAILED`: the target failed. `cause` is its recorded
  *   error, with at least its `name` and `message`.
+ * - `JOINED_EXECUTION_CANCELLED`: the target was cancelled. `reason` and
+ *   `source` are its outcome's.
  * - `JOIN_TARGET_NOT_FOUND`: no execution has the target ID.
  * - `JOIN_SELF`: the target is the calling execution.
  */
@@ -59,17 +62,23 @@ export class WorkflowJoinError extends Error {
   readonly code: WorkflowJoinErrorCode;
   /** The joined execution. */
   readonly executionId: string;
+  /** The cancelled target's reason, for `JOINED_EXECUTION_CANCELLED`. */
+  readonly reason?: string;
+  /** The cancelled target's source, for `JOINED_EXECUTION_CANCELLED`. */
+  readonly source?: string;
   declare readonly cause?: Error;
 
   constructor(
     code: WorkflowJoinErrorCode,
     executionId: string,
     message: string,
-    options?: { cause?: Error }
+    options?: { cause?: Error; reason?: string; source?: string }
   ) {
-    super(message, options);
+    super(message, options?.cause === undefined ? undefined : { cause: options.cause });
     this.name = "WorkflowJoinError";
     this.code = code;
     this.executionId = executionId;
+    if (options?.reason !== undefined) this.reason = options.reason;
+    if (options?.source !== undefined) this.source = options.source;
   }
 }

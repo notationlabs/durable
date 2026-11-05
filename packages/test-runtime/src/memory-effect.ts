@@ -17,6 +17,7 @@ import {
   type EffectWatchRequest,
 } from "@yieldstar/core";
 import type { MemoryExecutionClient } from "./memory-execution";
+import { deleteExecutionWaiters, waiterKey } from "./waiters";
 
 /**
  * In-memory effect records and waiters. Every operation runs synchronously
@@ -86,8 +87,12 @@ export class MemoryEffectClient implements EffectClient {
       if (waiters.size === 0) this.waiters.delete(effectId);
     }
   }
-}
 
-function waiterKey(step: { executionId: string; stepKey: string }) {
-  return JSON.stringify([step.executionId, step.stepKey]);
+  /**
+   * Deletes every waiter an execution registered. Called synchronously by a
+   * forced cancel, so the waiters go with that write.
+   */
+  deleteWaitersForExecution(executionId: string) {
+    deleteExecutionWaiters(this.waiters, executionId);
+  }
 }

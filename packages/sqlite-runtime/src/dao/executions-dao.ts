@@ -5,6 +5,7 @@ import type {
 } from "@yieldstar/core";
 import { nextClaimAt } from "@yieldstar/core";
 import type { SqliteDriver, SqliteParameters } from "../sqlite-driver";
+import { runTransaction } from "../sqlite-transaction";
 
 class ExecutionRow {
   execution_id!: string;
@@ -24,6 +25,12 @@ class ExecutionRow {
   next_claim_at!: number | null;
   parent_execution_id!: string | null;
   parent_step_key!: string | null;
+  parent_detached!: number;
+  cancellation_reason!: string | null;
+  cancellation_source!: string | null;
+  cancellation_forced!: number | null;
+  cancellation_requested_at!: number | null;
+  cancellation_delivered_at!: number | null;
 }
 
 class SequencedExecutionRow extends ExecutionRow {
@@ -39,7 +46,9 @@ class ExecutionIdRow {
  * nextClaimAt) so claimDue can find due executions through an index. The
  * table's `rowid` is the admission sequence that orders `list`: SQLite
  * assigns it under the write lock, one more than the largest rowid in the
- * table. Callers own the surrounding transaction.
+ * table. A cancellation request is stored in the `cancellation_*` columns;
+ * `cancellation_requested_at` is NULL when there is none. Callers own the
+ * surrounding transaction.
  */
 export class ExecutionsDao {
   private db: SqliteDriver;
@@ -77,6 +86,43 @@ export class ExecutionsDao {
       CREATE INDEX IF NOT EXISTS idx_executions_status
       ON executions(status);
     `);
+    this.setupCancellation();
+  }
+
+  /**
+   * Adds the cancellation columns and child index if missing, under the write
+   * lock so processes opening the file together add them once. Every process
+   * sharing the file must support cancellation before anything calls `cancel`.
+   */
+  private setupCancellation() {
+    const columns = [
+      "parent_detached INTEGER NOT NULL DEFAULT 0",
+      "cancellation_reason TEXT",
+      "cancellation_source TEXT",
+      "cancellation_forced INTEGER",
+      "cancellation_requested_at INTEGER",
+      "cancellation_delivered_at INTEGER",
+    ];
+    const missing = () => {
+      const existing = new Set(
+        this.db
+          .query<{ name: string }>(`PRAGMA table_info(executions)`)
+          .all()
+          .map((column) => column.name)
+      );
+      return columns.filter((column) => !existing.has(column.split(" ")[0]));
+    };
+    if (missing().length > 0) {
+      runTransaction(this.db, () => {
+        for (const column of missing()) {
+          this.db.run(`ALTER TABLE executions ADD COLUMN ${column}`);
+        }
+      });
+    }
+    this.db.run(`
+      CREATE INDEX IF NOT EXISTS idx_executions_parent
+      ON executions(parent_execution_id) WHERE parent_execution_id IS NOT NULL;
+    `);
   }
 
   getState(executionId: string): ExecutionState | undefined {
@@ -86,6 +132,18 @@ export class ExecutionsDao {
       )
       .get({ $executionId: executionId });
     return row ? toState(row) : undefined;
+  }
+
+  /** The children of an execution that are not detached, in admission order. */
+  getAttachedChildStates(parentExecutionId: string): ExecutionState[] {
+    return this.db
+      .query<ExecutionRow>(
+        `SELECT * FROM executions
+         WHERE parent_execution_id = $parentExecutionId AND parent_detached = 0
+         ORDER BY rowid`
+      )
+      .all({ $parentExecutionId: parentExecutionId })
+      .map(toState);
   }
 
   /**
@@ -169,12 +227,18 @@ export class ExecutionsDao {
            execution_id, workflow_id, params, context, status, outcome,
            admitted_at, updated_at, due_at, claimed_due_at, lease_token,
            lease_expires_at, unacknowledged_delivery_count, redeliver_at,
-           next_claim_at, parent_execution_id, parent_step_key
+           next_claim_at, parent_execution_id, parent_step_key,
+           parent_detached, cancellation_reason, cancellation_source,
+           cancellation_forced, cancellation_requested_at,
+           cancellation_delivered_at
          ) VALUES (
            $executionId, $workflowId, $params, $context, $status, $outcome,
            $admittedAt, $updatedAt, $dueAt, $claimedDueAt, $leaseToken,
            $leaseExpiresAt, $unacknowledgedDeliveryCount, $redeliverAt,
-           $nextClaimAt, $parentExecutionId, $parentStepKey
+           $nextClaimAt, $parentExecutionId, $parentStepKey,
+           $parentDetached, $cancellationReason, $cancellationSource,
+           $cancellationForced, $cancellationRequestedAt,
+           $cancellationDeliveredAt
          )
          ON CONFLICT(execution_id) DO NOTHING`
       )
@@ -182,6 +246,7 @@ export class ExecutionsDao {
         ...toBindings(state),
         $parentExecutionId: state.parent?.executionId ?? null,
         $parentStepKey: state.parent?.stepKey ?? null,
+        $parentDetached: state.parent?.detached ? 1 : 0,
       });
     return Number(result.changes) === 1;
   }
@@ -204,7 +269,12 @@ export class ExecutionsDao {
            lease_expires_at = $leaseExpiresAt,
            unacknowledged_delivery_count = $unacknowledgedDeliveryCount,
            redeliver_at = $redeliverAt,
-           next_claim_at = $nextClaimAt
+           next_claim_at = $nextClaimAt,
+           cancellation_reason = $cancellationReason,
+           cancellation_source = $cancellationSource,
+           cancellation_forced = $cancellationForced,
+           cancellation_requested_at = $cancellationRequestedAt,
+           cancellation_delivered_at = $cancellationDeliveredAt
          WHERE execution_id = $executionId`
       )
       .run(toBindings(state));
@@ -229,7 +299,21 @@ function toState(row: ExecutionRow): ExecutionState {
     redeliverAt: toNumberOrNull(row.redeliver_at),
     parent:
       row.parent_execution_id !== null && row.parent_step_key !== null
-        ? { executionId: row.parent_execution_id, stepKey: row.parent_step_key }
+        ? {
+            executionId: row.parent_execution_id,
+            stepKey: row.parent_step_key,
+            detached: Boolean(row.parent_detached),
+          }
+        : null,
+    cancellation:
+      row.cancellation_requested_at !== null
+        ? {
+            reason: row.cancellation_reason,
+            source: row.cancellation_source,
+            forced: Boolean(row.cancellation_forced),
+            requestedAt: Number(row.cancellation_requested_at),
+            deliveredAt: toNumberOrNull(row.cancellation_delivered_at),
+          }
         : null,
   };
 }
@@ -251,6 +335,12 @@ function toBindings(state: ExecutionState) {
     $unacknowledgedDeliveryCount: state.unacknowledgedDeliveryCount,
     $redeliverAt: state.redeliverAt,
     $nextClaimAt: nextClaimAt(state),
+    $cancellationReason: state.cancellation?.reason ?? null,
+    $cancellationSource: state.cancellation?.source ?? null,
+    $cancellationForced:
+      state.cancellation === null ? null : state.cancellation.forced ? 1 : 0,
+    $cancellationRequestedAt: state.cancellation?.requestedAt ?? null,
+    $cancellationDeliveredAt: state.cancellation?.deliveredAt ?? null,
   };
 }
 

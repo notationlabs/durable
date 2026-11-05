@@ -54,7 +54,7 @@ Calls [`sdk.wait`](#sdkpoll-sdkwait-and-sdklist) without a timeout. It returns t
 const result = await exec.waitForResult();
 ```
 
-The server writes the view with the durable value codec, and the SDK reads it with the same codec, so `undefined` properties keep their keys and errors keep their shape across HTTP. If the record is `failed`, `waitForResult` throws the recorded error as its registered class, with its original `stack`, `code` and `cause`. For an unknown ID it throws an `HttpRouteError` with code `EXECUTION_NOT_FOUND`.
+The server writes the view with the durable value codec, and the SDK reads it with the same codec, so `undefined` properties keep their keys and errors keep their shape across HTTP. If the record is `failed`, `waitForResult` throws the recorded error as its registered class, with its original `stack`, `code` and `cause`. If the record is `cancelled`, it throws a `WorkflowCancelledError` with the outcome's `reason` and `source`. For an unknown ID it throws an `HttpRouteError` with code `EXECUTION_NOT_FOUND`.
 
 `sdk.waitForResult({ executionId })` does the same for an execution triggered elsewhere.
 
@@ -81,6 +81,23 @@ A `404` without the code `EXECUTION_NOT_FOUND`, for example from a wrong `url` o
 A negative `timeout` throws a `RangeError` before any request. When `signal` aborts, `sdk.wait` aborts its current request, sends no more, and rejects with the signal's reason.
 
 `sdk.trigger` reads the ack, `{ executionId, status }`, from the response body. `status` is `"accepted"` for a `202` and `"existing"` for a `200`.
+
+## `sdk.cancel`
+
+Behaves as the [local SDK's `cancel`](./sdk-local.md#sdkcancel) does, and posts to `/cancel`. It returns once the server has recorded the request, without waiting for the workflow to stop.
+
+```ts
+const result = await sdk.cancel("order-42", { reason: "abandoned" });
+```
+
+| Server response                     | SDK result                                           |
+| ----------------------------------- | ---------------------------------------------------- |
+| `202` with `{ status: "requested", execution }` | Resolves with that result                |
+| `200` with a terminal view          | Resolves with the view, including after a forced cancel |
+| `404` `EXECUTION_NOT_FOUND`         | Resolves with `undefined`                            |
+| Any other error response, such as a middleware denial | Throws an `HttpRouteError`         |
+
+`cancel` checks its arguments before it sends a request, and throws `ExecutionCancelRequestError` for an empty execution ID, a `reason` that is not a string, or a `force` that is not a boolean.
 
 ## `HttpRouteError`
 

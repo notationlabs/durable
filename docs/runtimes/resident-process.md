@@ -9,7 +9,7 @@ The long-lived process owns four pieces:
 - A `WorkflowInvoker` that forks a fresh child process for each delivery.
 - A local SDK or HTTP routes that admit executions and read their outcomes from the record.
 
-The child process creates its own `SqliteRuntime` over the same SQLite file and a `WorkflowRunner` on top of it. On every delivery it replays cached steps, runs until the next durable boundary, sends the outcome (`completed`, `suspended` or `failed`) to the parent, and exits. Delayed and state-suspended executions become due again on their record, and the dispatcher delivers them to a new child.
+The child process creates its own `SqliteRuntime` over the same SQLite file and a `WorkflowRunner` on top of it. On every delivery it replays cached steps, runs until the next durable boundary, sends the outcome (`completed`, `suspended`, `failed` or `cancelled`) to the parent, and exits. Delayed and state-suspended executions become due again on their record, and the dispatcher delivers them to a new child.
 
 ## Shared runtime surface
 
@@ -43,6 +43,9 @@ For Node, change the import to `@yieldstar/sqlite-runtime/node`. No other runtim
 | The app restarts                                     | `admitted` and `suspended` records and their pending wakes are still in the file, and the next dispatcher delivers them |
 | A store commit lands                                 | The wakes for the waiters it satisfies commit in the same transaction                        |
 | A joined execution finishes                          | The wakes for its join waiters commit in the same transaction as its outcome, so a crash cannot lose them |
+| An execution with children is cancelled              | The request on the execution and on every attached, non-terminal descendant commits in one transaction |
+| A worker records a delivered cancellation            | The throw's step record, the deletion of that step's waiters and `deliveredAt` commit in one transaction, so a crash leaves all or none of them |
+| An execution is force-cancelled while a worker holds its lease | The `cancelled` outcome and a higher lease token commit at once; the worker's next step write or acknowledgement is rejected |
 
 **Leases decide when another dispatcher may take over; tokens decide whose writes count.** Each delivery runs under a lease that the dispatcher renews while the delivery runs. If the dispatcher stops renewing, because its process died or froze, the lease expires and another dispatcher can claim the execution with a higher token. Every step write and acknowledgement checks the token in the same SQLite transaction, so a worker that falls behind can no longer record anything. If a renewal finds that another claim has taken over, the dispatcher aborts the delivery's `signal`, and the worker invoker kills the worker, so even a step function that never returns stops at once. Several app processes can therefore share one database file, each running a dispatcher. A dispatcher runs up to `concurrency` deliveries at once (10 by default).
 

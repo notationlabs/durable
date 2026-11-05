@@ -20,6 +20,7 @@ export const manual: DocCategory = {
         { label: "Defining Workflows", slug: "manual/workflows" },
         { label: "Steps", slug: "manual/steps" },
         { label: "Retries", slug: "manual/retries" },
+        { label: "Cancellation", slug: "manual/cancellation" },
       ],
     },
     {

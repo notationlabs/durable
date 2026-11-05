@@ -7,21 +7,28 @@ import {
   isExecutionClaimable,
   isLeaseCurrent,
   isTerminalExecutionStatus,
+  markCancellationDelivered,
   matchExecutionAdmission,
   matchesExecutionListRequest,
   matchStartRequest,
   nextClaimAt,
   prepareExecutionAdmission,
+  prepareExecutionCancel,
   prepareExecutionListRequest,
   prepareExecutionStart,
+  propagatedCancellation,
   releaseExecutionLease,
   renewExecutionLease,
+  requestExecutionCancellation,
   requestExecutionWake,
   toExecutionListPage,
   toExecutionRecord,
   type ExecutionAcknowledgeResult,
   type ExecutionAdmissionRequest,
   type ExecutionAdmissionResult,
+  type CancellationRequest,
+  type ExecutionCancelRequest,
+  type ExecutionCancelResult,
   type ExecutionClaimFilter,
   type ExecutionClient,
   type ExecutionLease,
@@ -55,18 +62,27 @@ export class MemoryExecutionClient implements ExecutionClient {
   private startRequests = new Map<string, StartRequestState>();
   private clock: () => number;
   private onTerminal?: (executionId: string) => void;
+  private onForceCancelled?: (executionId: string) => void;
 
   constructor(options?: {
     clock?: () => number;
     /**
-     * Called synchronously when an acknowledgement makes an execution
-     * terminal, so the runtime wakes its join waiters in the same write.
+     * Called synchronously when an acknowledgement or a forced cancel makes
+     * an execution terminal, so the runtime wakes its join waiters in the
+     * same write.
      */
     onTerminal?: (executionId: string) => void;
+    /**
+     * Called synchronously when a forced cancel makes an execution terminal,
+     * so the runtime deletes the store, effect and join waiters it holds in
+     * the same write.
+     */
+    onForceCancelled?: (executionId: string) => void;
   }) {
     // Read Date.now lazily so fake timers installed later still apply.
     this.clock = options?.clock ?? (() => Date.now());
     this.onTerminal = options?.onTerminal;
+    this.onForceCancelled = options?.onForceCancelled;
   }
 
   async admit(
@@ -152,6 +168,55 @@ export class MemoryExecutionClient implements ExecutionClient {
     if (!next) return { status: "ignored" };
     this.executions.set(request.executionId, next);
     return { status: "requested" };
+  }
+
+  async cancel(request: ExecutionCancelRequest): Promise<ExecutionCancelResult> {
+    const prepared = prepareExecutionCancel(request);
+    if (!prepared.ok) throw new TypeError(`Invalid cancel request: ${prepared.message}`);
+    const target = this.executions.get(prepared.executionId);
+    if (!target) return executionNotFound(prepared.executionId);
+
+    const now = this.clock();
+    const pending: { state: ExecutionState; request: CancellationRequest }[] = [
+      { state: target, request: prepared.request },
+    ];
+    let result: ExecutionCancelResult | undefined;
+    while (pending.length > 0) {
+      const { state, request } = pending.shift()!;
+      const applied = requestExecutionCancellation(state, request, now);
+      result ??= applied.result;
+      if (applied.state !== state) this.executions.set(state.executionId, applied.state);
+      if (applied.terminal) {
+        this.onForceCancelled?.(state.executionId);
+        this.onTerminal?.(state.executionId);
+      }
+      if (!applied.propagate) continue;
+      const propagated = propagatedCancellation(applied.state);
+      for (const child of this.children(state.executionId)) {
+        pending.push({ state: child, request: propagated });
+      }
+    }
+    return result!;
+  }
+
+  private children(executionId: string): ExecutionState[] {
+    return [...this.executions.values()].filter(
+      (state) =>
+        state.parent?.executionId === executionId &&
+        !state.parent.detached &&
+        !isTerminalExecutionStatus(state.status)
+    );
+  }
+
+  /**
+   * @internal Synchronously sets `deliveredAt` on the execution's request,
+   * for the heap's fenced cancellation write. The caller checks the lease
+   * first. Throws if the execution has no request.
+   */
+  markCancellationDelivered(executionId: string) {
+    const state = this.executions.get(executionId);
+    if (!state) throw new Error(`Execution "${executionId}" does not exist`);
+    this.executions.set(executionId, markCancellationDelivered(state, this.clock()));
   }
 
   /**

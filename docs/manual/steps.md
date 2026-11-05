@@ -118,7 +118,7 @@ if (err instanceof CourierError) {
 
 Revival sets the prototype and fields without calling the constructor, so a constructor with required arguments is fine. Registration is per process: a worker process must register the class too, or it revives the error as a plain `Error` with the same `name`, `message`, `code`, `cause` and fields.
 
-These classes are registered by default: `RetryableError`, `WorkflowStartError`, `WorkflowJoinError`, `WorkflowValueError`, `WorkflowEffectError`, `EffectDeliveryError`, `EffectClientInvariantError`, `StoreValidationError`, `TypeError`, `RangeError`, `SyntaxError`, `ReferenceError`, `EvalError`, `URIError` and `AggregateError`.
+These classes are registered by default: `RetryableError`, `WorkflowStartError`, `WorkflowJoinError`, `WorkflowCancelledError`, `WorkflowValueError`, `WorkflowEffectError`, `EffectDeliveryError`, `EffectClientInvariantError`, `StoreValidationError`, `TypeError`, `RangeError`, `SyntaxError`, `ReferenceError`, `EvalError`, `URIError` and `AggregateError`.
 
 A thrown value that is not an error, such as a string or a plain object, is rethrown as it was thrown. A thrown value that is not durable, such as a class instance, is recorded and rethrown as `Error(String(value))`.
 
@@ -165,9 +165,21 @@ The start is identified by the calling execution's ID and the step key. If a del
 A rejected start throws a `WorkflowStartError`, which workflow code can catch. Its `code` is:
 
 - `INVALID_START_PARAMETERS` when `params` are not a durable value or `workflowId` is empty; or
-- `START_REQUEST_MISMATCH` when the step was already started with a different `workflowId` or `params`, for example after a deploy changed the step.
+- `START_REQUEST_MISMATCH` when the step was already started with a different `workflowId`, `params` or `detached` option, for example after a deploy changed the step.
 
 The rejection is recorded, so replay throws the same error. If the runtime fails while starting the target, the error is an infrastructure error: it does not reach workflow code, and the next delivery tries the same start again.
+
+When the caller is [cancelled](./cancellation.md#children), the runtime cancels the target too. Pass `{ detached: true }` as a third argument to start a target that should outlive the caller, such as a receipt email:
+
+```ts
+yield* step.start(
+  "receipt",
+  { workflowId: "send-receipt", params: { orderId } },
+  { detached: true }
+);
+```
+
+The target's `parent` link records `detached: true`, and the target receives no cancellation propagated from the caller. `detached` defaults to `false`, and a value that is not a boolean throws a `TypeError`.
 
 ## `step.join`
 
@@ -188,6 +200,7 @@ The step reads the target's execution record:
 
 - If the target has completed, the step records its result and returns it.
 - If the target has failed, the step records and throws a `WorkflowJoinError` with code `JOINED_EXECUTION_FAILED`. Its `executionId` is the target's ID, and its `cause` is the target's recorded error, with at least its `name` and `message`.
+- If the target was [cancelled](./cancellation.md), the step records and throws a `WorkflowJoinError` with code `JOINED_EXECUTION_CANCELLED`. Its `reason` and `source` are the target's cancelled outcome's.
 - If the target is not terminal, the step registers a join waiter on the target and the delivery ends as `suspended`. When the target becomes terminal, the runtime wakes every joiner of the target, and the step reads the target again.
 
 The step records the outcome under its key, so replay returns the result or throws the error without reading the target again. Workflow code can catch `WorkflowJoinError`, and its `code` and `executionId` are the same on replay.
@@ -211,7 +224,7 @@ The other codes are:
 
 Both are recorded, so replay throws them without reading the target. So `JOIN_TARGET_NOT_FOUND` is permanent for the step: if the target is admitted after the join reads it, the step still throws. Join only an ID that has already been admitted, such as one returned by `step.start` or by an admission that completed before the join.
 
-A workflow can join any execution, not only one it started, and several executions can join one target. The runtime does not detect cycles: if A joins B and B joins A, both wait forever unless they use a deadline.
+A workflow can join any execution, not only one it started, and several executions can join one target. The runtime does not detect cycles: if A joins B and B joins A, both wait forever unless they use a deadline or one of them is [cancelled](./cancellation.md).
 
 The runtime records a terminal outcome and the wakes for its join waiters in one atomic write, so a crash between the target's last delivery and the joiner's next delivery does not lose the wake. A join waiter stays registered until the joiner records the step, and the write that records the step deletes it.
 
@@ -244,7 +257,7 @@ The deadline follows the rules of a [timed `when`](./store-waiting.md#waiting-wi
 - An unresolved evaluation ends the delivery as `suspended` with `wakeAt` set to the deadline.
 - The first recorded result is the only one returned. A target that completes after `timed-out` is recorded does not change the step.
 
-A failed target still throws `WorkflowJoinError`. Only `completed` and `timed-out` are returned as values.
+A failed or cancelled target still throws `WorkflowJoinError`. Only `completed` and `timed-out` are returned as values.
 
 Replay returns the value as it was recorded. If a deploy adds or removes the `deadline` of a join that has already recorded its result, the replayed value has the old shape and does not match the new type. A join that gained a deadline returns the bare result instead of a `TimedJoinResult`. A join that lost its deadline returns `{ status: "completed", result }` or `{ status: "timed-out" }` instead of the result. A timed `when` behaves the same way. Use a new step key when you change whether a join has a deadline.
 
@@ -263,7 +276,17 @@ The type parameter is the child workflow. It checks `params`, makes `params` req
 
 The step records one result, under its key, when the child is terminal. Until then, each evaluation sends the same start request, identified by the calling execution's ID and the step key as for `step.start`, and joins the child that the request names. So a delivery that stops between the start and the join does not start a second child: the next delivery receives the same child and joins it. Once the step is recorded, replay returns the result, or throws the error, without starting or joining.
 
-The child's execution record has `parent` set to the caller's execution ID and the step key.
+The child's execution record has `parent` set to the caller's execution ID and the step key. `step.call` takes `detached` as `step.start` does, in the same options object as `deadline`:
+
+```ts
+const receipt = yield* step.call<typeof sendReceipt>(
+  "receipt",
+  { workflowId: "send-receipt", params: { orderId } },
+  { detached: true }
+);
+```
+
+`detached` alone does not make the call timed: the step returns the result, not a `TimedJoinResult`.
 
 `step.call` throws the same errors as `step.join`. It also throws a `WorkflowStartError` if the runtime rejects the start, for example with `START_REQUEST_MISMATCH` when a deploy changed the step's `workflowId` or `params` before the child finished.
 
@@ -447,9 +470,10 @@ Errors fall into two groups, and only the first reaches workflow code.
 | Errors thrown by your store updaters, selectors, claims and initial states    | A worker crashes or exits before reporting an outcome          |
 | `StoreValidationError` (a state failed its schema)                            | The execution client throws during `step.start` or `step.call` |
 | `WorkflowStartError` (`step.start` or `step.call` was rejected)               | `step.effect` cannot reach or trust its effect records, or a callback returns a malformed answer (`EffectDeliveryError`) |
-| `WorkflowJoinError` (a joined execution failed or does not exist, or a workflow joined itself) | The join client throws during `step.join` or `step.call`       |
+| `WorkflowJoinError` (a joined execution failed, was cancelled or does not exist, or a workflow joined itself) | The join client throws during `step.join` or `step.call`       |
 | `WorkflowValueError` (a value is not durable, or failed its step's schema)    |                                                                |
 | `WorkflowEffectError` (`step.effect` was invalid or mismatched)               |                                                                |
+| `WorkflowCancelledError` (a [cancellation](./cancellation.md) was delivered at this step) |                                                    |
 
 Steps do not call runtime clients themselves. A store step yields a request, and the driver makes the call outside workflow code, then resumes the step with the result. If the call fails with an infrastructure error, the driver does not resume the step, so a `try/catch` around it never runs:
 

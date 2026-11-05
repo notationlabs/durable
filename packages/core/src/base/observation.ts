@@ -1,4 +1,6 @@
+import { isTerminalExecutionStatus } from "./execution";
 import type {
+  ExecutionCancellation,
   ExecutionListRequest,
   ExecutionParent,
   ExecutionRecord,
@@ -11,6 +13,8 @@ type ExecutionViewBase = {
   updatedAt: number;
   /** Present on executions started by `step.start` or `step.call`. */
   parent?: ExecutionParent;
+  /** Present once a cancellation request is recorded. */
+  cancellation?: ExecutionCancellation;
 };
 
 export type ActiveExecutionView = ExecutionViewBase & {
@@ -19,7 +23,8 @@ export type ActiveExecutionView = ExecutionViewBase & {
 
 export type TerminalExecutionView =
   | (ExecutionViewBase & { status: "completed"; result: unknown })
-  | (ExecutionViewBase & { status: "failed"; error: Error });
+  | (ExecutionViewBase & { status: "failed"; error: Error })
+  | (ExecutionViewBase & { status: "cancelled"; reason?: string; source?: string });
 
 /**
  * What an observer sees of an execution record. It leaves out `params`,
@@ -50,6 +55,24 @@ export type ExecutionViewPage = {
   /** Present when more executions may follow. */
   cursor?: string;
 };
+
+export type CancelOptions = {
+  reason?: string;
+  /** Records `cancelled` at once, without running workflow code. */
+  force?: boolean;
+};
+
+export type CancelResult =
+  | { status: "requested"; execution: ActiveExecutionView }
+  | TerminalExecutionView;
+
+export interface ExecutionControl {
+  /**
+   * Requests cancellation without waiting for the workflow to stop. Resolves
+   * `undefined` for an unknown ID.
+   */
+  cancel(executionId: string, options?: CancelOptions): Promise<CancelResult | undefined>;
+}
 
 /** Reads executions from their durable record, from any process. */
 export interface ExecutionObserver {
@@ -82,17 +105,28 @@ export function toExecutionView(record: ExecutionRecord): ExecutionView {
     admittedAt: record.admittedAt,
     updatedAt: record.updatedAt,
     ...(record.parent ? { parent: { ...record.parent } } : {}),
+    ...(record.cancellation ? { cancellation: { ...record.cancellation } } : {}),
   };
-  if (record.status === "completed" || record.status === "failed") {
+  if (isTerminalExecutionStatus(record.status)) {
     const outcome = record.outcome;
     if (outcome?.status !== record.status) {
       throw new Error(
         `Terminal execution "${record.executionId}" has no ${record.status} outcome`
       );
     }
-    return outcome.status === "completed"
-      ? { ...base, status: "completed", result: outcome.result }
-      : { ...base, status: "failed", error: outcome.error };
+    switch (outcome.status) {
+      case "completed":
+        return { ...base, status: "completed", result: outcome.result };
+      case "failed":
+        return { ...base, status: "failed", error: outcome.error };
+      case "cancelled":
+        return {
+          ...base,
+          status: "cancelled",
+          ...(outcome.reason !== undefined ? { reason: outcome.reason } : {}),
+          ...(outcome.source !== undefined ? { source: outcome.source } : {}),
+        };
+    }
   }
   return { ...base, status: record.status };
 }
@@ -100,5 +134,5 @@ export function toExecutionView(record: ExecutionRecord): ExecutionView {
 export function isTerminalExecutionView(
   view: ExecutionView
 ): view is TerminalExecutionView {
-  return view.status === "completed" || view.status === "failed";
+  return isTerminalExecutionStatus(view.status);
 }

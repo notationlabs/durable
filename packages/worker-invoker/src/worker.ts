@@ -1,6 +1,7 @@
 import type { Logger } from "pino";
 import type {
   EventContext,
+  ExecutionCancellation,
   ExecutionLease,
   WorkflowEvent,
   WorkflowRunOutcome,
@@ -41,12 +42,14 @@ export type WorkerDelivery = {
     context: string;
   };
   lease: ExecutionLease;
+  cancellation?: ExecutionCancellation;
 };
 
 export type WorkerRequest = WorkerDelivery;
 
 export type SerializedOutcome =
   | Extract<WorkflowRunOutcome, { status: "suspended" }>
+  | Extract<WorkflowRunOutcome, { status: "cancelled" }>
   | { status: "completed"; result: string }
   | { status: "failed"; error: string };
 
@@ -75,7 +78,7 @@ export function createWorkflowWorker(
       // delivery's signal never aborts inside the worker.
       const { signal } = new AbortController();
       process.on("message", async (message: WorkerRequest) => {
-        const { event, lease } = message;
+        const { event, lease, cancellation } = message;
         try {
           const workflowEvent: WorkflowEvent = {
             ...event,
@@ -85,6 +88,7 @@ export function createWorkflowWorker(
           const outcome = await workflowRunner.run(workflowEvent, {
             lease,
             signal,
+            ...(cancellation ? { cancellation } : {}),
             logger,
           });
           send({ status: "outcome", outcome: serializeOutcome(outcome) });
@@ -98,7 +102,7 @@ export function createWorkflowWorker(
 }
 
 function serializeOutcome(outcome: WorkflowRunOutcome): SerializedOutcome {
-  if (outcome.status === "suspended") return outcome;
+  if (outcome.status === "suspended" || outcome.status === "cancelled") return outcome;
   if (outcome.status === "failed") {
     return { status: "failed", error: encodeThrownValue(outcome.error) };
   }

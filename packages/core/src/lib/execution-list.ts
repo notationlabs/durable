@@ -16,6 +16,7 @@ const EXECUTION_STATUSES: readonly ExecutionStatus[] = [
   "suspended",
   "completed",
   "failed",
+  "cancelled",
 ];
 
 export type PreparedExecutionListRequest = {

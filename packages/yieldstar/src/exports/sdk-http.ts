@@ -1,6 +1,9 @@
 import type {
+  CancelOptions,
+  CancelResult,
   EventParamsOf,
   ExecutionAdmissionErrorCode,
+  ExecutionControl,
   ExecutionListRequest,
   ExecutionObserver,
   ExecutionView,
@@ -14,9 +17,12 @@ import type {
 } from "@yieldstar/core";
 import {
   ExecutionAdmissionError,
+  ExecutionCancelRequestError,
   ExecutionListRequestError,
+  WorkflowCancelledError,
   durableValueCodec,
   isDuration,
+  prepareExecutionCancel,
 } from "@yieldstar/core";
 import { HttpRouteError } from "./errors";
 
@@ -62,7 +68,7 @@ export function createHttpSdkFactory<W extends WorkflowRouter>() {
     };
 
     /**
-     * Decodes a `/poll` or `/wait` response. Only a `404` with code
+     * Decodes a `/poll`, `/wait` or `/cancel` response. Only a `404` with code
      * `EXECUTION_NOT_FOUND` means the execution does not exist; any other
      * `404`, such as one from a wrong base path, throws.
      */
@@ -201,8 +207,29 @@ export function createHttpSdkFactory<W extends WorkflowRouter>() {
       },
 
       /**
+       * Requests cancellation without waiting for the workflow to stop.
+       * Resolves `undefined` for an unknown ID.
+       * @throws {ExecutionCancelRequestError} for invalid arguments, before sending
+       * @throws {HttpRouteError} for any other error response
+       */
+      async cancel(
+        executionId: string,
+        options?: CancelOptions
+      ): Promise<CancelResult | undefined> {
+        const prepared = prepareExecutionCancel({ ...options, executionId });
+        if (!prepared.ok) throw new ExecutionCancelRequestError(prepared.message);
+        const res = await post(
+          "cancel",
+          JSON.stringify({ executionId, ...prepared.request })
+        );
+        return decodeObservation<CancelResult>(res);
+      },
+
+      /**
        * `wait` without a timeout. Resolves with the result, or throws the
        * recorded error, revived as the class registered under its name.
+       * @throws {WorkflowCancelledError} with the outcome's `reason` and
+       * `source` when the execution ends `cancelled`
        * @throws {HttpRouteError} with code `EXECUTION_NOT_FOUND` for an
        * unknown ID
        */
@@ -218,6 +245,9 @@ export function createHttpSdkFactory<W extends WorkflowRouter>() {
           );
         }
         if (result.status === "failed") throw result.error;
+        if (result.status === "cancelled") {
+          throw new WorkflowCancelledError({ reason: result.reason, source: result.source });
+        }
         if (result.status === "timed-out") {
           throw new Error(
             `Execution "${ack.executionId}" is still ${result.execution.status}`
@@ -226,7 +256,7 @@ export function createHttpSdkFactory<W extends WorkflowRouter>() {
         return result.result as WorkflowGeneratorReturnType<W[K]>;
       },
     };
-    return sdk satisfies ExecutionObserver;
+    return sdk satisfies ExecutionObserver & ExecutionControl;
   };
 }
 

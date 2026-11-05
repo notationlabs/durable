@@ -89,4 +89,10 @@ export class StoreWaitersDao {
       )
       .run({ $executionId: executionId, $stepKey: stepKey });
   }
+
+  deleteExecutionWaiters(executionId: string) {
+    this.db
+      .query(`DELETE FROM store_waiters WHERE execution_id = $executionId`)
+      .run({ $executionId: executionId });
+  }
 }

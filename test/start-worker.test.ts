@@ -152,3 +152,22 @@ test("a worker that crashes after the target is started, before the step is reco
     unacknowledgedDeliveryCount: 0,
   });
 });
+
+test("a cancellation request reaches workflow code in a worker process, and the worker reports the cancelled outcome", { timeout: 10_000 }, async () => {
+  const { dir, runtime, dispatcher, outcomeOf } = setup();
+  await runtime.executions.admit({
+    executionId: "order-42",
+    workflowId: "await-payment",
+    params: {},
+    context: new Map([["dir", dir]]),
+  });
+  await runtime.executions.cancel({ executionId: "order-42", reason: "abandoned" });
+  dispatcher.start();
+
+  expect(await outcomeOf("order-42")).toMatchObject({
+    status: "cancelled",
+    reason: "abandoned",
+  });
+  const release = await runtime.heap.readStep({ executionId: "order-42", stepKey: "release" });
+  expect(JSON.parse(release!.stepResponseJson)).toMatchObject({ result: "released: abandoned" });
+});

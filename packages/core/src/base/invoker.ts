@@ -1,6 +1,10 @@
 import type { EventEmitter } from "node:events";
 import type { WorkflowEvent } from "./event";
-import type { ExecutionLease, WorkflowRunOutcome } from "./execution";
+import type {
+  ExecutionCancellation,
+  ExecutionLease,
+  WorkflowRunOutcome,
+} from "./execution";
 
 export type DeliveryOptions = {
   /** Every fenced write the delivery makes carries this lease. */
@@ -12,6 +16,12 @@ export type DeliveryOptions = {
    * aborted delivery without running more workflow code.
    */
   signal: AbortSignal;
+  /**
+   * The cancellation request on the record when the delivery was dispatched.
+   * Without `deliveredAt`, the driver throws `WorkflowCancelledError` at the
+   * first unfinished step.
+   */
+  cancellation?: ExecutionCancellation;
 };
 
 export type WorkflowInvoker = {

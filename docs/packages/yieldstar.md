@@ -15,6 +15,7 @@ import { workflow, createWorkflow } from "yieldstar";
 import { createWorkflowRouter } from "yieldstar";
 import { RetryableError, ExecutionAdmissionError, WorkflowStartError, WorkflowJoinError } from "yieldstar";
 import { ExecutionListRequestError, HttpRouteError } from "yieldstar";
+import { WorkflowCancelledError, ExecutionCancelRequestError } from "yieldstar";
 import { WorkflowValueError, registerErrorClass, WORKFLOW_RESULT_STEP_KEY } from "yieldstar";
 import { WorkflowEffectError, EffectDeliveryError, EffectClientInvariantError } from "yieldstar";
 import { defineStore } from "yieldstar";
@@ -24,6 +25,7 @@ import type {
   WorkflowFn,
   StepRunner,
   StepRunOptions,
+  StartOptions,
   DurableStepFn,
   WorkflowStore,
   TimedWhenResult,
@@ -31,6 +33,7 @@ import type {
   ExecutionRecord,
   ExecutionStatus,
   ExecutionParent,
+  ExecutionCancellation,
   ExecutionAdmissionErrorCode,
   TriggerAck,
   ExecutionObserver,
@@ -41,6 +44,9 @@ import type {
   ExecutionWaitOptions,
   ExecutionListRequest,
   ExecutionViewPage,
+  ExecutionControl,
+  CancelOptions,
+  CancelResult,
   Durable,
   DurableObject,
   DurableValue,
@@ -114,17 +120,25 @@ See [Idempotent trigger](../manual/sdk-local.md#idempotent-trigger).
 
 Thrown by both SDKs' `list`, and by `ExecutionClient.list`, for a `workflowId` that is not a string, a `limit` that is not a positive integer, an unknown `status`, or a malformed `cursor`. `err.code` is `"INVALID_LIST_REQUEST"`.
 
+## `ExecutionCancelRequestError`
+
+Thrown by both SDKs' `cancel`, before anything is recorded or sent, for an empty execution ID, a `reason` that is not a string, or a `force` that is not a boolean. It extends `TypeError`.
+
 ## `HttpRouteError`
 
 Thrown by the HTTP SDK for an error response that has no more specific error, such as an observation middleware denial or an `EXECUTION_NOT_FOUND` from `waitForResult`. `err.status` is the response status, and `err.code` is the response's `code` when the body has one.
 
 ## `WorkflowStartError`
 
-Thrown to workflow code by `step.start` when the runtime rejects the start. `err.code` is `"INVALID_START_PARAMETERS"` (`params` are not a durable value, or `workflowId` is empty) or `"START_REQUEST_MISMATCH"` (the step already started a different workflow or different `params`). See [`step.start`](../manual/steps.md#stepstart).
+Thrown to workflow code by `step.start` when the runtime rejects the start. `err.code` is `"INVALID_START_PARAMETERS"` (`params` are not a durable value, or `workflowId` is empty) or `"START_REQUEST_MISMATCH"` (the step already started a different workflow, different `params` or a different `detached` option). See [`step.start`](../manual/steps.md#stepstart).
 
 ## `WorkflowJoinError`
 
-Thrown to workflow code by `step.join` and `step.call`. `err.code` is `"JOINED_EXECUTION_FAILED"` (the target failed, and `err.cause` is its recorded error), `"JOIN_TARGET_NOT_FOUND"` (no execution has the target ID) or `"JOIN_SELF"` (the target is the calling execution). `err.executionId` is the target's ID. It is recorded as the step's error, so replay throws the same class, code and `executionId`. See [`step.join`](../manual/steps.md#stepjoin).
+Thrown to workflow code by `step.join` and `step.call`. `err.code` is `"JOINED_EXECUTION_FAILED"` (the target failed, and `err.cause` is its recorded error), `"JOINED_EXECUTION_CANCELLED"` (the target was cancelled, and `err.reason` and `err.source` are its outcome's), `"JOIN_TARGET_NOT_FOUND"` (no execution has the target ID) or `"JOIN_SELF"` (the target is the calling execution). `err.executionId` is the target's ID. It is recorded as the step's error, so replay throws the same class, code and `executionId`. See [`step.join`](../manual/steps.md#stepjoin).
+
+## `WorkflowCancelledError`
+
+Thrown into workflow code at the first unfinished step once a cancellation request is delivered. `err.reason` is the request's reason, and `err.source` is the execution where the cancellation began, when it was propagated from a parent. The throw is recorded as the step's result, so replay throws the same error at the same step. A workflow that lets it escape ends `cancelled`; one that catches it and returns ends `completed`. `triggerAndWait` and `waitForResult` also throw it for a cancelled execution. It is registered by default. See [Cancellation](../manual/cancellation.md).
 
 ## `WorkflowEffectError`
 
@@ -144,11 +158,11 @@ Registers the class that recorded errors named `name` are revived as, in this pr
 
 ## `createLocalSdk<Router>(runtime, { invoker?, pollInterval? })`
 
-Creates a local SDK client that admits executions into `runtime` and reads them back with `poll`, `wait` and `list`. It implements `ExecutionObserver`. See [Local SDK](../manual/sdk-local.md).
+Creates a local SDK client that admits executions into `runtime` and reads them back with `poll`, `wait` and `list`, and cancels them with `cancel`. It implements `ExecutionObserver` and `ExecutionControl`. See [Local SDK](../manual/sdk-local.md).
 
 ## `createHttpSdkFactory<Router>()`
 
-Returns a factory for HTTP SDK clients. Each client implements `ExecutionObserver`. See [HTTP SDK](../manual/sdk-http.md).
+Returns a factory for HTTP SDK clients. Each client implements `ExecutionObserver` and `ExecutionControl`. See [HTTP SDK](../manual/sdk-http.md).
 
 ## `defineStore(name, schema, { initial })`
 
@@ -178,12 +192,14 @@ yield* step.poll("key", opts, predicate);
 const store = step.store(definition, { id }); // no yield*
 
 yield* step.start("key", { workflowId, params });
+yield* step.start("key", { workflowId, params }, { detached: true });
 
 yield* step.join<R>("key", executionId);
 yield* step.join<R>("key", executionId, { deadline });
 
 yield* step.call<typeof childWorkflow>("key", { workflowId, params });
 yield* step.call<typeof childWorkflow>("key", { workflowId, params }, { deadline });
+yield* step.call<typeof childWorkflow>("key", { workflowId, params }, { detached: true, deadline });
 
 yield* step.effect("key", { effectId, operation, input, lookup, perform, retryIn, failsOn, maxAttempts });
 ```
@@ -192,7 +208,7 @@ yield* step.effect("key", { effectId, operation, input, lookup, perform, retryIn
 
 `when(key, selector, { deadline })` waits for the selector to match or for `deadline`, whichever is recorded first, and returns a `TimedWhenResult<R>`: `{ status: "matched", value }` or `{ status: "timed-out" }`. `deadline` is required in this form, so an optional deadline needs a separate call to the untimed form – see [Waiting with a deadline](../manual/store-waiting.md#waiting-with-a-deadline).
 
-`step.start` starts another workflow as its own execution, once per step key, and returns `{ executionId }` – see [Steps](../manual/steps.md#stepstart).
+`step.start` starts another workflow as its own execution, once per step key, and returns `{ executionId }` – see [Steps](../manual/steps.md#stepstart). Its `StartOptions` has `detached`, which records the target's parent link as detached so that the target receives no cancellation propagated from the caller – see [Detached children](../manual/cancellation.md#detached-children). `step.call` takes `detached` in the same options object as `deadline`.
 
 `step.join` waits until the execution `executionId` is terminal and returns its result, or throws a `WorkflowJoinError` – see [Steps](../manual/steps.md#stepjoin). `step.call` starts a child as `step.start` does and joins it, under one step key; its type parameter checks `params` and types the result – see [Steps](../manual/steps.md#stepcall). `step.join`'s `R` defaults to `DurableValue`. `step.call` without a type parameter accepts no `params` and returns a `DurableValue`. With `{ deadline }`, both return a `TimedJoinResult<R>`: `{ status: "completed", result }` or `{ status: "timed-out" }`.
 
