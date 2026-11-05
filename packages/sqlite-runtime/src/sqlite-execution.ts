@@ -221,41 +221,44 @@ export class SqliteExecutionClient implements ExecutionClient {
     lease: ExecutionLease;
     outcome: WorkflowRunOutcome;
   }): Promise<ExecutionAcknowledgeResult> {
-    const { executionId } = request.lease;
-    return runTransaction(this.db, () => {
-      const state = this.executionsDao.getState(executionId);
-      if (!state) return { status: "lost" as const };
-      const next = acknowledgeExecution(state, {
-        lease: request.lease,
-        outcome: request.outcome,
-        now: this.clock(),
-      });
-      if (next.state === state) return next.result;
-      this.executionsDao.updateState(next.state);
-      // The join waiters stay registered until each joiner records its step.
-      if (becameTerminal(state, next.state)) {
-        for (const joiner of this.joinWaitersDao.getWaitingExecutionIds(executionId)) {
+    return this.transition(
+      request.lease,
+      (state) =>
+        acknowledgeExecution(state, {
+          lease: request.lease,
+          outcome: request.outcome,
+          now: this.clock(),
+        }),
+      (before, after) => {
+        // The join waiters stay registered until each joiner records its step.
+        if (!becameTerminal(before, after)) return;
+        for (const joiner of this.joinWaitersDao.getWaitingExecutionIds(after.executionId)) {
           this.wakeInTransaction(joiner);
         }
       }
-      return next.result;
-    });
+    );
   }
 
   /**
    * Applies a fenced transition in one transaction. The transition checks the
    * lease against the stored token, so the check and the write are atomic.
+   * @param afterWrite runs inside the transaction after the state is written,
+   * and only when the transition changed it.
    */
   private transition<R>(
     lease: ExecutionLease,
-    fn: (state: ExecutionState) => { state: ExecutionState; result: R }
+    fn: (state: ExecutionState) => { state: ExecutionState; result: R },
+    afterWrite?: (before: ExecutionState, after: ExecutionState) => void
   ): Promise<R | { status: "lost" }> {
     return Promise.resolve(
       runTransaction(this.db, () => {
         const state = this.executionsDao.getState(lease.executionId);
         if (!state) return { status: "lost" as const };
         const next = fn(state);
-        if (next.state !== state) this.executionsDao.updateState(next.state);
+        if (next.state !== state) {
+          this.executionsDao.updateState(next.state);
+          afterWrite?.(state, next.state);
+        }
         return next.result;
       })
     );
