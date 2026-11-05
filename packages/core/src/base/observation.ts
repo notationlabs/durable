@@ -123,15 +123,7 @@ export interface ExecutionObserver {
 export function toExecutionView(
   record: ExecutionRecord | PrunedExecutionRecord
 ): ExecutionView {
-  if (isPrunedExecution(record)) {
-    return {
-      status: "pruned",
-      executionId: record.executionId,
-      workflowId: record.workflowId,
-      terminalStatus: record.terminalStatus,
-      prunedAt: record.prunedAt,
-    };
-  }
+  if (isPrunedExecution(record)) return toPrunedExecutionView(record);
   const base: ExecutionViewBase = {
     executionId: record.executionId,
     workflowId: record.workflowId,
@@ -166,10 +158,20 @@ export function toExecutionView(
   return { ...base, status: record.status };
 }
 
+export function toPrunedExecutionView(record: PrunedExecutionRecord): PrunedExecutionView {
+  return {
+    status: "pruned",
+    executionId: record.executionId,
+    workflowId: record.workflowId,
+    terminalStatus: record.terminalStatus,
+    prunedAt: record.prunedAt,
+  };
+}
+
 export function isTerminalExecutionView(
   view: ExecutionView
 ): view is TerminalExecutionView {
-  return isTerminalExecutionStatus(view.status);
+  return view.status !== "pruned" && isTerminalExecutionStatus(view.status);
 }
 
 export function isPrunedExecutionView(view: ExecutionView): view is PrunedExecutionView {

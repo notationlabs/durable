@@ -3,8 +3,8 @@ import {
   isPrunedExecutionView,
   isTerminalExecutionView,
   toExecutionView,
+  toPrunedExecutionView,
   type ExecutionControl,
-  type PrunedExecutionView,
 } from "../base/observation";
 import { prepareExecutionCancel } from "./execution-state";
 
@@ -38,7 +38,7 @@ export function createExecutionControl(
         ...prepared.request,
       });
       if (result.status === "rejected") return undefined;
-      if (result.status === "pruned") return toExecutionView(result) as PrunedExecutionView;
+      if (result.status === "pruned") return toPrunedExecutionView(result);
       const record = await executions.get(prepared.executionId);
       if (!record) return undefined;
       const view = toExecutionView(record);

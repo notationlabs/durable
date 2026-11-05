@@ -79,7 +79,6 @@ export class StepResponsesDao {
     query.run();
   }
 
-  /** Deletes every attempt of every step of the execution. */
   deleteExecutionSteps(executionId: string) {
     this.db
       .query(`DELETE FROM step_responses WHERE execution_id = $executionId`)

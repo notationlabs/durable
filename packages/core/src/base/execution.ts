@@ -564,7 +564,7 @@ export class ReplayDivergenceError extends Error {
 }
 
 export function isTerminalExecutionStatus(
-  status: ExecutionStatus | "pruned"
+  status: ExecutionStatus
 ): status is "completed" | "failed" | "cancelled" {
   return status === "completed" || status === "failed" || status === "cancelled";
 }
