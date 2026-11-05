@@ -4,6 +4,13 @@ export { WorkerExitedError } from "./base/invoker";
 export type { RuntimeOptions } from "./base/runtime";
 export { Runtime } from "./base/runtime";
 export type {
+  JoinClient,
+  JoinResult,
+  JoinWaiter,
+  WorkflowJoinErrorCode,
+} from "./base/join";
+export { WorkflowJoinError } from "./base/join";
+export type {
   ExecutionAcknowledgeResult,
   ExecutionAdmissionErrorCode,
   ExecutionAdmissionRequest,
@@ -128,6 +135,9 @@ export {
   toExecutionRecord,
   unacknowledgedDeliveryCountAt,
 } from "./lib/execution-state";
+export {
+  readJoinTarget,
+} from "./lib/join-state";
 export type { DispatcherOptions } from "./lib/execution-dispatcher";
 export {
   DEFAULT_ABORT_GRACE_PERIOD,
@@ -228,6 +238,7 @@ export {
   StepEffectWait,
   StepError,
   StepInvalid,
+  StepJoinWait,
   StepKey,
   StepResponse,
   StepResult,

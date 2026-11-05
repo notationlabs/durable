@@ -6,6 +6,7 @@ import {
   executionNotFound,
   isExecutionClaimable,
   isLeaseCurrent,
+  isTerminalExecutionStatus,
   matchExecutionAdmission,
   matchesExecutionListRequest,
   matchStartRequest,
@@ -53,10 +54,19 @@ export class MemoryExecutionClient implements ExecutionClient {
   /** Keyed by startRequestKey. */
   private startRequests = new Map<string, StartRequestState>();
   private clock: () => number;
+  private onTerminal?: (executionId: string) => void;
 
-  constructor(options?: { clock?: () => number }) {
+  constructor(options?: {
+    clock?: () => number;
+    /**
+     * Called synchronously when an acknowledgement makes an execution
+     * terminal, so the runtime wakes its join waiters in the same write.
+     */
+    onTerminal?: (executionId: string) => void;
+  }) {
     // Read Date.now lazily so fake timers installed later still apply.
     this.clock = options?.clock ?? (() => Date.now());
+    this.onTerminal = options?.onTerminal;
   }
 
   async admit(
@@ -167,6 +177,15 @@ export class MemoryExecutionClient implements ExecutionClient {
     return state !== undefined && isLeaseCurrent(state, lease);
   }
 
+  /**
+   * @internal Synchronously reads an execution's stored state, for reads that
+   * must be atomic with the caller's own write (join registration). Returns
+   * the stored object itself; callers must not change it.
+   */
+  getState(executionId: string): ExecutionState | undefined {
+    return this.executions.get(executionId);
+  }
+
   async claimDue(request: {
     limit: number;
     duration: number;
@@ -235,6 +254,11 @@ export class MemoryExecutionClient implements ExecutionClient {
       now: this.clock(),
     });
     this.executions.set(state.executionId, next);
+    // The same state comes back when the lease is lost or the record was
+    // already terminal.
+    if (next !== state && isTerminalExecutionStatus(next.status)) {
+      this.onTerminal?.(state.executionId);
+    }
     return result;
   }
 }

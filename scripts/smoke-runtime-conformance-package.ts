@@ -48,6 +48,7 @@ try {
     `import {
   registerEffectClientConformance,
   registerExecutionClientConformance,
+  registerJoinClientConformance,
   registerStoreClientConformance,
 } from "@yieldstar/runtime-conformance";
 import { MemoryRuntime } from "@yieldstar/test-runtime";
@@ -67,6 +68,13 @@ registerExecutionClientConformance({
 });
 
 registerEffectClientConformance({
+  name: "installed-memory",
+  create(options) {
+    return { runtime: new MemoryRuntime(options) };
+  },
+});
+
+registerJoinClientConformance({
   name: "installed-memory",
   create(options) {
     return { runtime: new MemoryRuntime(options) };

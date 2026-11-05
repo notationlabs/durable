@@ -7,6 +7,7 @@ import {
 } from "@yieldstar/core";
 import { EffectWaitersDao } from "./dao/effect-waiters-dao";
 import { ExecutionsDao } from "./dao/executions-dao";
+import { JoinWaitersDao } from "./dao/join-waiters-dao";
 import { StepResponsesDao } from "./dao/step-response-dao";
 import { StoreWaitersDao } from "./dao/store-waiters-dao";
 import type { SqliteDriver } from "./sqlite-driver";
@@ -18,6 +19,7 @@ export class SqliteHeapClient implements HeapClient {
   private stepResponsesDao: StepResponsesDao;
   private storeWaitersDao: StoreWaitersDao;
   private effectWaitersDao: EffectWaitersDao;
+  private joinWaitersDao: JoinWaitersDao;
 
   constructor(db: SqliteDriver) {
     this.db = db;
@@ -25,6 +27,7 @@ export class SqliteHeapClient implements HeapClient {
     this.stepResponsesDao = new StepResponsesDao(db);
     this.storeWaitersDao = new StoreWaitersDao(db);
     this.effectWaitersDao = new EffectWaitersDao(db);
+    this.joinWaitersDao = new JoinWaitersDao(db);
   }
 
   async getAllSteps() {
@@ -94,11 +97,12 @@ export class SqliteHeapClient implements HeapClient {
         stepResponseJson
       );
       // A waiter is deleted with the write that records its step's result.
-      // Unfinished attempts (e.g. a store wait or a suspended effect) keep the
-      // waiter they registered.
+      // Unfinished attempts (e.g. a store wait, a suspended effect or a join)
+      // keep the waiter they registered.
       if (done) {
         this.storeWaitersDao.deleteStepWaiters(executionId, stepKey);
         this.effectWaitersDao.deleteStepWaiters(executionId, stepKey);
+        this.joinWaitersDao.deleteStepWaiters(executionId, stepKey);
       }
       return { stepResponseJson, meta: { attempt: stepAttempt, done } };
     });

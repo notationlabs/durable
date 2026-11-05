@@ -5,6 +5,7 @@ import {
   StepEffectWait,
   StepError,
   StepInvalid,
+  StepJoinWait,
   StepResult,
   StepResponse,
   StepStoreWait,
@@ -81,11 +82,12 @@ function encodeResponse(response: StepResponse, stepKey: string): string {
   if (response instanceof StepEffectWait) {
     return `{"type":"effect-wait","wakeAt":${JSON.stringify(response.wakeAt)}}`;
   }
-  if (response instanceof StepStoreWait && response.wakeAt !== undefined) {
-    return `{"type":"store-wait","wakeAt":${JSON.stringify(response.wakeAt)}}`;
+  // JSON.stringify drops an undefined wakeAt.
+  if (response instanceof StepStoreWait || response instanceof StepJoinWait) {
+    return JSON.stringify({ type: response.type, wakeAt: response.wakeAt });
   }
-  if (response instanceof StepStoreWait || response instanceof StepInvalid) {
-    return `{"type":${JSON.stringify(response.type)}}`;
+  if (response instanceof StepInvalid) {
+    return `{"type":"step-invalid"}`;
   }
   throw new Error(`Cannot record a ${response.type} step response`);
 }
@@ -114,9 +116,12 @@ export function decodeStepRecord(json: string): StepResponse {
       case "effect-wait":
         return new StepEffectWait(record.wakeAt);
       case "store-wait":
-        return new StepStoreWait(
-          typeof record.wakeAt === "number" ? record.wakeAt : undefined
-        );
+      case "join-wait": {
+        const wakeAt = typeof record.wakeAt === "number" ? record.wakeAt : undefined;
+        return record.type === "store-wait"
+          ? new StepStoreWait(wakeAt)
+          : new StepJoinWait(wakeAt);
+      }
       case "step-invalid":
         return new StepInvalid();
     }

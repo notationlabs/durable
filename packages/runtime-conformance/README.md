@@ -1,6 +1,6 @@
 # `@yieldstar/runtime-conformance`
 
-This package contains the runnable qualification suites for YieldStar runtimes: one for store connectors, one for the execution client and one for the effect client. The normative protocol is documented in the [store connector conformance specification](https://github.com/notationlabs/yieldstar/blob/main/docs/store-connector-spec.md).
+This package contains the runnable qualification suites for YieldStar runtimes: one for store connectors, one for the execution client, one for the effect client and one for the join client. The normative protocol is documented in the [store connector conformance specification](https://github.com/notationlabs/yieldstar/blob/main/docs/store-connector-spec.md).
 
 Install it with the test runner and core package:
 
@@ -100,5 +100,9 @@ registerEffectClientConformance({
 });
 ```
 
-The suite covers the runtime adapter. The workflow-driver and delivery cases for `step.start` and `step.effect` are tested in the repository rather than here (`test/start.test.ts`, `test/effect.test.ts` and `test/effect-delivery.test.ts`). The dispatcher and worker cases, such as concurrency, releasing on a retry reply, a worker that exits without replying, and a worker whose runtime process dies, are properties of `ExecutionDispatcher` and the invoker rather than of an adapter; the repository tests them in `test/dispatcher.test.ts` and `test/worker-invoker.test.ts`.
+## Join client suite
+
+`registerJoinClientConformance` checks a runtime's `JoinClient`: `join` returning a terminal target's outcome or `not-found` and registering nothing, registering one waiter on a target that is not terminal, a terminal acknowledgement waking every join waiter and keeping them registered, `join` racing the acknowledgement, waiter deletion with the step's result, a stale holder's late registration, the parent link on a started child, and durability across a restart. Its harness takes the same `clock`, `createPeer` and `restart` as the execution client suite, plus `failExecutionWrites(executionId)`, which makes every write to that execution's record fail before it commits and returns a function that stops the failures. Without it the case for a crash during a terminal acknowledgement is skipped.
+
+The suite covers the runtime adapter. The workflow-driver and delivery cases for `step.start`, `step.effect`, `step.join` and `step.call` are tested in the repository rather than here (`test/start.test.ts`, `test/effect.test.ts`, `test/effect-delivery.test.ts` and `test/join.test.ts`). The dispatcher and worker cases, such as concurrency, releasing on a retry reply, a worker that exits without replying, and a worker whose runtime process dies, are properties of `ExecutionDispatcher` and the invoker rather than of an adapter; the repository tests them in `test/dispatcher.test.ts` and `test/worker-invoker.test.ts`.
 

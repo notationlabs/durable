@@ -20,6 +20,7 @@ import {
   StepRuntimeCall,
   StepStoreWaitRequest,
   executeRuntimeCall,
+  type RuntimeClients,
   infrastructure,
 } from "../internal/runtime-call";
 import { StepEffectCall, executeEffectCall } from "../internal/effect-call";
@@ -32,6 +33,7 @@ import {
   StepCacheCheck,
   StepEffectWait,
   StepInvalid,
+  StepJoinWait,
   StepStoreWait,
   WorkflowResult,
   InfrastructureError,
@@ -85,12 +87,18 @@ export function workflow<
     storeClient,
     executionClient,
     effectClient,
+    joinClient,
     clock,
     logger,
   }) {
     const stepRunner = createStepRunner({ event, clock });
     const workflowIterator = workflowFn(stepRunner, event, logger);
     const { executionId } = event;
+    const clients: RuntimeClients = {
+      stores: storeClient,
+      executions: executionClient,
+      joins: joinClient,
+    };
 
     /** Writes one attempt of a step. A lost lease or a conflicting record ends the delivery. */
     async function writeStep(params: {
@@ -217,7 +225,7 @@ export function workflow<
             // 2. Register the waiter.
             const registered = await executeRuntimeCall(
               new StepRuntimeCall(({ stores }) => stores.registerWaiter(waiter)),
-              { stores: storeClient, executions: executionClient }
+              clients
             );
             // 3. Suspend.
             if (registered.ok) {
@@ -243,10 +251,7 @@ export function workflow<
                   assertLease: () => stopIfAborted(signal),
                   logger,
                 })
-              : await executeRuntimeCall(stepResponse, {
-                  stores: storeClient,
-                  executions: executionClient,
-                });
+              : await executeRuntimeCall(stepResponse, clients);
           iteratorResult = await workflowIterator.next(callResult);
           stepResponse = iteratorResult.value;
         }
@@ -287,6 +292,7 @@ export function workflow<
       const needsWake =
         !cached?.meta.done &&
         (stepResponse instanceof StepStoreWait ||
+          stepResponse instanceof StepJoinWait ||
           stepResponse instanceof StepEffectWait);
 
       if (!cached && stepResponseJson !== undefined && !suspendedOnStore) {

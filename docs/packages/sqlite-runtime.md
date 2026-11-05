@@ -40,11 +40,12 @@ const runtime = new SqliteRuntime(createSqliteDb({ path: "./.db/local.sqlite" })
 | ------------------- | -------------- | ------------ | ------------------------------------------------------------------------ |
 | `clock`             | `() => number` | `Date.now`   | Time source for every client operation and for delay and retry wake times |
 
-The runtime exposes four clients that share the database:
+The runtime exposes five clients that share the database:
 
 | Client               | Class                   | Tables                                   |
 | -------------------- | ----------------------- | ---------------------------------------- |
 | `runtime.executions` | `SqliteExecutionClient` | `executions`, `start_requests`           |
+| `runtime.joins`      | `SqliteJoinClient`      | `join_waiters`                           |
 | `runtime.effects`    | `SqliteEffectClient`    | `effects`, `effect_conflicts`, `effect_waiters` |
 | `runtime.heap`       | `SqliteHeapClient`      | `step_responses`                         |
 | `runtime.stores`     | `SqliteStoreClient`     | `stores`, `store_waiters`, `store_applied_steps` |
@@ -53,7 +54,9 @@ Keeping them in one database lets every guarantee that spans clients hold in a s
 
 - A store commit and the wakes for the waiters it satisfies commit together.
 - An effect settlement and the wakes for its waiters commit together.
-- The heap write that records a step's result deletes that step's store and effect waiters.
+- A terminal acknowledgement and the wakes for the join waiters on that execution commit together. The waiters stay in `join_waiters`.
+- A join reads the target's record and registers its waiter in one transaction, so a waiter registered as the target becomes terminal is still woken.
+- The heap write that records a step's result deletes that step's store, effect and join waiters.
 - Admission inserts the record already due, so the record and its first wake commit together.
 - `list` orders executions by the `rowid` of the `executions` table. SQLite assigns the `rowid` when the row is inserted, one more than the largest `rowid` in the table. The insert holds the write lock, so two processes never assign the same number, and a later admission always has a larger one, whatever the processes' clocks.
 - An idempotent admission reads an existing record in the same transaction as its insert, so of two concurrent repeats one is accepted and the other sees its record.
@@ -63,6 +66,10 @@ Keeping them in one database lets every guarantee that spans clients hold in a s
 
 `VACUUM` may renumber the `rowid`s of the `executions` table, because the table has no `INTEGER PRIMARY KEY`. A `list` cursor obtained before a `VACUUM` may then skip or repeat executions. Start paging again from the first page after a `VACUUM`.
 
+A row in `join_waiters` can stay for good when no step result follows it: a stale holder registers after the step was recorded, or a deploy removes a join step that was still waiting. Its only effect is one extra delivery of the joiner when the target finishes. The runtime does not remove such rows.
+
+Every process that shares one database must run a version with join support before any workflow uses `step.join` or `step.call`. A process on an earlier version acknowledges a terminal outcome without waking the join waiters on that execution, so their joiners wait until their deadline, or for good when they have none.
+
 Every write runs as one synchronous `IMMEDIATE` transaction. Separate processes that open the same file, such as the app and its worker subprocesses, therefore serialize on SQLite's lock and see the same execution records.
 
 Updaters must be synchronous, deterministic, and side-effect-free. They run
@@ -70,4 +77,4 @@ against a snapshot outside the SQLite transaction; if the conditional commit
 loses a version race, the base store client runs the updater again against the
 latest snapshot.
 
-`SqliteExecutionClient`, `SqliteEffectClient`, `SqliteHeapClient`, and `SqliteStoreClient` remain exported for adapter tests. Construct them through `SqliteRuntime` in applications, so the store client requests wakes from the same execution client and clock.
+`SqliteExecutionClient`, `SqliteEffectClient`, `SqliteHeapClient`, `SqliteJoinClient`, and `SqliteStoreClient` remain exported for adapter tests. Construct them through `SqliteRuntime` in applications, so the store client requests wakes from the same execution client and clock.

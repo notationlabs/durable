@@ -50,6 +50,33 @@ for (const sdkKind of sdkKinds) {
         return { ...backend, sdk };
       };
 
+      test("poll, wait and list carry a started child's parent, and a triggered execution has none", async () => {
+        const { runtime, sdk } = setup();
+        await admit(runtime, "caller");
+        const started = await runtime.executions.start({
+          requestId: { executionId: "caller", stepKey: "ship" },
+          workflowId: "charge-order",
+          params: { orderId: 43 },
+        });
+        if (started.status !== "accepted") throw new Error("expected an accepted start");
+        const child = started.executionId;
+        const parent = { executionId: "caller", stepKey: "ship" };
+
+        expect(await sdk.poll(child)).toMatchObject({ status: "admitted", parent });
+        expect(await sdk.wait(child, { timeout: 0 })).toMatchObject({
+          status: "timed-out",
+          execution: { parent },
+        });
+        await complete(runtime, child, { receipt: "r-43" });
+        expect(await sdk.wait(child)).toMatchObject({ status: "completed", parent });
+        const { executions } = await sdk.list();
+        expect(executions.find((view) => view.executionId === child)).toMatchObject({ parent });
+        expect(executions.find((view) => view.executionId === "caller")).not.toHaveProperty(
+          "parent"
+        );
+        expect(await sdk.poll("caller")).not.toHaveProperty("parent");
+      });
+
       test("poll returns each status, with an outcome only when terminal, and no internal fields", async () => {
         const { runtime, sdk } = setup();
         await admit(runtime, "admitted");

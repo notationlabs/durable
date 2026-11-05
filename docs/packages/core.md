@@ -10,7 +10,7 @@ bun add @yieldstar/core
 
 ## `Runtime` (abstract class)
 
-A runtime bundles the four clients that hold durable state, and the clock they all read. `SqliteRuntime` and `MemoryRuntime` extend it.
+A runtime bundles the five clients that hold durable state, and the clock they all read. `SqliteRuntime` and `MemoryRuntime` extend it.
 
 ```ts
 abstract class Runtime {
@@ -18,6 +18,7 @@ abstract class Runtime {
   abstract readonly executions: ExecutionClient;
   abstract readonly effects: EffectClient; // step.effect's effect records
   abstract readonly heap: HeapClient;
+  abstract readonly joins: JoinClient; // step.join's waiters
   abstract readonly stores: StoreClient;
 }
 
@@ -40,7 +41,7 @@ const runner = new WorkflowRunner(runtime, { router, logger });
 
 | Param            | Type             | Description                       |
 | ---------------- | ---------------- | --------------------------------- |
-| `runtime`        | `Runtime`        | Supplies `heap`, `stores`, `executions` and `effects` |
+| `runtime`        | `Runtime`        | Supplies `heap`, `stores`, `executions`, `effects` and `joins` |
 | `options.router` | `WorkflowRouter` | Map of workflow IDs to generators |
 | `options.logger` | `Logger`         | Pino logger                       |
 
@@ -89,7 +90,7 @@ interface ExecutionRecord {
 type ExecutionParent = { executionId: string; stepKey: string };
 ```
 
-`parent` names the execution and step that started this one with [`step.start`](../manual/steps.md#stepstart). It is set when the target is admitted and never changes. An execution admitted through `admit`, such as a trigger, has no parent.
+`parent` names the execution and step that started this one with [`step.start`](../manual/steps.md#stepstart) or [`step.call`](../manual/steps.md#stepcall). Execution views carry it too. It is set when the target is admitted and never changes. An execution admitted through `admit`, such as a trigger, has no parent.
 
 `running` means the execution has a live lease. When the lease ends without a terminal acknowledgement, the status returns to `suspended` if an earlier delivery was acknowledged as suspended, and to `admitted` otherwise. Operators can read `unacknowledgedDeliveryCount` to find executions that keep failing.
 
@@ -181,7 +182,7 @@ A lease ends without an acknowledgement when it is released, or when it expires 
 
 `ExecutionAdmissionError` (`code: ExecutionAdmissionErrorCode`) is what the SDKs throw for a rejected admission. `WorkflowStartError` (`code: "INVALID_START_PARAMETERS" | "START_REQUEST_MISMATCH"`) is what `step.start` throws to workflow code for a rejected start; the rejection is recorded as the step's result, so replay throws the same class and code. `InfrastructureError` wraps a runtime failure; `InfrastructureError.is(err)` recognises one even when several copies of `@yieldstar/core` are loaded. `isLeaseLost(value)` recognises a `LeaseLost` result.
 
-Runtime adapter authors can import the storage-neutral state machine that `SqliteRuntime` and `MemoryRuntime` share: `prepareExecutionAdmission`, `createExecutionState`, `prepareExecutionStart`, `matchStartRequest`, `createStartedExecution`, `requestExecutionWake`, `claimExecution`, `renewExecutionLease`, `releaseExecutionLease`, `acknowledgeExecution`, `isLeaseCurrent`, `nextClaimAt`, `isExecutionClaimable`, `toExecutionRecord`, and the event and outcome codecs. An adapter persists `ExecutionState` however it likes and applies each transition inside one atomic write. A fenced heap write checks `isLeaseCurrent` in the same write. For `admit`, an adapter validates the request with `prepareExecutionAdmission`, and when the ID is in use answers with `matchExecutionAdmission` in the same atomic step as its insert. For `list`, an adapter assigns each new execution an admission sequence greater than that of every execution in the backend, in the same atomic write as its insert, validates the request and decodes its cursor with `prepareExecutionListRequest`, fetches up to `limit + 1` matching executions below the cursor's sequence (`matchesExecutionListRequest` applies the filters to an `ExecutionState`), and builds the page with `toExecutionListPage`, whose cursor is the last execution's admission sequence as a decimal string. For `start`, an adapter validates the request with `prepareExecutionStart`, looks up the request ID, answers a recorded request with `matchStartRequest`, and otherwise inserts the target and the `StartRequestState` from `createStartedExecution` in one atomic write, choosing another ID if the target's is in use. `DEFAULT_LEASE_DURATION` (30 seconds), `REDELIVERY_DELAY_BASE`, `REDELIVERY_DELAY_MAX`, `DEFAULT_EXECUTION_LIST_LIMIT` (50) and `MAX_EXECUTION_LIST_LIMIT` (1000) are the defaults.
+Runtime adapter authors can import the storage-neutral state machine that `SqliteRuntime` and `MemoryRuntime` share: `prepareExecutionAdmission`, `createExecutionState`, `prepareExecutionStart`, `matchStartRequest`, `createStartedExecution`, `requestExecutionWake`, `claimExecution`, `renewExecutionLease`, `releaseExecutionLease`, `acknowledgeExecution`, `isLeaseCurrent`, `nextClaimAt`, `isExecutionClaimable`, `toExecutionRecord`, and the event and outcome codecs. An adapter persists `ExecutionState` however it likes and applies each transition inside one atomic write. A fenced heap write checks `isLeaseCurrent` in the same write. For `admit`, an adapter validates the request with `prepareExecutionAdmission`, and when the ID is in use answers with `matchExecutionAdmission` in the same atomic step as its insert. For `list`, an adapter assigns each new execution an admission sequence greater than that of every execution in the backend, in the same atomic write as its insert, validates the request and decodes its cursor with `prepareExecutionListRequest`, fetches up to `limit + 1` matching executions below the cursor's sequence (`matchesExecutionListRequest` applies the filters to an `ExecutionState`), and builds the page with `toExecutionListPage`, whose cursor is the last execution's admission sequence as a decimal string. For `start`, an adapter validates the request with `prepareExecutionStart`, looks up the request ID, answers a recorded request with `matchStartRequest`, and otherwise inserts the target and the `StartRequestState` from `createStartedExecution` in one atomic write, choosing another ID if the target's is in use. For `JoinClient.join`, an adapter reads the target's state and answers with `readJoinTarget` in one atomic step, and registers the waiter only when the answer is `waiting`. In the atomic write of an acknowledgement that changes the record to a terminal status, it requests a wake for the joiner of every join waiter on the execution and keeps the waiters. `acknowledgeExecution` returns the same state object when the lease is lost or the record is already terminal, so a changed state with a terminal status identifies that acknowledgement. `DEFAULT_LEASE_DURATION` (30 seconds), `REDELIVERY_DELAY_BASE`, `REDELIVERY_DELAY_MAX`, `DEFAULT_EXECUTION_LIST_LIMIT` (50) and `MAX_EXECUTION_LIST_LIMIT` (1000) are the defaults.
 
 ## `durableValueCodec`
 
@@ -230,7 +231,7 @@ So `{ a: undefined }` and `{}` stay distinct, and only a tagged value decodes as
 
 An error keeps its `name`, `message`, a string `stack` and `code`, its own `cause` (encoded recursively), a non-enumerable `errors` array such as `AggregateError`'s, and its own enumerable properties whose values are durable, under `fields`. Properties that are not durable are left out rather than rejecting the error. `encodeThrownValue(value)` encodes a thrown value as thrown when it is durable, and as `Error(String(value))` otherwise.
 
-`decode` revives an error as the class registered under its `name` with `registerErrorClass(name, errorClass)`, setting its prototype and fields without calling the constructor, and as an `Error` with the same name, message, code, cause and fields when no class is registered. Registration is per process. `TypeError`, `RangeError`, `SyntaxError`, `ReferenceError`, `EvalError`, `URIError`, `AggregateError`, `WorkflowStartError`, `WorkflowValueError`, `WorkflowEffectError`, `EffectDeliveryError`, `EffectClientInvariantError` and `StoreValidationError` are registered by default, and `yieldstar` registers `RetryableError`.
+`decode` revives an error as the class registered under its `name` with `registerErrorClass(name, errorClass)`, setting its prototype and fields without calling the constructor, and as an `Error` with the same name, message, code, cause and fields when no class is registered. Registration is per process. `TypeError`, `RangeError`, `SyntaxError`, `ReferenceError`, `EvalError`, `URIError`, `AggregateError`, `WorkflowStartError`, `WorkflowJoinError`, `WorkflowValueError`, `WorkflowEffectError`, `EffectDeliveryError`, `EffectClientInvariantError` and `StoreValidationError` are registered by default, and `yieldstar` registers `RetryableError`.
 
 `WorkflowValueError` (`code: "INVALID_STEP_VALUE" | "STEP_SCHEMA_INVALID"`, `stepKey`) reports a value the codec or a step's schema rejects. A completed outcome whose result the codec rejects is recorded as `failed` with `INVALID_STEP_VALUE` and `stepKey` `WORKFLOW_RESULT_STEP_KEY` (`"$$workflow-result$$"`).
 
@@ -312,7 +313,7 @@ abstract writeStep(params: {
 }): Promise<HeapRecord | LeaseLost>;
 ```
 
-`readStep` returns the latest attempt. `writeStep` is fenced by `lease`: if the lease is not current, nothing changes and it returns `lost`. A `done` record deletes the step's store and effect waiters in the same write. Records are keyed by execution, step key and attempt, and never change once written. Rewriting an existing record succeeds without changing it and resolves with the record as stored, so the caller can compare it with the value it wrote.
+`readStep` returns the latest attempt. `writeStep` is fenced by `lease`: if the lease is not current, nothing changes and it returns `lost`. A `done` record deletes the step's store, effect and join waiters in the same write. Records are keyed by execution, step key and attempt, and never change once written. Rewriting an existing record succeeds without changing it and resolves with the record as stored, so the caller can compare it with the value it wrote.
 
 ## `HeapRecord`
 
@@ -322,6 +323,39 @@ type HeapRecord = {
   meta: { attempt: number; done: boolean };
 };
 ```
+
+## `JoinClient` (interface)
+
+Holds the join waiters of [`step.join`](../manual/steps.md#stepjoin) and [`step.call`](../manual/steps.md#stepcall). A waiter is keyed by target, joining execution and step key.
+
+```ts
+interface JoinClient {
+  join(waiter: JoinWaiter): Promise<JoinResult>;
+}
+
+type JoinWaiter = {
+  targetExecutionId: string; // the execution being joined
+  executionId: string; // the joining execution
+  stepKey: string;
+};
+
+type JoinResult =
+  | { status: "terminal"; outcome: ExecutionOutcome } // no waiter was registered
+  | { status: "waiting" } // the waiter is registered
+  | { status: "not-found" }; // no execution has the target ID; no waiter was registered
+```
+
+`join` reads the target's record and, if the target is not terminal, registers the waiter, in one atomic step. Repeating it keeps one registration.
+
+The client and the other clients keep this contract together:
+
+- A terminal `ExecutionClient.acknowledge` requests a wake for the joiner of every waiter on its execution, in the same atomic write as the outcome. It does not delete the waiters.
+- Because `join` reads and registers atomically, every waiter on a terminal target has a pending or delivered wake for its joiner. A waiter registered as the target becomes terminal is still woken.
+- A `done` heap write deletes the step's join waiters in the same write. No other method deletes a waiter.
+
+Registration is not fenced. A stale holder's registration causes at most one extra delivery of the joiner and does not change any outcome.
+
+A waiter can stay registered for good when no step result follows it: a stale holder registers after the step was recorded, or a deploy removes a join step that was still waiting. Its only effect is one extra delivery of the joiner when the target finishes. Nothing removes such waiters.
 
 ## `StoreClient` (abstract class)
 
@@ -449,6 +483,7 @@ type WorkflowInvoker = {
 | `StepDelay`       | `"step-delay"`       | Carries a `wakeAt` timestamp                        |
 | `StepEffectWait`  | `"effect-wait"`      | An uncertain `step.effect`, recorded unfinished, with its `wakeAt` |
 | `StepStoreWait`   | `"store-wait"`       | A store wait, recorded unfinished. A timed `when` sets `wakeAt` to its deadline |
+| `StepJoinWait`    | `"join-wait"`        | An unresolved `step.join` or `step.call`, recorded unfinished. A timed join sets `wakeAt` to its deadline |
 | `StepInvalid`     | `"step-invalid"`     | Protocol violation (e.g., missing `yield*`)         |
 | `WorkflowResult`  | `"workflow-result"`  | Wraps the workflow's return value                   |
 | `WorkflowDelay`   | `"workflow-delay"`   | No longer emitted by `WorkflowRunner`               |

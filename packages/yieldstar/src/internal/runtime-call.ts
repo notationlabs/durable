@@ -5,6 +5,7 @@ import {
   StoreValidationError,
   WorkflowValueError,
   type ExecutionClient,
+  type JoinClient,
   type StoreClient,
   type StoreWaiter,
 } from "@yieldstar/core";
@@ -12,6 +13,7 @@ import {
 export type RuntimeClients = {
   stores: StoreClient;
   executions: ExecutionClient;
+  joins: JoinClient;
 };
 
 export type RuntimeCallResult<T> =

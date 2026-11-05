@@ -56,7 +56,7 @@ const hold = yield* step.run("reserve-stock", async () => new Reservation("r-42"
 // Throws WorkflowValueError with code "INVALID_STEP_VALUE" and stepKey "reserve-stock"
 ```
 
-The rejection is recorded as the step's error, so replay throws the same `WorkflowValueError`, and workflow code can catch it like any other step error. This is important because the mistake surfaces in the first test run, rather than on a replay hours later. TypeScript catches most of these values earlier with the `Durable<T>` type, which rejects a function anywhere in a value. It cannot tell a class instance from a plain object, so only the runtime check rejects class instances. Every API that records a value checks it: `step.run` results, workflow params and results, `step.start` params, `step.effect` inputs and results, store state (through the store's schema output) and the values `select`, `when` and `take` return. Interfaces, optional properties and unions with `undefined` are accepted. A value typed `any` is not checked, and one typed `unknown` is rejected until it is narrowed, since it may hold anything; the runtime still checks both.
+The rejection is recorded as the step's error, so replay throws the same `WorkflowValueError`, and workflow code can catch it like any other step error. This is important because the mistake surfaces in the first test run, rather than on a replay hours later. TypeScript catches most of these values earlier with the `Durable<T>` type, which rejects a function anywhere in a value. It cannot tell a class instance from a plain object, so only the runtime check rejects class instances. Every API that records a value checks it: `step.run` results, workflow params and results, `step.start` and `step.call` params, `step.effect` inputs and results, store state (through the store's schema output) and the values `select`, `when` and `take` return. Interfaces, optional properties and unions with `undefined` are accepted. A value typed `any` is not checked, and one typed `unknown` is rejected until it is narrowed, since it may hold anything; the runtime still checks both.
 
 Workflow code never receives the object the step function returned. On the first run, `step.run` encodes the result, decodes it again, and returns the decoded copy, which is the same value replay reads from the record:
 
@@ -118,7 +118,7 @@ if (err instanceof CourierError) {
 
 Revival sets the prototype and fields without calling the constructor, so a constructor with required arguments is fine. Registration is per process: a worker process must register the class too, or it revives the error as a plain `Error` with the same `name`, `message`, `code`, `cause` and fields.
 
-These classes are registered by default: `RetryableError`, `WorkflowStartError`, `WorkflowValueError`, `WorkflowEffectError`, `EffectDeliveryError`, `EffectClientInvariantError`, `StoreValidationError`, `TypeError`, `RangeError`, `SyntaxError`, `ReferenceError`, `EvalError`, `URIError` and `AggregateError`.
+These classes are registered by default: `RetryableError`, `WorkflowStartError`, `WorkflowJoinError`, `WorkflowValueError`, `WorkflowEffectError`, `EffectDeliveryError`, `EffectClientInvariantError`, `StoreValidationError`, `TypeError`, `RangeError`, `SyntaxError`, `ReferenceError`, `EvalError`, `URIError` and `AggregateError`.
 
 A thrown value that is not an error, such as a string or a plain object, is rethrown as it was thrown. A thrown value that is not durable, such as a class instance, is recorded and rethrown as `Error(String(value))`.
 
@@ -168,6 +168,111 @@ A rejected start throws a `WorkflowStartError`, which workflow code can catch. I
 - `START_REQUEST_MISMATCH` when the step was already started with a different `workflowId` or `params`, for example after a deploy changed the step.
 
 The rejection is recorded, so replay throws the same error. If the runtime fails while starting the target, the error is an infrastructure error: it does not reach workflow code, and the next delivery tries the same start again.
+
+## `step.join`
+
+`step.join` waits until another execution is terminal, and returns its result. It takes a step key and the target's execution ID:
+
+```ts
+const { executionId } = yield* step.start("ship", {
+  workflowId: "ship-order",
+  params: { orderId },
+});
+
+const shipment = yield* step.join<{ tracking: string }>("ship:join", executionId);
+```
+
+The type parameter is the target's result type. It is not checked against the target.
+
+The step reads the target's execution record:
+
+- If the target has completed, the step records its result and returns it.
+- If the target has failed, the step records and throws a `WorkflowJoinError` with code `JOINED_EXECUTION_FAILED`. Its `executionId` is the target's ID, and its `cause` is the target's recorded error, with at least its `name` and `message`.
+- If the target is not terminal, the step registers a join waiter on the target and the delivery ends as `suspended`. When the target becomes terminal, the runtime wakes every joiner of the target, and the step reads the target again.
+
+The step records the outcome under its key, so replay returns the result or throws the error without reading the target again. Workflow code can catch `WorkflowJoinError`, and its `code` and `executionId` are the same on replay.
+
+```ts
+import { WorkflowJoinError } from "yieldstar";
+
+try {
+  const shipment = yield* step.join("ship:join", executionId);
+} catch (err) {
+  if (err instanceof WorkflowJoinError && err.code === "JOINED_EXECUTION_FAILED") {
+    yield* step.run("refund", () => payments.refund(orderId));
+  }
+}
+```
+
+The other codes are:
+
+- `JOIN_TARGET_NOT_FOUND` when no execution has the target ID; and
+- `JOIN_SELF` when the target is the calling execution.
+
+Both are recorded, so replay throws them without reading the target. So `JOIN_TARGET_NOT_FOUND` is permanent for the step: if the target is admitted after the join reads it, the step still throws. Join only an ID that has already been admitted, such as one returned by `step.start` or by an admission that completed before the join.
+
+A workflow can join any execution, not only one it started, and several executions can join one target. The runtime does not detect cycles: if A joins B and B joins A, both wait forever unless they use a deadline.
+
+The runtime records a terminal outcome and the wakes for its join waiters in one atomic write, so a crash between the target's last delivery and the joiner's next delivery does not lose the wake. A join waiter stays registered until the joiner records the step, and the write that records the step deletes it.
+
+### Joining with a deadline
+
+With a `deadline`, the step returns a `TimedJoinResult<R>` instead of the result:
+
+```ts
+const shipped = yield* step.join<{ tracking: string }>("ship:join", executionId, {
+  deadline: Date.now() + 3 * 24 * 60 * 60 * 1000,
+});
+
+if (shipped.status === "timed-out") {
+  yield* step.run("apologise", () => email.sendDelayNotice(orderId));
+} else {
+  // shipped.result is the target's result
+}
+```
+
+```ts
+type TimedJoinResult<R> =
+  | { status: "completed"; result: R }
+  | { status: "timed-out" };
+```
+
+The deadline follows the rules of a [timed `when`](./store-waiting.md#waiting-with-a-deadline):
+
+- The first evaluation that suspends records the deadline in the unfinished step. Later evaluations use the recorded deadline and ignore the argument, so a deadline computed from `Date.now()` does not move on replay. A delivery that stops before the step is first recorded computes the deadline again on the next delivery.
+- Each evaluation reads the target before it compares the deadline with the clock. A terminal target wins, even when the deadline has passed.
+- An unresolved evaluation ends the delivery as `suspended` with `wakeAt` set to the deadline.
+- The first recorded result is the only one returned. A target that completes after `timed-out` is recorded does not change the step.
+
+A failed target still throws `WorkflowJoinError`. Only `completed` and `timed-out` are returned as values.
+
+Replay returns the value as it was recorded. If a deploy adds or removes the `deadline` of a join that has already recorded its result, the replayed value has the old shape and does not match the new type. A join that gained a deadline returns the bare result instead of a `TimedJoinResult`. A join that lost its deadline returns `{ status: "completed", result }` or `{ status: "timed-out" }` instead of the result. A timed `when` behaves the same way. Use a new step key when you change whether a join has a deadline.
+
+## `step.call`
+
+`step.call` starts another workflow and waits for it, as `step.start` followed by `step.join`, under one step key:
+
+```ts
+const shipment = yield* step.call<typeof shipOrder>("ship", {
+  workflowId: "ship-order",
+  params: { orderId },
+});
+```
+
+The type parameter is the child workflow. It checks `params`, makes `params` required when the child requires them, and types the result. It does not check that `workflowId` names that workflow, because a workflow cannot refer to the type of a router that contains it. TypeScript cannot infer the type parameter. Without it, the call accepts no `params` and its result is a `DurableValue`, as for an untyped `step.join`.
+
+The step records one result, under its key, when the child is terminal. Until then, each evaluation sends the same start request, identified by the calling execution's ID and the step key as for `step.start`, and joins the child that the request names. So a delivery that stops between the start and the join does not start a second child: the next delivery receives the same child and joins it. Once the step is recorded, replay returns the result, or throws the error, without starting or joining.
+
+The child's execution record has `parent` set to the caller's execution ID and the step key.
+
+`step.call` throws the same errors as `step.join`. It also throws a `WorkflowStartError` if the runtime rejects the start, for example with `START_REQUEST_MISMATCH` when a deploy changed the step's `workflowId` or `params` before the child finished.
+
+With a `deadline`, `step.call` returns a `TimedJoinResult<R>` and follows the rules in [Joining with a deadline](#joining-with-a-deadline). The deadline does not stop the child: a `timed-out` call leaves the child running. A `timed-out` result does not include the child's execution ID, so the workflow cannot join the child later. If it needs to, use `step.start` and then a timed `step.join`:
+
+```ts
+const { executionId } = yield* step.start("ship", { workflowId: "ship-order", params: { orderId } });
+const shipped = yield* step.join<{ tracking: string }>("ship:join", executionId, { deadline });
+```
 
 ## `step.effect`
 
@@ -328,7 +433,7 @@ yield* step.delay("key", ms);
 yield* step.poll("key", opts, predicate);
 ```
 
-`step.start` always takes a key, because the key identifies the start request as well as the cached step. Keep it stable across deploys: a different key starts a different target. `step.effect` always takes a key too; the effect itself is identified by its `effectId`.
+`step.start` and `step.call` always take a key, because the key identifies the start request as well as the cached step. Keep it stable across deploys: a different key starts a different target. `step.join` and `step.effect` always take a key too; an effect itself is identified by its `effectId`.
 
 If two steps in the same execution resolve to the same cache key, the runtime throws: `"Each step in a loop must have a unique cache key."`
 
@@ -340,8 +445,9 @@ Errors fall into two groups, and only the first reaches workflow code.
 | ----------------------------------------------------------------------------- | -------------------------------------------------------------- |
 | Errors thrown by your step functions                                         | The heap or store database throws                              |
 | Errors thrown by your store updaters, selectors, claims and initial states    | A worker crashes or exits before reporting an outcome          |
-| `StoreValidationError` (a state failed its schema)                            | The execution client throws during `step.start`                |
-| `WorkflowStartError` (`step.start` was rejected)                              | `step.effect` cannot reach or trust its effect records, or a callback returns a malformed answer (`EffectDeliveryError`) |
+| `StoreValidationError` (a state failed its schema)                            | The execution client throws during `step.start` or `step.call` |
+| `WorkflowStartError` (`step.start` or `step.call` was rejected)               | `step.effect` cannot reach or trust its effect records, or a callback returns a malformed answer (`EffectDeliveryError`) |
+| `WorkflowJoinError` (a joined execution failed or does not exist, or a workflow joined itself) | The join client throws during `step.join` or `step.call`       |
 | `WorkflowValueError` (a value is not durable, or failed its step's schema)    |                                                                |
 | `WorkflowEffectError` (`step.effect` was invalid or mismatched)               |                                                                |
 

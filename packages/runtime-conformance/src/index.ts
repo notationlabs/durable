@@ -16,6 +16,12 @@ export {
   type EffectConformanceOptions,
 } from "./effect";
 export {
+  registerJoinClientConformance,
+  type JoinConformanceHarness,
+  type JoinConformanceHarnessOptions,
+  type JoinConformanceOptions,
+} from "./join";
+export {
   registerExecutionClientConformance,
   type ExecutionConformanceHarness,
   type ExecutionConformanceHarnessOptions,
