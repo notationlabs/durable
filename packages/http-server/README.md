@@ -170,12 +170,12 @@ Options:
 
 Responses:
 
-- `POST /trigger`: `202 { executionId, status: "accepted" }` once admission commits, `200 { executionId, status: "existing" }` when an idempotent trigger matches an existing execution, `409` `EXECUTION_ID_CONFLICT` or `EXECUTION_REQUEST_MISMATCH` when the execution ID is in use, `400` `INVALID_EXECUTION_EVENT` when `params` or `context` are not durable values, `400` `IDEMPOTENT_TRIGGER_REQUIRES_ID` when an idempotent trigger has no ID
-- `POST /poll`: `200` with the execution's view, `404` `EXECUTION_NOT_FOUND`
-- `POST /wait`: `200` with the terminal view, or `{ status: "timed-out", execution }` after `timeout` or 8 seconds, whichever is shorter; `404` `EXECUTION_NOT_FOUND`
-- `POST /list`: `200 { executions, cursor? }`, newest first by admission
-- `POST /cancel`: records a cancellation request and does not wait for the workflow to stop; `202 { status: "requested", execution }` while the execution is active, `200` with the terminal view when it is terminal (including after `force: true`), `404` `EXECUTION_NOT_FOUND`, `400` `INVALID_CANCEL_REQUEST`
-- `POST /events`: deprecated; blocks until the execution record is terminal; `200` with the result, `500` with the recorded error, both encoded with the durable value codec, `404` for an unknown execution ID
+- `POST /trigger`: `202 { executionId, status: "accepted" }` once admission commits, `200 { executionId, status: "existing" }` when an idempotent trigger matches an existing execution, `409` `EXECUTION_ID_CONFLICT` or `EXECUTION_REQUEST_MISMATCH` when the execution ID is in use, `409` `EXECUTION_PRUNED` when an idempotent trigger names a pruned execution, `400` `INVALID_EXECUTION_EVENT` when `params` or `context` are not durable values, `400` `IDEMPOTENT_TRIGGER_REQUIRES_ID` when an idempotent trigger has no ID
+- `POST /poll`: `200` with the execution's view, which is the pruned view for a pruned execution, `404` `EXECUTION_NOT_FOUND`
+- `POST /wait`: `200` with the terminal view, or `{ status: "timed-out", execution }` after `timeout` or 8 seconds, whichever is shorter; `200` with the pruned view at once for a pruned execution; `404` `EXECUTION_NOT_FOUND`
+- `POST /list`: `200 { executions, cursor? }`, newest first by admission; pruned executions are left out unless `status` is `"pruned"`
+- `POST /cancel`: records a cancellation request and does not wait for the workflow to stop; `202 { status: "requested", execution }` while the execution is active, `200` with the terminal view when it is terminal (including after `force: true`), `200` with the pruned view for a pruned execution, `404` `EXECUTION_NOT_FOUND`, `400` `INVALID_CANCEL_REQUEST`
+- `POST /events`: deprecated; blocks until the execution record is terminal; `200` with the result, `500` with the recorded error, both encoded with the durable value codec, `410` `EXECUTION_PRUNED` for a pruned execution, `404` for an unknown execution ID
 
 Error responses carry `{ code, message }`. A `500` `INTERNAL_ERROR` response has the fixed message `Internal error`; the server logs the thrown error instead of sending it.
 
