@@ -58,10 +58,10 @@ export function wrapSqliteStatement<Row>(
   bind: (parameters: SqliteParameters) => any = (parameters) => parameters
 ): SqliteStatement<Row> {
   return {
+    // bun:sqlite returns null for no row; node:sqlite returns undefined.
     get: (parameters) =>
-      (parameters ? statement.get(bind(parameters)) : statement.get()) as
-        | Row
-        | undefined,
+      ((parameters ? statement.get(bind(parameters)) : statement.get()) ??
+        undefined) as Row | undefined,
     all: (parameters) =>
       (parameters ? statement.all(bind(parameters)) : statement.all()) as Row[],
     run: (parameters) =>

@@ -219,11 +219,12 @@ export class ExecutionsDao {
   /**
    * Returns false when the execution ID is already in use. The admission
    * sequence trigger gives a new execution the next sequence in the same
-   * statement.
+   * statement. The insert is detected from its RETURNING row, not from
+   * `changes`: Bun before 1.4 counts the trigger's updates in `changes`.
    */
   insertState(state: ExecutionState): boolean {
-    const result = this.db
-      .query(
+    const inserted = this.db
+      .query<{ execution_id: string }>(
         `INSERT INTO executions (
            execution_id, workflow_id, params, context, status, outcome,
            admitted_at, updated_at, due_at, claimed_due_at, lease_token,
@@ -235,14 +236,15 @@ export class ExecutionsDao {
            $leaseExpiresAt, $unacknowledgedDeliveryCount, $redeliverAt,
            $nextClaimAt, $parentExecutionId, $parentStepKey
          )
-         ON CONFLICT(execution_id) DO NOTHING`
+         ON CONFLICT(execution_id) DO NOTHING
+         RETURNING execution_id`
       )
-      .run({
+      .get({
         ...toBindings(state),
         $parentExecutionId: state.parent?.executionId ?? null,
         $parentStepKey: state.parent?.stepKey ?? null,
       });
-    return Number(result.changes) === 1;
+    return inserted !== undefined;
   }
 
   /** Leaves the parent link as inserted: it is immutable. */
