@@ -85,7 +85,7 @@ export class MemoryJoinClient implements JoinClient {
     return false;
   }
 
-  /** Deletes the waiters registered on a target. Called synchronously by its tombstone write. */
+  /** Called synchronously by the target's tombstone write. */
   deleteTargetWaiters(targetExecutionId: string) {
     this.waiters.delete(targetExecutionId);
   }

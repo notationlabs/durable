@@ -117,12 +117,12 @@ export type StoreMutationCommitResult =
   | { status: "missing" };
 
 /**
- * The error a connector throws for a commit whose `stepId` names a pruned
- * execution. The connector checks for the tombstone in the commit's atomic
- * write and commits nothing. Store commits are not fenced by the lease, so
- * without this check a stale holder could apply a step's update again after
- * cleanup deleted the step's receipt. The client rejecting makes the update an
- * infrastructure error, so the stale delivery stops without acknowledging.
+ * The error a connector throws, and commits nothing, when a commit's `stepId`
+ * names a pruned execution. The check must be in the commit's atomic write.
+ * Store commits are not fenced by the lease, so without it a stale holder
+ * could apply a step's update again after cleanup deleted the step's receipt.
+ * The rejection is an infrastructure error, so the stale delivery stops
+ * without acknowledging.
  */
 export function prunedStoreStepError(stepId: StoreStepId): Error {
   return new Error(

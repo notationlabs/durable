@@ -65,7 +65,6 @@ function validateRetentionPolicy(policy: unknown, label: string): RetentionPolic
   return copy;
 }
 
-/** The workflow's own policy when it has one, and the default otherwise. */
 export function retentionPolicyFor(
   retain: RetentionOptions,
   workflowId: string
@@ -78,11 +77,9 @@ export function retentionPolicyFor(
 }
 
 /**
- * Whether the execution has passed its retention period at `now`: it is
- * terminal, not pruned, and its policy's period for its status has passed
- * since `updatedAt`, when the outcome was recorded. Adapters also check that
- * no join waiter with a non-terminal joiner is registered on it, in the same
- * atomic write as the tombstone.
+ * A terminal execution's `updatedAt` is when its outcome was recorded.
+ * Adapters also check, in the same atomic write as the tombstone, that no
+ * non-terminal joiner waits on the execution.
  */
 export function isExecutionExpired(
   state: ExecutionState,
@@ -94,7 +91,6 @@ export function isExecutionExpired(
   return period !== undefined && state.updatedAt + period <= now;
 }
 
-/** Whether the execution's policy deletes its stores when it is pruned. */
 export function prunesExecutionStores(
   retain: RetentionOptions,
   workflowId: string

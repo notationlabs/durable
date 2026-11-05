@@ -415,11 +415,10 @@ export interface ExecutionClient {
    * the outcome was recorded, by the runtime clock. A target with a join
    * waiter whose joiner is not terminal is skipped.
    *
-   * Each tombstone is one atomic write with the join-waiter check. It clears
-   * the record's params, context, outcome, cancellation, parent link,
-   * divergence, version and wake and lease state, deletes the join waiters
-   * registered on the execution, and marks the tombstone as pending cleanup.
-   * Safe to run concurrently: an execution is pruned once.
+   * Each tombstone is written in one atomic write with the join-waiter check,
+   * which also deletes the join waiters registered on the execution and marks
+   * the tombstone as pending cleanup. Safe to run concurrently: an execution
+   * is pruned once.
    */
   prune(request: {
     retain: RetentionOptions;

@@ -233,8 +233,8 @@ export class MemoryStoreClient extends CasStoreClient {
       }
       this.deleteWaitersForExecution(executionId);
       if (!params.deleteExecutionStore) return;
-      // Other executions may wait on the deleted stores. Each is woken, so it
-      // replays and reads the store again instead of staying suspended.
+      // Wake the other executions waiting on the deleted stores, so they
+      // replay instead of staying suspended on a store that is gone.
       this.wakeAndDeleteWaiters((waiter) => waiter.storeId === executionId);
       for (const [key, record] of [...this.stores.entries()]) {
         if (record.storeId === executionId) this.stores.delete(key);
@@ -301,10 +301,6 @@ export class MemoryStoreClient extends CasStoreClient {
     }
   }
 
-  /**
-   * Requests a wake for every waiter that `matches`, then deletes it, for
-   * writes that delete the store it waits on.
-   */
   private wakeAndDeleteWaiters(matches: (waiter: StoreWaiter) => boolean) {
     for (const [key, waiter] of [...this.waiters.entries()]) {
       if (!matches(waiter)) continue;

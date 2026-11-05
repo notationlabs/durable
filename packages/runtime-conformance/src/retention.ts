@@ -196,7 +196,6 @@ export function registerRetentionClientConformance({
     });
   }
 
-  /** Admits an execution and acknowledges its admission delivery as suspended. */
   async function admitSuspended(
     runtime: Runtime,
     executionId: string,
@@ -207,13 +206,11 @@ export function registerRetentionClientConformance({
     return executionId;
   }
 
-  /** Wakes a suspended execution and claims it. */
   async function wake(runtime: Runtime, executionId: string) {
     await runtime.executions.requestWake({ executionId, wakeAt: 0 });
     return claim(runtime, executionId);
   }
 
-  /** Admits an execution and completes its first delivery. */
   async function runToCompletion(
     runtime: Runtime,
     executionId: string,

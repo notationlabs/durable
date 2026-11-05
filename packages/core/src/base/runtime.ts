@@ -51,19 +51,16 @@ export abstract class Runtime {
   readonly retain?: RetentionOptions;
 
   /**
-   * Runs one pruning pass: replaces up to `limit` expired terminal executions
-   * with tombstones under `retain`, and then cleans up to `limit` tombstones
-   * still pending cleanup, including ones a pass that stopped part way left
-   * behind. Cleanup deletes each execution's step records, store receipts,
-   * waiters and start requests, and its stores when its policy sets
-   * `pruneExecutionStores`. Every step is safe to repeat and to run in
-   * several processes at once. Without `retain`, it only cleans.
+   * Runs one pruning pass: tombstones up to `limit` expired executions under
+   * `retain`, then cleans up to `limit` tombstones pending cleanup, including
+   * ones an earlier pass left part way. Cleanup deletes the execution's step
+   * records, store receipts, waiters and start requests, and its stores when
+   * the policy sets `pruneExecutionStores`. Every step is safe to repeat and
+   * to run in several processes at once. Without `retain`, it only cleans.
    *
-   * A cleanup that throws does not stop the pass: its tombstone stays pending
-   * for a later pass, and the pass goes on to the next one. The result counts
-   * the executions tombstoned, cleaned and failed, and lists each failed
-   * cleanup's error in `errors`. A failure to tombstone or to list pending
-   * cleanups rejects the pass.
+   * A cleanup that throws stays pending for a later pass, and its error is
+   * listed in `errors`. A failure to tombstone or to list pending cleanups
+   * rejects the pass.
    */
   async prune(options?: { limit?: number }): Promise<PruneResult> {
     const limit = options?.limit ?? DEFAULT_PRUNE_BATCH_SIZE;

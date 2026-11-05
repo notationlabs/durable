@@ -274,9 +274,8 @@ export class SqliteStoreClient extends CasStoreClient {
         .run({ $executionId: executionId });
       this.storeWaitersDao.deleteExecutionWaiters(executionId);
       if (!params.deleteExecutionStore) return;
-      // Other executions may wait on the deleted stores. Each is woken in
-      // this transaction, so it replays and reads the store again instead
-      // of staying suspended.
+      // Wake the other executions waiting on the deleted stores, so they
+      // replay instead of staying suspended on a store that is gone.
       for (const row of this.storeWaitersDao.getStoreIdWaiters(executionId)) {
         if (row.execution_id !== executionId) {
           this.executions.wakeInTransaction(row.execution_id);
@@ -316,10 +315,8 @@ export class SqliteStoreClient extends CasStoreClient {
   }
 
   /**
-   * Requests a wake for every execution waiting on a store that is being
-   * deleted, then deletes the waiters. A woken execution replays and reads
-   * the store again, so it does not stay suspended on a store that will
-   * never change. The caller holds the transaction.
+   * For a store that is being deleted, so its waiters replay instead of
+   * staying suspended. The caller holds the transaction.
    */
   private wakeAndDeleteStoreWaiters(storeName: string, storeId: string) {
     for (const row of this.storeWaitersDao.getStoreWaiters(storeName, storeId)) {
