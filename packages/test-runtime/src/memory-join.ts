@@ -1,5 +1,4 @@
 import {
-  prepareJoinWaiter,
   readJoinTarget,
   type JoinClient,
   type JoinResult,
@@ -23,21 +22,10 @@ export class MemoryJoinClient implements JoinClient {
     this.executions = params.executions;
   }
 
-  async join(request: JoinWaiter): Promise<JoinResult> {
-    const waiter = prepareJoinWaiter(request);
+  async join(waiter: JoinWaiter): Promise<JoinResult> {
     const result = readJoinTarget(this.executions.getState(waiter.targetExecutionId));
     if (result.status === "waiting") this.waiters.set(waiterKey(waiter), waiter);
     return result;
-  }
-
-  /**
-   * The waiters registered on the target, ordered by joining execution and
-   * then step key. Not part of `JoinClient`; for tests.
-   */
-  getWaiters(targetExecutionId: string): JoinWaiter[] {
-    return this.waitersOn(targetExecutionId)
-      .map((waiter) => ({ ...waiter }))
-      .sort((a, b) => compare(a.executionId, b.executionId) || compare(a.stepKey, b.stepKey));
   }
 
   /**
@@ -45,8 +33,10 @@ export class MemoryJoinClient implements JoinClient {
    * Called synchronously by a terminal acknowledgement of the target.
    */
   wakeWaiters(targetExecutionId: string) {
-    for (const waiter of this.waitersOn(targetExecutionId)) {
-      this.executions.wakeNow(waiter.executionId);
+    for (const waiter of this.waiters.values()) {
+      if (waiter.targetExecutionId === targetExecutionId) {
+        this.executions.wakeNow(waiter.executionId);
+      }
     }
   }
 
@@ -61,19 +51,9 @@ export class MemoryJoinClient implements JoinClient {
       }
     }
   }
-
-  private waitersOn(targetExecutionId: string) {
-    return [...this.waiters.values()].filter(
-      (waiter) => waiter.targetExecutionId === targetExecutionId
-    );
-  }
 }
 
 function waiterKey(waiter: JoinWaiter) {
   return JSON.stringify([waiter.targetExecutionId, waiter.executionId, waiter.stepKey]);
 }
 
-// Code unit order, as SQLite's binary collation.
-function compare(a: string, b: string) {
-  return a < b ? -1 : a > b ? 1 : 0;
-}

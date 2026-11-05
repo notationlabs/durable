@@ -209,7 +209,7 @@ The other codes are:
 - `JOIN_TARGET_NOT_FOUND` when no execution has the target ID; and
 - `JOIN_SELF` when the target is the calling execution.
 
-Both are recorded, so replay throws them without reading the target.
+Both are recorded, so replay throws them without reading the target. So `JOIN_TARGET_NOT_FOUND` is permanent for the step: if the target is admitted after the join reads it, the step still throws. Join only an ID that has already been admitted, such as one returned by `step.start` or by an admission that completed before the join.
 
 A workflow can join any execution, not only one it started, and several executions can join one target. The runtime does not detect cycles: if A joins B and B joins A, both wait forever unless they use a deadline.
 

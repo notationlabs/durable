@@ -362,15 +362,17 @@ export function registerJoinClientConformance({
           await admitSuspended(runtime, target);
           await admitSuspended(runtime, joiner);
           const targetLease = await lease(runtime, target);
-          const joining = join(i % 2 ? runtime : peer, joiner, "join:ship", target);
-          const completing = (i % 2 ? peer : runtime).executions.acknowledge({
-            lease: targetLease,
-            outcome: { status: "completed", result: i },
-          });
+          const joinNow = () => join(i % 2 ? runtime : peer, joiner, "join:ship", target);
+          const completeNow = () =>
+            (i % 2 ? peer : runtime).executions.acknowledge({
+              lease: targetLease,
+              outcome: { status: "completed", result: i },
+            });
+          // Alternate which call is made first, as well as which runtime makes it.
           const result =
             i % 4 < 2
-              ? (await Promise.all([joining, completing]))[0]
-              : (await Promise.all([completing, joining]))[1];
+              ? (await Promise.all([joinNow(), completeNow()]))[0]
+              : (await Promise.all([completeNow(), joinNow()]))[1];
 
           if (result.status === "terminal") {
             expect(result.outcome).toEqual({ status: "completed", result: i });
