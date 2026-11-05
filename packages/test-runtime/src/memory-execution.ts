@@ -4,6 +4,7 @@ import {
   claimExecution,
   clearExecutionDivergence,
   createExecutionState,
+  assertStartCaller,
   createStartedExecution,
   executionNotFound,
   finishExecutionPrune,
@@ -138,15 +139,11 @@ export class MemoryExecutionClient implements ExecutionClient {
     const { start } = prepared;
     const key = startRequestKey(start.callerExecutionId, start.stepKey);
 
+    const caller = this.executions.get(start.callerExecutionId);
+    assertStartCaller(caller, start.callerExecutionId);
     const recorded = this.startRequests.get(key);
     if (recorded) return matchStartRequest(recorded, start);
 
-    const caller = this.executions.get(start.callerExecutionId);
-    if (!caller) {
-      throw new Error(
-        `Cannot start a workflow from execution "${start.callerExecutionId}": it does not exist`
-      );
-    }
     let created = createStartedExecution({ start, caller, now: this.clock() });
     while (this.executions.has(created.target.executionId)) {
       created = createStartedExecution({ start, caller, now: this.clock() });

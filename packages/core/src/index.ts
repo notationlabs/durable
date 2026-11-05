@@ -148,6 +148,7 @@ export {
   claimExecution,
   clearExecutionDivergence,
   createExecutionState,
+  assertStartCaller,
   createStartedExecution,
   decodeExecutionEvent,
   decodeExecutionOutcome,

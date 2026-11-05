@@ -4,6 +4,7 @@ import {
   claimExecution,
   clearExecutionDivergence,
   createExecutionState,
+  assertStartCaller,
   createStartedExecution,
   executionNotFound,
   finishExecutionPrune,
@@ -130,18 +131,14 @@ export class SqliteExecutionClient implements ExecutionClient {
     // transaction, so concurrent starts with one request ID serialize and a
     // new start commits all-or-nothing.
     return runTransaction(this.db, () => {
+      const caller = this.executionsDao.getState(start.callerExecutionId);
+      assertStartCaller(caller, start.callerExecutionId);
       const recorded = this.startRequestsDao.get(
         start.callerExecutionId,
         start.stepKey
       );
       if (recorded) return matchStartRequest(recorded, start);
 
-      const caller = this.executionsDao.getState(start.callerExecutionId);
-      if (!caller) {
-        throw new Error(
-          `Cannot start a workflow from execution "${start.callerExecutionId}": it does not exist`
-        );
-      }
       let created = createStartedExecution({ start, caller, now: this.clock() });
       while (!this.executionsDao.insertState(created.target)) {
         created = createStartedExecution({ start, caller, now: this.clock() });

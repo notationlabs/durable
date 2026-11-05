@@ -420,11 +420,21 @@ export function registerRetentionClientConformance({
         });
 
         await runtime.prune();
-        // What a start from a pruned caller does is not specified; it no
-        // longer matches the deleted request.
-        const repeated = await startShipment(runtime, "other-workflow").catch((error) => error);
-        expect(repeated).not.toMatchObject({ code: "START_REQUEST_MISMATCH" });
-        expect(repeated).not.toEqual({ status: "accepted", executionId: child });
+        await expect(startShipment(runtime)).rejects.toThrow(/was pruned/);
+        await expect(startShipment(runtime, "other-workflow")).rejects.toThrow(/was pruned/);
+      });
+
+      it("rejects a start from a pruned caller before cleanup deletes its start requests", RETAIN_NONE, async ({
+        runtime,
+        peer,
+      }) => {
+        const { child } = await runOrder(runtime);
+        await runtime.executions.prune({ retain: RETAIN_NONE, limit: 10 });
+
+        // Cleanup has not run, so the start request is still recorded.
+        await expect(startShipment(runtime)).rejects.toThrow(/was pruned/);
+        await expect(startShipment(peer)).rejects.toThrow(/was pruned/);
+        await record(runtime, child);
       });
 
       it("answers every client with the tombstone", RETAIN_NONE, async ({ runtime, peer, clock }) => {

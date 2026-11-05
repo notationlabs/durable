@@ -1135,6 +1135,28 @@ export function matchStartRequest(
 }
 
 /**
+ * Throws a plain `Error` when the caller of a start does not exist or was
+ * pruned. Adapters call it before they look up a recorded start request, in
+ * the same atomic step, so a start from a pruned caller throws whether or not
+ * its cleanup has deleted the caller's start requests yet.
+ */
+export function assertStartCaller(
+  caller: ExecutionState | undefined,
+  callerExecutionId: string
+): asserts caller is ExecutionState {
+  if (!caller) {
+    throw new Error(
+      `Cannot start a workflow from execution "${callerExecutionId}": it does not exist`
+    );
+  }
+  if (caller.pruned !== null) {
+    throw new Error(
+      `Cannot start a workflow from execution "${callerExecutionId}": it was pruned`
+    );
+  }
+}
+
+/**
  * Builds a new start's target state and start-request record. The target
  * inherits the caller's encoded context and links to the caller as its parent.
  * A non-detached target of a caller whose cancellation is not yet delivered
@@ -1151,11 +1173,7 @@ export function createStartedExecution(params: {
   executionId?: string;
 }): { target: ExecutionState; startRequest: StartRequestState } {
   const { start, caller, now } = params;
-  if (caller.pruned !== null) {
-    throw new Error(
-      `Cannot start a workflow from execution "${start.callerExecutionId}": it was pruned`
-    );
-  }
+  assertStartCaller(caller, start.callerExecutionId);
   const executionId = params.executionId ?? crypto.randomUUID();
   const target = createExecutionState({
     executionId,
