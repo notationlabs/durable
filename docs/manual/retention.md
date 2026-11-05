@@ -51,7 +51,7 @@ type RetentionPolicy = {
 
 The constructor copies the policy, so a later change to the object you passed has no effect. To change a policy, construct the runtime again with the new one, for example on the next deploy. The runtime reads the policy each time it prunes, so a new period also applies to executions that are already terminal. Shortening `completed` from 7 days to 1 day prunes every completed execution older than 1 day at the next pruning pass.
 
-The policy lives in the runtime's configuration, not in workflow code, because pruning runs in the process that runs the [dispatcher](#running-the-pruner), and that process does not load workflow code. Set `retain` on the runtime that the dispatcher uses. A worker process's runtime does not need it.
+The policy lives in the runtime's configuration, not in workflow code. Pruning runs in the process that runs the [dispatcher](#running-the-pruner), and with the worker invoker that process does not load workflow code. A forced cancel also records a terminal outcome without running workflow code. Set `retain` on the runtime that the dispatcher uses. A worker process's runtime does not need it.
 
 ## Which executions are pruned
 
