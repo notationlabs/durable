@@ -325,6 +325,37 @@ const router = {
       step.delay("later", 10 * MINUTE),
     ]);
   }),
+  "nested-loser-key-reused": workflow(async function* (step) {
+    yield* step.race("first", [
+      step.all("inner", [step.run("K", () => work("K", "loser")), step.delay("d", DAY)]),
+      step.run("fast", () => work("fast", "fast")),
+    ]);
+    yield* step.delay("after", MINUTE);
+    yield* step.run("K", () => work("K", "reused"));
+  }),
+  "loser-fails-late": workflow(async function* (step) {
+    const first = yield* step.race("first", [
+      step.run("fast", () => work("fast", "fast")),
+      (async function* () {
+        try {
+          yield* step.run("slow-fail", () => fail("slow-fail"));
+        } catch {
+          ran.push("catch");
+        } finally {
+          ran.push("finally");
+        }
+      })(),
+    ]);
+    yield* step.delay("after", MINUTE);
+    return first.index;
+  }),
+  "nested-loser-race": workflow(async function* (step) {
+    const first = yield* step.race("first", [
+      step.race("inner", [step.run("a", () => work("a", "a")), step.delay("d", DAY)]),
+      step.run("fast", () => work("fast", "fast")),
+    ]);
+    return first.index;
+  }),
   "cancel-inside-all": workflow(async function* (step) {
     const payments = step.store(PaymentStore);
     try {
@@ -896,6 +927,50 @@ describe.each(runtimes)("concurrent steps on $name", ({ create }) => {
       const result = await deliver();
       expect((result as { error: Error }).error.message).toMatch(/unique cache key/);
       expect(ran).toEqual([]);
+    });
+
+    test("replay reaches the keys of a nested combinator in a losing branch", async () => {
+      const k = closeGate("K");
+      await admit("nested-loser-key-reused");
+      const lease = (await claim())!;
+      const delivery = run(lease);
+      await until(async () => (await readStep("first")) !== null);
+      k.open();
+      const first = await delivery;
+      await runtime.executions.acknowledge({ lease, outcome: first });
+      expect(first).toEqual({ status: "suspended", wakeAt: START + MINUTE });
+      expect(await readStep("K")).toMatchObject({ result: "loser" });
+
+      advance(MINUTE);
+      const result = await deliver();
+      expect((result as { error: Error }).error.message).toMatch(/unique cache key/);
+    });
+
+    test("a losing branch whose running step fails after the race settles runs no catch or finally block", async () => {
+      const slow = closeGate("slow-fail");
+      await admit("loser-fails-late");
+      const lease = (await claim())!;
+      const delivery = run(lease);
+      await until(async () => (await readStep("first")) !== null);
+      slow.open();
+      const first = await delivery;
+      await runtime.executions.acknowledge({ lease, outcome: first });
+      expect(await readStep("slow-fail")).toMatchObject({ type: "step-error", done: true });
+      advance(MINUTE);
+      expect(await deliver()).toEqual({ status: "completed", result: 0 });
+      expect(ran.sort()).toEqual(["fast", "slow-fail"]);
+    });
+
+    test("a nested combinator in a losing branch records no decision", async () => {
+      const a = closeGate("a");
+      await admit("nested-loser-race");
+      const lease = (await claim())!;
+      const delivery = run(lease);
+      await until(async () => (await readStep("first")) !== null);
+      a.open();
+      expect(await delivery).toEqual({ status: "completed", result: 1 });
+      expect(await readStep("a")).toMatchObject({ result: "a" });
+      expect(await readStep("inner")).toBeNull();
     });
 
     test("the delivery acknowledges only after a losing branch's running step.run records its result", async () => {
