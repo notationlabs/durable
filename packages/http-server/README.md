@@ -165,6 +165,7 @@ Options:
 - `logger`: A Pino logger instance
 - `middleware`: Optional array of middleware functions for `/trigger`
 - `observationMiddleware`: Optional array of functions that allow or deny `/poll`, `/wait`, `/list` and `/events` requests
+- `pollInterval`: Optional. How often `/wait` and `/events` read the record while they wait, in milliseconds. Defaults to 25
 - `basePath`: Optional path to mount the routes on
 
 Responses:
@@ -175,7 +176,7 @@ Responses:
 - `POST /list`: `200 { executions, cursor? }`, newest first by admission
 - `POST /events`: deprecated; blocks until the execution record is terminal; `200` with the result, `500` with the recorded error, both encoded with the durable value codec, `404` for an unknown execution ID
 
-Error responses carry `{ code, message }`.
+Error responses carry `{ code, message }`. A `500` `INTERNAL_ERROR` response has the fixed message `Internal error`; the server logs the thrown error instead of sending it.
 
 ### `createMiddleware(handler)`
 

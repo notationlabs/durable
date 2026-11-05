@@ -405,10 +405,10 @@ describe("HTTP SDK error responses", () => {
       () => sdk.wait("order-42", { timeout: 0 }),
       () => sdk.waitForResult({ executionId: "order-42" }),
     ]) {
-      const error = await call().catch((err) => err);
+      const error = await call().catch((err: unknown) => err);
       expect(error).toBeInstanceOf(HttpRouteError);
-      expect(error.status).toBe(404);
-      expect(error.code).toBeUndefined();
+      expect((error as HttpRouteError).status).toBe(404);
+      expect((error as HttpRouteError).code).toBeUndefined();
     }
   });
 });

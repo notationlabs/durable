@@ -12,6 +12,7 @@ import {
   backendKinds,
   cleanup,
   complete,
+  elapsed,
   fail,
   logger,
   openBackend,
@@ -118,11 +119,6 @@ for (const backendKind of backendKinds) {
           "INVALID_OBSERVATION_REQUEST"
         );
       }
-      await expectError(
-        await post(url, "list", { workflowId: 42 }),
-        400,
-        "INVALID_OBSERVATION_REQUEST"
-      );
     });
 
     test("an invalid list limit, status or cursor responds 400 INVALID_LIST_REQUEST", async () => {
@@ -135,6 +131,7 @@ for (const backendKind of backendKinds) {
         { status: "done" },
         { cursor: "not-a-cursor" },
         { cursor: 7 },
+        { workflowId: 42 },
       ]) {
         await expectError(await post(url, "list", body), 400, "INVALID_LIST_REQUEST");
       }
@@ -312,29 +309,68 @@ for (const backendKind of backendKinds) {
         expect(calls).toEqual(["first", "second"]);
       });
 
-      test("a middleware that throws responds 500 INTERNAL_ERROR", async () => {
+      test("a middleware that throws responds 500 INTERNAL_ERROR with a fixed message and logs the error", async () => {
         const { runtime } = openBackend(backendKind);
+        const logged = vi.spyOn(logger, "error");
+        const policyError = new Error("policy store unavailable");
+        const authError = new Error("auth service unavailable");
         const { url } = serveRoutes(runtime, {
           observationMiddleware: [
             async () => {
-              throw new Error("policy store unavailable");
+              throw policyError;
             },
           ],
           middleware: [
             async () => {
-              throw new Error("auth service unavailable");
+              throw authError;
             },
           ],
         });
+        const bodies = [];
         for (const route of executionRoutes) {
-          await expectError(await post(url, route, { executionId: "any" }), 500, "INTERNAL_ERROR");
+          bodies.push(
+            await expectError(await post(url, route, { executionId: "any" }), 500, "INTERNAL_ERROR")
+          );
         }
-        await expectError(await post(url, "list", {}), 500, "INTERNAL_ERROR");
-        await expectError(
-          await post(url, "trigger", { workflowId: "charge-order" }),
-          500,
-          "INTERNAL_ERROR"
+        bodies.push(await expectError(await post(url, "list", {}), 500, "INTERNAL_ERROR"));
+        bodies.push(
+          await expectError(
+            await post(url, "trigger", { workflowId: "charge-order" }),
+            500,
+            "INTERNAL_ERROR"
+          )
         );
+        for (const body of bodies) {
+          expect(body).toEqual({ code: "INTERNAL_ERROR", message: "Internal error" });
+        }
+        expect(logged.mock.calls.map(([err]) => err)).toEqual([
+          ...executionRoutes.map(() => policyError),
+          policyError,
+          authError,
+        ]);
+      });
+
+      test("a runtime that throws responds 500 INTERNAL_ERROR without the runtime's message", async () => {
+        const { runtime } = openBackend(backendKind);
+        const logged = vi.spyOn(logger, "error");
+        const dbError = new Error("SQLITE_IOERR: disk I/O error at /var/lib/app/executions.db");
+        vi.spyOn(runtime.executions, "get").mockRejectedValue(dbError);
+        vi.spyOn(runtime.executions, "list").mockRejectedValue(dbError);
+        vi.spyOn(runtime.executions, "admit").mockRejectedValue(dbError);
+        const { url } = serveRoutes(runtime);
+        const responses = [
+          ...executionRoutes.map((route) => post(url, route, { executionId: "any" })),
+          post(url, "list", {}),
+          post(url, "trigger", { workflowId: "charge-order" }),
+        ];
+        for (const response of await Promise.all(responses)) {
+          expect(await expectError(response, 500, "INTERNAL_ERROR")).toEqual({
+            code: "INTERNAL_ERROR",
+            message: "Internal error",
+          });
+        }
+        expect(logged).toHaveBeenCalledTimes(responses.length);
+        expect(logged).toHaveBeenCalledWith(dbError);
       });
 
       test("trigger middleware that denies every request leaves observation routes unaffected", async () => {
@@ -357,6 +393,21 @@ for (const backendKind of backendKinds) {
     });
   });
 }
+
+test("pollInterval sets how often /wait reads the record", async () => {
+  const runtime = new MemoryRuntime();
+  const { url } = serveRoutes(runtime, { pollInterval: 60_000 });
+  await admit(runtime, "later");
+  const response = elapsed(() => post(url, "wait", { executionId: "later", timeout: 200 }));
+  await sleep(20);
+  await complete(runtime, "later", "receipt");
+  const { value, ms } = await response;
+  // With no notifier, the wait reads the record again only at its timeout.
+  expect(await value.json()).toMatchObject({ status: "completed", result: "receipt" });
+  expect(ms).toBeGreaterThanOrEqual(190);
+
+  expect(() => createRoutes({ runtime, logger, pollInterval: -1 })).toThrow(RangeError);
+});
 
 test("basePath prefixes every route", () => {
   const routes = createRoutes({

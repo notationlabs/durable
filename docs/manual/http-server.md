@@ -73,10 +73,12 @@ Error responses carry `{ code, message }`. Besides the codes in the table above,
 
 | Condition                                                    | Response                                |
 | ------------------------------------------------------------ | --------------------------------------- |
-| A `/poll`, `/wait`, `/list` or `/events` body that is not a JSON object, a missing or empty `executionId`, a `timeout` that is negative or not a number, or a `/list` `workflowId` that is not a string | `400` `INVALID_OBSERVATION_REQUEST` |
-| A `/list` `limit` that is not a positive integer, an unknown `status`, or a `cursor` that `/list` did not return | `400` `INVALID_LIST_REQUEST` |
+| A `/poll`, `/wait`, `/list` or `/events` body that is not a JSON object, a missing or empty `executionId`, or a `timeout` that is negative or not a number | `400` `INVALID_OBSERVATION_REQUEST` |
+| A `/list` `workflowId` that is not a string, a `limit` that is not a positive integer, an unknown `status`, or a `cursor` that `/list` did not return | `400` `INVALID_LIST_REQUEST` |
 | Observation middleware denies the request                    | `401` `UNAUTHORIZED` or `403` `FORBIDDEN` |
 | Middleware throws, or the runtime fails                      | `500` `INTERNAL_ERROR`                  |
+
+A `500` response always has the message `Internal error`. The server logs the thrown error with `logger.error` and does not send its message, so middleware and database details stay on the server.
 
 A `/trigger` body that is not a valid trigger event, including an `idempotent` value that is not a boolean, responds `400` `INVALID_EXECUTION_EVENT`. A `/list` `limit` above 1000 is lowered to 1000.
 

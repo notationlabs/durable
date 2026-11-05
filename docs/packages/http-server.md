@@ -8,7 +8,7 @@ HTTP routes and middleware for triggering workflows and reading their executions
 bun add @yieldstar/http-server
 ```
 
-## `createRoutes({ runtime, invoker?, logger, middleware?, observationMiddleware?, basePath? })`
+## `createRoutes({ runtime, invoker?, logger, middleware?, observationMiddleware?, pollInterval?, basePath? })`
 
 Returns route handlers for `POST /trigger`, `POST /poll`, `POST /wait`, `POST /list` and the deprecated `POST /events`. The routes object plugs directly into `Bun.serve({ routes })` or any router that accepts `Request` to `Response` handlers.
 
@@ -30,9 +30,10 @@ Bun.serve({
 | `logger`     | `Logger`               | Pino logger                      |
 | `middleware` | `MiddlewareFunction[]` | Optional middleware chain for `/trigger` |
 | `observationMiddleware` | `ObservationMiddlewareFunction[]` | Optional. Allows or denies `/poll`, `/wait`, `/list` and `/events` requests |
+| `pollInterval` | `number`             | Optional. How often `/wait` and `/events` read the record while they wait, in milliseconds. Defaults to `DEFAULT_OBSERVER_POLL_INTERVAL` (25) |
 | `basePath`   | `` `/${string}` ``     | Optional prefix for routes       |
 
-Every error response has the body `{ code, message }`. A route that throws, including a middleware function, responds `500` with code `INTERNAL_ERROR`. `ObservationErrorCode` is the union of the codes the observation routes respond with.
+Every error response has the body `{ code, message }`. A route that throws, including a middleware function, responds `500` with code `INTERNAL_ERROR` and the fixed message `Internal error`, and logs the thrown error with `logger.error`. `ObservationErrorCode` is the union of the codes the observation routes respond with.
 
 ### `POST /trigger`
 
@@ -46,7 +47,7 @@ Accepts a `{ workflowId, params?, context?, executionId?, idempotent? }` body en
 | `409`  | `{ code: "EXECUTION_REQUEST_MISMATCH", message }` | An idempotent trigger's `executionId` is in use with a different `workflowId` or `params` |
 | `400`  | `{ code: "INVALID_EXECUTION_EVENT", message }`  | The body is not a valid encoding, `params` or `context` are not durable values, or `idempotent` is not a boolean |
 | `400`  | `{ code: "IDEMPOTENT_TRIGGER_REQUIRES_ID", message }` | An idempotent trigger has no `executionId`               |
-| `500`  | `{ code: "INTERNAL_ERROR", message }`           | Middleware or admission threw, for example because the database failed |
+| `500`  | `{ code: "INTERNAL_ERROR", message: "Internal error" }` | Middleware or admission threw, for example because the database failed |
 
 See [Idempotent trigger](../manual/sdk-local.md#idempotent-trigger) for how a repeat is matched.
 
@@ -60,7 +61,7 @@ Accepts `{ executionId, timeout? }`. Reads the record, and then waits until it i
 
 ### `POST /list`
 
-Accepts `{ workflowId?, status?, cursor?, limit? }`. Responds `200` with `{ executions, cursor? }`, a page of views newest first by admission. `limit` defaults to 50, and a value above 1000 is lowered to 1000. An invalid `limit`, `status` or `cursor` responds `400` `INVALID_LIST_REQUEST`.
+Accepts `{ workflowId?, status?, cursor?, limit? }`. Responds `200` with `{ executions, cursor? }`, a page of views newest first by admission. `limit` defaults to 50, and a value above 1000 is lowered to 1000. An invalid `workflowId`, `limit`, `status` or `cursor` responds `400` `INVALID_LIST_REQUEST`, as the local SDK's `list` throws `ExecutionListRequestError`.
 
 A `/poll`, `/wait`, `/list` or `/events` body that is not a JSON object, has no `executionId` where one is needed, or has a negative `timeout` responds `400` `INVALID_OBSERVATION_REQUEST`. The views and pages are described in [Execution views](../manual/sdk-local.md#execution-views).
 

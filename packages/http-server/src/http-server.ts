@@ -9,6 +9,7 @@ import type {
   WorkflowInvoker,
 } from "@yieldstar/core";
 import {
+  DEFAULT_OBSERVER_POLL_INTERVAL,
   ExecutionListRequestError,
   FreezableMap,
   MiddlewareEvent,
@@ -156,6 +157,7 @@ type ObservationParams = {
   logger: Logger;
   observationMiddleware: ObservationMiddlewareFunction[];
   invoker?: Pick<WorkflowInvoker, "workflowEndEmitter">;
+  pollInterval: number;
   waitCap: number;
 };
 
@@ -257,9 +259,6 @@ export const createListHandler = (params: ObservationParams): RouteHandler =>
   observationRoute(
     params,
     (body) => {
-      if (body.workflowId !== undefined && typeof body.workflowId !== "string") {
-        return invalidObservationRequest("workflowId must be a string");
-      }
       const request: ExecutionListRequest = {};
       for (const key of ["workflowId", "status", "cursor", "limit"] as const) {
         if (body[key] !== undefined) (request as Record<string, unknown>)[key] = body[key];
@@ -291,6 +290,7 @@ export const createEventsHandler = (params: ObservationParams): RouteHandler =>
     async (req, executionId) => {
       const outcome = await waitForExecutionOutcome(params.executions, executionId, {
         emitter: params.invoker?.workflowEndEmitter,
+        pollInterval: params.pollInterval,
         signal: req.signal,
       });
       if (!outcome) return executionNotFound(executionId);
@@ -305,7 +305,11 @@ export const createEventsHandler = (params: ObservationParams): RouteHandler =>
     }
   );
 
-function errorResponse(status: number, code: string, message: string) {
+function errorResponse(
+  status: number,
+  code: ObservationErrorCode | ExecutionAdmissionErrorCode,
+  message: string
+) {
   return Response.json({ code, message }, { status });
 }
 
@@ -317,15 +321,15 @@ function executionNotFound(executionId: string) {
   return errorResponse(404, "EXECUTION_NOT_FOUND", `Execution "${executionId}" does not exist`);
 }
 
+/**
+ * Logs the error and responds with a fixed message, so the response does not
+ * reveal middleware or database internals.
+ */
 function internalError(logger: Logger, err: unknown, aborted = false) {
   // A wait ended by the client's disconnect is not a server error, and no one
   // reads the response.
   if (!aborted) logger.error(err);
-  return errorResponse(
-    500,
-    "INTERNAL_ERROR",
-    err instanceof Error ? err.message : "Internal error"
-  );
+  return errorResponse(500, "INTERNAL_ERROR", "Internal error");
 }
 
 /** Encodes `value` with the durable value codec, so results and errors keep their shape. */
@@ -384,20 +388,29 @@ export function createRoutes(params: {
    */
   observationMiddleware?: ObservationMiddlewareFunction[];
   /**
+   * How often `/wait` and `/events` read the record while they wait, in
+   * milliseconds.
+   * @default DEFAULT_OBSERVER_POLL_INTERVAL
+   */
+  pollInterval?: number;
+  /**
    * @internal For tests. Overrides `WAIT_REQUEST_CAP`.
    */
   waitCap?: number;
 }): Routes {
   const { logger, runtime, invoker, middleware = [], basePath = "" } = params;
   const { executions } = runtime;
+  const pollInterval = params.pollInterval ?? DEFAULT_OBSERVER_POLL_INTERVAL;
   const observation: ObservationParams = {
     executions,
     observer: createExecutionObserver(executions, {
       notifier: invoker?.workflowEndEmitter,
+      pollInterval,
     }),
     logger,
     observationMiddleware: params.observationMiddleware ?? [],
     invoker,
+    pollInterval,
     waitCap: params.waitCap ?? WAIT_REQUEST_CAP,
   };
   return {

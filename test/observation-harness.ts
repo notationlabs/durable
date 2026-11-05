@@ -41,6 +41,7 @@ const cleanups: (() => void | Promise<void>)[] = [];
 export async function cleanup() {
   for (const fn of cleanups.splice(0).reverse()) await fn();
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
   vi.useRealTimers();
 }
 
@@ -96,6 +97,7 @@ export type SdkOptions = {
   invoker?: Pick<WorkflowInvoker, "workflowEndEmitter">;
   middleware?: MiddlewareFunction[];
   observationMiddleware?: ObservationMiddlewareFunction[];
+  pollInterval?: number;
   waitCap?: number;
 };
 
@@ -124,6 +126,7 @@ export function serveRoutes(runtime: Runtime, options: SdkOptions = {}) {
     invoker: options.invoker,
     middleware: options.middleware,
     observationMiddleware: options.observationMiddleware,
+    pollInterval: options.pollInterval,
     waitCap: options.waitCap,
   });
   hosts.set(host, routes);
