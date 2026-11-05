@@ -13,7 +13,7 @@ export type BranchResults<B extends readonly Branch<unknown>[]> = {
 
 export type SettledResult<T> =
   | { status: "fulfilled"; value: T }
-  | { status: "rejected"; error: Error };
+  | { status: "rejected"; error: unknown };
 
 export type SettledResults<B extends readonly Branch<unknown>[]> = {
   -readonly [I in keyof B]: B[I] extends Branch<infer T> ? SettledResult<T> : never;
@@ -81,7 +81,15 @@ export type BranchesDecision =
 export class StepBranchesDecision extends StepResponse {
   static type = "branches-decision";
   readonly type = "branches-decision";
-  constructor(readonly decision: BranchesDecision) {
+  constructor(
+    readonly decision: BranchesDecision,
+    /**
+     * The clock time the decision was made, for every decision but
+     * `cancelled`. A branch that the decision stops does not pass a delay
+     * that wakes after it.
+     */
+    readonly decidedAt?: number
+  ) {
     super();
   }
 }
@@ -146,11 +154,17 @@ export class DecisionLock {
 /** One combinator being driven in this delivery. */
 export class Combinator {
   decision: BranchesDecision | undefined;
+  decidedAt: number | undefined;
+  /** Whether the decision was recorded before this delivery. */
+  recorded = false;
   /** An error that ends the delivery, raised by one of the branches. */
   fatal: { err: unknown } | undefined;
   /** Step keys its branches and their nested branches reached. */
   readonly keys: string[] = [];
+  readonly branches: DrivenBranch[] = [];
   readonly limiter: Limiter;
+  /** Checks whether the combinator can decide or settle. */
+  evaluate = () => {};
 
   constructor(
     readonly owner: DrivenBranch,
@@ -166,14 +180,53 @@ export class Combinator {
     if (this.fatal) return true;
     return this.decision !== undefined && this.decision.decision !== "cancelled";
   }
+
+  /** Whether one of its branches may still reach a recorded step. */
+  get replaying(): boolean {
+    return this.branches.some((branch) => branch.replaying);
+  }
 }
 
 /** The workflow itself, or one branch of a combinator. */
 export class DrivenBranch {
   private holding = 0;
   private acquired: Promise<void> = Promise.resolve();
+  private live = false;
+  private done = false;
+  /** The combinator this branch reached last. */
+  inner: Combinator | undefined;
 
   constructor(readonly parent?: Combinator) {}
+
+  /**
+   * Whether the branch may still reach a recorded step in this delivery. A
+   * branch is caught up once it finishes or reaches a step that needs new
+   * work. A combinator with no recorded decision has no recorded steps after
+   * it, so a branch inside one is caught up once its branches are.
+   */
+  get replaying(): boolean {
+    if (this.done || this.live) return false;
+    if (!this.inner || this.inner.recorded) return true;
+    return this.inner.replaying;
+  }
+
+  /** Marks the branch as at a step that needs new work. */
+  markLive() {
+    this.live = true;
+    this.notify();
+  }
+
+  /** Marks the branch as returned, failed, suspended or stopped. */
+  markDone() {
+    this.done = true;
+    this.notify();
+  }
+
+  private notify() {
+    for (let combinator = this.parent; combinator; combinator = combinator.owner.parent) {
+      combinator.evaluate();
+    }
+  }
 
   /**
    * Whether a combinator above this branch settled with a decision other than
@@ -186,6 +239,22 @@ export class DrivenBranch {
       if (combinator.stopsBranches) return true;
     }
     return false;
+  }
+
+  /**
+   * The earliest decision time of the combinators that stopped this branch. A
+   * stopped branch treats a delay that wakes after it as unfinished, so replay
+   * stops at every delay the first run stopped at.
+   */
+  get stoppedAt(): number | undefined {
+    let at: number | undefined;
+    for (let combinator = this.parent; combinator; combinator = combinator.owner.parent) {
+      const { decidedAt } = combinator;
+      if (combinator.stopsBranches && decidedAt !== undefined) {
+        at = at === undefined ? decidedAt : Math.min(at, decidedAt);
+      }
+    }
+    return at;
   }
 
   reach(stepKey: string) {

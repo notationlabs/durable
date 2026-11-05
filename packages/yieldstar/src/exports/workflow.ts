@@ -285,11 +285,15 @@ export function workflow<
         let thrown: { err: unknown } | undefined;
         if (cached?.meta.done && recorded instanceof StepCancelled) {
           thrown = { err: recorded.err };
-        } else if (!isCombinator && isUnfinishedStep(cached, recorded, clock())) {
+        } else if (
+          !isCombinator &&
+          isUnfinishedStep(cached, recorded, branch.stoppedAt ?? clock())
+        ) {
           // A stopped branch replays its recorded steps and stops at the
           // first step that needs new work. A combinator is excluded: one
           // without a record is still driven so that replay reaches the keys
           // its branches reached, and it is not a cancellation point.
+          branch.markLive();
           if (branch.stopped) return { status: "stopped" };
           if (barrier.pending) {
             // A delay is recorded done when it starts, so its cancellation
@@ -455,7 +459,7 @@ export function workflow<
           branch,
           stepKey,
           stepAttempt,
-          cached ? (recorded as StepBranchesDecision).decision : undefined
+          cached ? (recorded as StepBranchesDecision) : undefined
         );
       }
 
@@ -536,12 +540,16 @@ export function workflow<
       owner: DrivenBranch,
       stepKey: string,
       stepAttempt: number,
-      recorded: BranchesDecision | undefined
+      recorded: StepBranchesDecision | undefined
     ): Promise<StepAction> {
       const { combinator: kind, mode, concurrency, branches } = request.request;
       const combinator = new Combinator(owner, stepKey, stepAttempt, concurrency);
-      combinator.decision = recorded;
+      combinator.decision = recorded?.decision;
+      combinator.decidedAt = recorded?.decidedAt;
+      combinator.recorded = recorded !== undefined;
+      owner.inner = combinator;
       const children = branches.map(() => new DrivenBranch(combinator));
+      combinator.branches.push(...children);
       const states: BranchState[] = branches.map(() => ({ status: "running" }));
       // Indexes of branches that returned or threw, in the order they did.
       const finished: number[] = [];
@@ -571,9 +579,16 @@ export function workflow<
             }
             return;
           }
-          // While a cancellation is pending, a combinator with a branch still
-          // replaying waits: the delivery may land in that branch.
-          if (!combinator.decision && !owner.stopped && !(barrier.pending && running)) {
+          // The combinator decides only once every branch has caught up with
+          // its records, so the decision deletes the waiters of every step a
+          // branch will reach. While a cancellation is pending, it waits for
+          // every branch: the delivery may land in one still running.
+          if (
+            !combinator.decision &&
+            !owner.stopped &&
+            !combinator.replaying &&
+            !(barrier.pending && running)
+          ) {
             const decision = decide(kind, mode, states, finished);
             if (decision) {
               recordDecision(decision);
@@ -600,9 +615,13 @@ export function workflow<
         const recordDecision = (decision: BranchesDecision) => {
           // Set first, so no branch starts new work from here on.
           combinator.decision = decision;
+          combinator.decidedAt = clock();
           writing = true;
           barrier.enter();
-          const json = encodeStepRecord(new StepBranchesDecision(decision), stepKey).json;
+          const json = encodeStepRecord(
+            new StepBranchesDecision(decision, combinator.decidedAt),
+            stepKey
+          ).json;
           lock
             .exclusive(() =>
               writeStep({
@@ -624,6 +643,7 @@ export function workflow<
             });
         };
 
+        combinator.evaluate = evaluate;
         barrier.enter(children.length);
         children.forEach((child, i) => {
           drive(branches[i]!, child)
@@ -644,7 +664,7 @@ export function workflow<
             .then(() => {
               const { status } = states[i]!;
               if (status === "returned" || status === "threw") finished.push(i);
-              evaluate();
+              child.markDone();
               barrier.leave();
             });
         });

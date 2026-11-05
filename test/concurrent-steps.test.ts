@@ -209,6 +209,34 @@ const router = {
     yield* step.delay("follow-up", 2 * DAY);
     return first.index;
   }),
+  "late-when-or-deadline": workflow(async function* (step) {
+    const payments = step.store(PaymentStore);
+    const first = yield* step.race("late-race", [
+      (async function* () {
+        yield* step.run("p1", () => work("p1", 1));
+        yield* step.run("p2", () => work("p2", 2));
+        yield* step.run("p3", () => work("p3", 3));
+        return yield* payments.when("late-paid", (state) => state.paid);
+      })(),
+      step.delay("late-deadline", DAY),
+    ]);
+    observed.push(first);
+    yield* step.delay("follow-up", 2 * DAY);
+    return first.index;
+  }),
+  "loser-delay-elapses": workflow(async function* (step) {
+    yield* step.race("el-race", [
+      (async function* () {
+        yield* step.delay("el-wait", MINUTE);
+        observed.push("loser passed el-wait");
+        return yield* step.run("el-notify", () => work("el-notify-loser", "loser"));
+      })(),
+      step.run("el-fast", () => work("el-fast", "fast")),
+    ]);
+    yield* step.run("el-notify", () => work("el-notify-after", "after"));
+    yield* step.delay("el-follow", DAY);
+    return "done";
+  }),
   "fail-then-succeed": workflow(async function* (step) {
     return yield* step.race("first", [
       step.run("a", () => fail("a")),
@@ -786,6 +814,36 @@ describe.each(runtimes)("concurrent steps on $name", ({ create }) => {
       expect(await deliver()).toEqual({ status: "completed", result: 1 });
     });
 
+    test("a losing branch that replays steps before its wait still has its waiter deleted", async () => {
+      await admit("late-when-or-deadline");
+      expect(await deliver()).toEqual({ status: "suspended", wakeAt: START + DAY });
+      expect(harness.storeWaiters()).toEqual(["late-paid"]);
+
+      advance(DAY);
+      expect(await deliver()).toEqual({ status: "suspended", wakeAt: START + 3 * DAY });
+      expect(observed).toEqual([{ index: 1, value: undefined }]);
+      expect(harness.storeWaiters()).toEqual([]);
+
+      await runtime.stores.updateStore({
+        definition: PaymentStore,
+        id: ORDER,
+        updater(draft) {
+          draft.paid = true;
+        },
+      });
+      expect(await claim()).toBeUndefined();
+    });
+
+    test("a losing branch does not pass a delay that elapses after the race settles", async () => {
+      await admit("loser-delay-elapses");
+      expect(await deliver()).toEqual({ status: "suspended", wakeAt: START + DAY });
+      expect(ran.sort()).toEqual(["el-fast", "el-notify-after"]);
+
+      advance(DAY);
+      expect(await deliver()).toEqual({ status: "completed", result: "done" });
+      expect(observed).toEqual([]);
+    });
+
     test("a failed branch does not end the race: a later success wins", async () => {
       await admit("fail-then-succeed");
       expect(await deliver()).toEqual({
@@ -834,7 +892,7 @@ describe.each(runtimes)("concurrent steps on $name", ({ create }) => {
       for (const [stepKey, json] of [
         ["a", '{"result":"a","type":"step-result"}'],
         ["b", '{"result":"b","type":"step-result"}'],
-        ["first", '{"decision":"won","index":1,"type":"branches-decision"}'],
+        ["first", '{"decidedAt":0,"decision":"won","index":1,"type":"branches-decision"}'],
       ] as const) {
         await runtime.heap.writeStep({ lease, stepKey, stepAttempt: 0, done: true, stepResponseJson: json });
       }

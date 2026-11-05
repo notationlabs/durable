@@ -96,7 +96,7 @@ function encodeResponse(response: StepResponse, stepKey: string): string {
     return `{"err":${encodeThrownValue(response.err)},"type":"step-cancelled"}`;
   }
   if (response instanceof StepBranchesDecision) {
-    return encodeDecision(response.decision);
+    return encodeDecision(response.decision, response.decidedAt);
   }
   if (response instanceof StepDelay) {
     return `{"type":"step-delay","wakeAt":${JSON.stringify(response.wakeAt)}}`;
@@ -114,31 +114,44 @@ function encodeResponse(response: StepResponse, stepKey: string): string {
   throw new Error(`Cannot record a ${response.type} step response`);
 }
 
-function encodeDecision(decision: BranchesDecision): string {
+function encodeDecision(decision: BranchesDecision, decidedAt: number | undefined): string {
+  if (decision.decision === "cancelled") {
+    return `{"decision":"cancelled","err":${encodeThrownValue(decision.err)},"type":"branches-decision"}`;
+  }
+  if (typeof decidedAt !== "number") {
+    throw new Error(`Cannot record a ${decision.decision} decision without its time`);
+  }
+  const at = `"decidedAt":${JSON.stringify(decidedAt)}`;
   const type = `"type":"branches-decision"`;
   switch (decision.decision) {
     case "rejected":
     case "won":
-      return `{"decision":"${decision.decision}","index":${JSON.stringify(decision.index)},${type}}`;
-    case "cancelled":
-      return `{"decision":"cancelled","err":${encodeThrownValue(decision.err)},${type}}`;
+      return `{${at},"decision":"${decision.decision}","index":${JSON.stringify(decision.index)},${type}}`;
     default:
-      return `{"decision":"${decision.decision}",${type}}`;
+      return `{${at},"decision":"${decision.decision}",${type}}`;
   }
 }
 
-function decodeDecision(record: Record<string, unknown>): BranchesDecision {
+function decodeDecision(record: Record<string, unknown>): StepBranchesDecision {
+  if (record.decision === "cancelled") {
+    return new StepBranchesDecision({
+      decision: "cancelled",
+      err: decodeParsedValue(record.err, "err"),
+    });
+  }
+  const { decidedAt } = record;
+  if (typeof decidedAt !== "number") {
+    throw new Error("Invalid step record: a combinator decision has no decidedAt");
+  }
   switch (record.decision) {
     case "fulfilled":
     case "settled":
     case "failed":
-      return { decision: record.decision };
+      return new StepBranchesDecision({ decision: record.decision }, decidedAt);
     case "rejected":
     case "won":
       if (typeof record.index !== "number") break;
-      return { decision: record.decision, index: record.index };
-    case "cancelled":
-      return { decision: "cancelled", err: decodeParsedValue(record.err, "err") };
+      return new StepBranchesDecision({ decision: record.decision, index: record.index }, decidedAt);
   }
   throw new Error(`Invalid step record: unknown combinator decision ${JSON.stringify(record.decision)}`);
 }
@@ -165,7 +178,7 @@ export function decodeStepRecord(json: string): StepResponse {
       case "step-cancelled":
         return new StepCancelled(decodeParsedValue(record.err, "err"));
       case "branches-decision":
-        return new StepBranchesDecision(decodeDecision(record));
+        return decodeDecision(record);
       case "step-delay":
         return new StepDelay(record.wakeAt);
       case "effect-wait":

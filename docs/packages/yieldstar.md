@@ -149,7 +149,7 @@ Thrown into workflow code at the first unfinished step once a cancellation reque
 
 ## `WorkflowRaceError`
 
-Thrown by `step.race` when every branch fails, and by an empty race. `code` is `ALL_BRANCHES_FAILED`, and `errors` holds each branch's error in branch order. `errors` is a non-enumerable array, as on `AggregateError`, so a `failed` outcome keeps it – see [Concurrent Steps](../manual/concurrent-steps.md#steprace).
+Thrown by `step.race` when every branch fails, and by an empty race. `code` is `ALL_BRANCHES_FAILED`, and `errors` holds each branch's error in branch order. `errors` is typed `unknown[]`, because a branch can throw a value that is not an `Error`. `errors` is a non-enumerable array, as on `AggregateError`, so a `failed` outcome keeps it – see [Concurrent Steps](../manual/concurrent-steps.md#steprace).
 
 ## `WorkflowEffectError`
 
@@ -229,7 +229,7 @@ yield* step.race("key", branches);
 
 `step.join` waits until the execution `executionId` is terminal and returns its result, or throws a `WorkflowJoinError` – see [Steps](../manual/steps.md#stepjoin). `step.call` starts a child as `step.start` does and joins it, under one step key; its type parameter checks `params` and types the result – see [Steps](../manual/steps.md#stepcall). `step.join`'s `R` defaults to `DurableValue`. `step.call` without a type parameter accepts no `params` and returns a `DurableValue`. With `{ deadline }`, both return a `TimedJoinResult<R>`: `{ status: "completed", result }` or `{ status: "timed-out" }`.
 
-`step.all` and `step.race` drive their branches concurrently and record their decision under their key – see [Concurrent Steps](../manual/concurrent-steps.md). A branch is any step generator, typed `Branch<T>` (`AsyncGenerator<StepResponse, T, any>`). `step.all` returns `BranchResults<B>`, a tuple of the branches' results, or with `mode: "settle"` a `SettledResults<B>` of `{ status: "fulfilled", value }` and `{ status: "rejected", error }`. `step.race` returns a `RaceResult<B>`, `{ index, value }`, which narrows `value` by `index`. `AllOptions` has `concurrency`, a positive integer, and `mode`. `step.delay` and `step.poll` are typed `AsyncGenerator<StepResponse, void, any>`, so they can be branches.
+`step.all` and `step.race` drive their branches concurrently and record their decision under their key – see [Concurrent Steps](../manual/concurrent-steps.md). A branch is any step generator, typed `Branch<T>` (`AsyncGenerator<StepResponse, T, any>`). `step.all` returns `BranchResults<B>`, a tuple of the branches' results, or with `mode: "settle"` a `SettledResults<B>` of `{ status: "fulfilled", value }` and `{ status: "rejected", error }`, where `error` is `unknown`. `step.race` returns a `RaceResult<B>`, `{ index, value }`, which narrows `value` by `index`. `AllOptions` has `concurrency`, a positive integer, and `mode`. `step.delay` and `step.poll` are typed `AsyncGenerator<StepResponse, void, any>`, so they can be branches.
 
 `step.effect` calls an external system under a stable `effectId`, looking up an uncertain earlier attempt before performing it again, and returns the operation's result – see [Steps](../manual/steps.md#stepeffect). Its descriptor is typed `EffectDescriptor<T, Input>`, and `lookup` resolves with an `EffectLookup<T>`:
 

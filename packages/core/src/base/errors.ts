@@ -35,7 +35,7 @@ export class WorkflowValueError extends Error {
  */
 export class WorkflowRaceError extends Error {
   readonly code: "ALL_BRANCHES_FAILED";
-  declare readonly errors: Error[];
+  declare readonly errors: unknown[];
 
   constructor(stepKey: string, errors: unknown[]) {
     super(
