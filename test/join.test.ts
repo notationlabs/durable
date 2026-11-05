@@ -768,7 +768,7 @@ describe.each(runtimes)("step.join and step.call on $name", ({ create }) => {
         await admit(JOINER, workflowId);
         await deliver();
         const [child] = await childOf();
-        expect(child?.parent).toEqual({ executionId: JOINER, stepKey: "ship" });
+        expect(child?.parent).toEqual({ executionId: JOINER, stepKey: "ship", detached: false });
         const observer = createExecutionObserver(runtime.executions);
         expect(await observer.poll(child!.executionId)).toMatchObject({
           parent: { executionId: JOINER, stepKey: "ship" },
