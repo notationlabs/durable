@@ -84,11 +84,11 @@ export class StepBranchesDecision extends StepResponse {
   constructor(
     readonly decision: BranchesDecision,
     /**
-     * The clock time the decision was made, for every decision but
-     * `cancelled`. A branch that the decision stops does not pass a delay
-     * that wakes after it.
+     * For `rejected` and `won`, the keys of the delays that branches were
+     * suspended at when the combinator decided. Replay stops a stopped
+     * branch at these delays even after they elapse.
      */
-    readonly decidedAt?: number
+    readonly delays: readonly string[] = []
   ) {
     super();
   }
@@ -154,7 +154,8 @@ export class DecisionLock {
 /** One combinator being driven in this delivery. */
 export class Combinator {
   decision: BranchesDecision | undefined;
-  decidedAt: number | undefined;
+  /** Keys of the delays its branches and their nested branches suspended at. */
+  readonly delays = new Set<string>();
   /** Whether the decision was recorded before this delivery. */
   recorded = false;
   /** An error that ends the delivery, raised by one of the branches. */
@@ -242,24 +243,26 @@ export class DrivenBranch {
   }
 
   /**
-   * The earliest decision time of the combinators that stopped this branch. A
-   * stopped branch treats a delay that wakes after it as unfinished, so replay
-   * stops at every delay the first run stopped at.
+   * Whether a combinator that stopped this branch recorded the delay at
+   * `stepKey` as one that a branch was suspended at. The branch stops there
+   * on replay, as it did on the first run, even after the delay elapsed.
    */
-  get stoppedAt(): number | undefined {
-    let at: number | undefined;
+  stopsAt(stepKey: string): boolean {
     for (let combinator = this.parent; combinator; combinator = combinator.owner.parent) {
-      const { decidedAt } = combinator;
-      if (combinator.stopsBranches && decidedAt !== undefined) {
-        at = at === undefined ? decidedAt : Math.min(at, decidedAt);
-      }
+      if (combinator.stopsBranches && combinator.delays.has(stepKey)) return true;
     }
-    return at;
+    return false;
   }
 
   reach(stepKey: string) {
     for (let combinator = this.parent; combinator; combinator = combinator.owner.parent) {
       combinator.keys.push(stepKey);
+    }
+  }
+
+  suspendAtDelay(stepKey: string) {
+    for (let combinator = this.parent; combinator; combinator = combinator.owner.parent) {
+      combinator.delays.add(stepKey);
     }
   }
 

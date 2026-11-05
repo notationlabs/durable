@@ -287,13 +287,15 @@ export function workflow<
           thrown = { err: recorded.err };
         } else if (
           !isCombinator &&
-          isUnfinishedStep(cached, recorded, branch.stoppedAt ?? clock())
+          (isUnfinishedStep(cached, recorded, clock()) || branch.stopsAt(stepKey))
         ) {
           // A stopped branch replays its recorded steps and stops at the
           // first step that needs new work. A combinator is excluded: one
           // without a record is still driven so that replay reaches the keys
           // its branches reached, and it is not a cancellation point.
-          branch.markLive();
+          // A branch at a recorded delay is not caught up until it suspends
+          // there, so the decision lists every delay a branch suspended at.
+          if (!cached?.meta.done) branch.markLive();
           if (branch.stopped) return { status: "stopped" };
           if (barrier.pending) {
             // A delay is recorded done when it starts, so its cancellation
@@ -358,6 +360,9 @@ export function workflow<
         if ("resume" in action) {
           resumeWith = action.resume;
           continue;
+        }
+        if (action.status === "suspended" && !isCombinator && action.response instanceof StepDelay) {
+          branch.suspendAtDelay(stepKey);
         }
         return action;
       }
@@ -545,7 +550,7 @@ export function workflow<
       const { combinator: kind, mode, concurrency, branches } = request.request;
       const combinator = new Combinator(owner, stepKey, stepAttempt, concurrency);
       combinator.decision = recorded?.decision;
-      combinator.decidedAt = recorded?.decidedAt;
+      recorded?.delays.forEach((key) => combinator.delays.add(key));
       combinator.recorded = recorded !== undefined;
       owner.inner = combinator;
       const children = branches.map(() => new DrivenBranch(combinator));
@@ -615,13 +620,15 @@ export function workflow<
         const recordDecision = (decision: BranchesDecision) => {
           // Set first, so no branch starts new work from here on.
           combinator.decision = decision;
-          combinator.decidedAt = clock();
           writing = true;
           barrier.enter();
           const json = encodeStepRecord(
-            new StepBranchesDecision(decision, combinator.decidedAt),
+            new StepBranchesDecision(decision, [...combinator.delays]),
             stepKey
           ).json;
+          // Only these decisions stop branches. Under the others every branch
+          // has finished, so its waiters are already deleted.
+          const stops = decision.decision === "rejected" || decision.decision === "won";
           lock
             .exclusive(() =>
               writeStep({
@@ -629,7 +636,7 @@ export function workflow<
                 stepAttempt,
                 done: true,
                 stepResponseJson: json,
-                deleteWaitersOf: combinator.keys,
+                ...(stops ? { deleteWaitersOf: combinator.keys } : {}),
               })
             )
             .catch((err) => {

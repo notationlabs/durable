@@ -360,6 +360,12 @@ export function createStepRunner(params: {
     branches: B,
     options: AllOptions & { mode: "settle" }
   ): AsyncGenerator<StepResponse, SettledResults<B>, any>;
+  /** A mode known only at run time returns either result type. */
+  function all<const B extends readonly Branch<unknown>[]>(
+    stepKey: string,
+    branches: B,
+    options?: AllOptions
+  ): AsyncGenerator<StepResponse, BranchResults<B> | SettledResults<B>, any>;
   function all(
     stepKey: string,
     branches: readonly Branch<unknown>[],

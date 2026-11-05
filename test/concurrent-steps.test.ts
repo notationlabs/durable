@@ -237,6 +237,18 @@ const router = {
     yield* step.delay("el-follow", DAY);
     return "done";
   }),
+  "loser-delay-elapses-before-decision": workflow(async function* (step) {
+    yield* step.race("race", [
+      step.run("slow", () => work("slow", "slow")),
+      (async function* () {
+        yield* step.delay("d", MINUTE);
+        observed.push("loser passed its delay");
+        yield* step.run("K", () => work("K-loser", "loser"));
+      })(),
+    ]);
+    yield* step.delay("after", DAY);
+    return yield* step.run("K", () => work("K-after", "after"));
+  }),
   "fail-then-succeed": workflow(async function* (step) {
     return yield* step.race("first", [
       step.run("a", () => fail("a")),
@@ -567,6 +579,9 @@ test("race narrows its value by index, and all types its results in branch order
     expectTypeOf(all).toEqualTypeOf<[number, string]>();
     const settled = yield* step.all("settle", [step.run("e", () => 1)], { mode: "settle" });
     expectTypeOf(settled).toEqualTypeOf<[SettledResult<number>]>();
+    const mode = "settle" as "fail-fast" | "settle";
+    const either = yield* step.all("either", [step.run("f", () => 1)], { mode });
+    expectTypeOf(either).toEqualTypeOf<[number] | [SettledResult<number>]>();
   });
 });
 
@@ -844,6 +859,23 @@ describe.each(runtimes)("concurrent steps on $name", ({ create }) => {
       expect(observed).toEqual([]);
     });
 
+    test("a losing branch does not pass a delay that elapsed between its suspension and the decision", async () => {
+      const slow = closeGate("slow");
+      await admit("loser-delay-elapses-before-decision");
+      const delivery = deliver();
+      await slow.entered;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      advance(2 * MINUTE);
+      slow.open();
+      expect(await delivery).toEqual({ status: "suspended", wakeAt: START + 2 * MINUTE + DAY });
+      expect(await readStep("race")).toMatchObject({ decision: "won", index: 0, delays: ["d"] });
+
+      advance(DAY);
+      expect(await deliver()).toEqual({ status: "completed", result: "after" });
+      expect(observed).toEqual([]);
+      expect(ran.sort()).toEqual(["K-after", "slow"]);
+    });
+
     test("a failed branch does not end the race: a later success wins", async () => {
       await admit("fail-then-succeed");
       expect(await deliver()).toEqual({
@@ -892,7 +924,7 @@ describe.each(runtimes)("concurrent steps on $name", ({ create }) => {
       for (const [stepKey, json] of [
         ["a", '{"result":"a","type":"step-result"}'],
         ["b", '{"result":"b","type":"step-result"}'],
-        ["first", '{"decidedAt":0,"decision":"won","index":1,"type":"branches-decision"}'],
+        ["first", '{"decision":"won","delays":[],"index":1,"type":"branches-decision"}'],
       ] as const) {
         await runtime.heap.writeStep({ lease, stepKey, stepAttempt: 0, done: true, stepResponseJson: json });
       }
