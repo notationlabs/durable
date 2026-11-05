@@ -85,7 +85,6 @@ export type DurableWorkflowFn<Params, Result> = IfDurable<
   >;
 
 /**
-/**
  * Wraps a workflow function in a generator that advances its steps and yields
  * control to the executor whenever a step needs async work.
  */
@@ -289,12 +288,11 @@ export function workflow<
         if (cached?.meta.done && recorded instanceof StepCancelled) {
           thrown = { err: recorded.err };
         } else if (!isCombinator && isUnfinishedStep(cached, recorded, clock())) {
-          // An abandoned branch replays its recorded steps and stops at the
-          // first step that needs new work. A combinator without a record is
-          // still driven, so that replay reaches the keys its branches
-          // reached; it records nothing while the branch is abandoned.
+          // A stopped branch replays its recorded steps and stops at the
+          // first step that needs new work. A combinator is excluded: one
+          // without a record is still driven so that replay reaches the keys
+          // its branches reached, and it is not a cancellation point.
           if (branch.stopped) return { status: "stopped" };
-          // A combinator is not a cancellation point: its branches are.
           if (barrier.pending && !isCombinator) {
             // A delay is recorded done when it starts, so its cancellation
             // is written as the step's next attempt, which replay reads.
@@ -387,11 +385,11 @@ export function workflow<
       let iteratorResult = await next(params.cachedResponse);
       let stepResponse = iteratorResult.value;
 
-      // A step that needs a runtime client yields a request. Make the call
-      // here, outside workflow code, and resume the step with its result.
-      // An infrastructure error rejects the delivery without resuming it.
-      // An abandoned branch makes no new call, and a call in flight finishes
-      // before a combinator records its decision (see DecisionLock).
+      // A step that needs a runtime client yields a request, and the call is
+      // made here, outside workflow code. An infrastructure error rejects the
+      // delivery without resuming the step. A stopped branch makes no new
+      // call, and a call in flight finishes before a combinator records its
+      // decision (see DecisionLock).
       while (
         stepResponse instanceof StepRuntimeCall ||
         stepResponse instanceof StepEffectCall ||
@@ -677,7 +675,7 @@ export function workflow<
             });
         });
         evaluate();
-        // The owner waits for its branches.
+        // The owner does not count as running while it waits for its branches.
         barrier.leave();
       });
     }
