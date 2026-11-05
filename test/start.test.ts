@@ -14,6 +14,7 @@ import {
 import { createWorkflowInvoker } from "@yieldstar/test-invoker";
 import { MemoryRuntime } from "@yieldstar/test-runtime";
 import { WorkflowStartError, createLocalSdk, workflow } from "yieldstar";
+import { withoutVersion } from "./outcome";
 
 const logger = { info() {}, error() {}, warn() {} } as unknown as Logger;
 
@@ -78,9 +79,11 @@ function setup<W extends WorkflowRouter>(router: W) {
       if (!lease) throw new Error(`could not lease "${executionId}"`);
       leases.set(executionId, lease);
     }
-    return invoker.deliver(
-      { workflowId, executionId, params: undefined, context: new Map() },
-      { lease, signal: new AbortController().signal }
+    return withoutVersion(
+      await invoker.deliver(
+        { workflowId, executionId, params: undefined, context: new Map() },
+        { lease, signal: new AbortController().signal }
+      )
     );
   }
 

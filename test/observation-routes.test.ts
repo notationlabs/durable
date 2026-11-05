@@ -480,6 +480,6 @@ test("basePath prefixes every route", () => {
     basePath: "/api/workflows",
   });
   expect(Object.keys(routes).sort()).toEqual(
-    ["cancel", "events", "list", "poll", "trigger", "wait"].map((route) => `/api/workflows/${route}`)
+    ["cancel", "clear-divergence", "events", "list", "poll", "trigger", "wait"].map((route) => `/api/workflows/${route}`)
   );
 });

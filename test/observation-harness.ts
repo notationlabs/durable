@@ -155,6 +155,7 @@ export function createTestSdk(
       wait: (executionId, waitOptions) => sdk.wait(executionId, waitOptions),
       list: (request) => sdk.list(request),
       cancel: (executionId, cancelOptions) => sdk.cancel(executionId, cancelOptions),
+      clearDivergence: (executionId) => sdk.clearDivergence(executionId),
     };
   }
   const { url, routes } = serveRoutes(runtime, options);
@@ -179,6 +180,7 @@ export function createTestSdk(
     wait: (executionId, waitOptions) => sdk.wait(executionId, waitOptions),
     list: (request) => sdk.list(request),
     cancel: (executionId, cancelOptions) => sdk.cancel(executionId, cancelOptions),
+    clearDivergence: (executionId) => sdk.clearDivergence(executionId),
   };
 }
 

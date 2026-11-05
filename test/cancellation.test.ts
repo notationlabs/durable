@@ -19,6 +19,7 @@ import {
   defineStore,
   workflow,
 } from "yieldstar";
+import { withoutVersion } from "./outcome";
 
 const isBun = "Bun" in globalThis;
 const { createSqliteDb } = isBun
@@ -356,18 +357,20 @@ describe.each(runtimes)("cancellation on $name", ({ create }) => {
   /** Runs one delivery under `lease` as the dispatcher would, without acknowledging it. */
   async function run(lease: ExecutionLease) {
     const record = (await runtime.executions.get(lease.executionId))!;
-    return runner.run(
-      {
-        workflowId: record.workflowId,
-        executionId: lease.executionId,
-        params: record.params,
-        context: new Map(),
-      },
-      {
-        lease,
-        signal: new AbortController().signal,
-        ...(record.cancellation ? { cancellation: record.cancellation } : {}),
-      }
+    return withoutVersion(
+      await runner.run(
+        {
+          workflowId: record.workflowId,
+          executionId: lease.executionId,
+          params: record.params,
+          context: new Map(),
+        },
+        {
+          lease,
+          signal: new AbortController().signal,
+          ...(record.cancellation ? { cancellation: record.cancellation } : {}),
+        }
+      )
     );
   }
 
