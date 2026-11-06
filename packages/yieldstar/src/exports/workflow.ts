@@ -531,8 +531,7 @@ function createWorkflowGenerator<
         if (stopped(branch) && !isCombinator) return { status: "stopped" };
         // Inside a combinator, another branch's waiter can wake the execution
         // before a retry is due. The step is not run early. Outside one, only a
-        // redelivery after a crash comes early, and the step runs then, as
-        // RFC 005 requires.
+        // redelivery after a crash comes early, and the step runs again at once.
         if (
           !thrown &&
           branch.parent !== undefined &&
