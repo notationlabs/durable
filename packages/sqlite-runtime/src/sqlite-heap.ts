@@ -210,9 +210,9 @@ function toHeapRecord(row: {
   return {
     stepResponseJson: row.step_response,
     meta: {
-      attempt: Number(row.step_attempt),
+      attempt: row.step_attempt,
       done: Boolean(row.step_done),
-      ...(row.step_kind !== null && row.step_kind !== undefined ? { kind: row.step_kind } : {}),
+      ...(row.step_kind !== null ? { kind: row.step_kind } : {}),
     },
   };
 }

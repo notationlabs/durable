@@ -36,8 +36,6 @@ export class StepResponsesDao {
     addMissingColumns(this.db, "step_responses", ["step_kind TEXT"]);
   }
 
-
-
   listStepKeys(executionId: string) {
     return this.db
       .query<{ step_key: string }>(
