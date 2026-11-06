@@ -205,7 +205,7 @@ export function registerEffectClientConformance({
   function recordStep(
     runtime: Runtime,
     lease: ExecutionLease,
-    options: { stepKey?: string; attempt?: number; done?: boolean } = {}
+    options: { stepKey?: string; attempt?: number; done?: boolean; deleteWaitersOf?: string[] } = {}
   ) {
     return runtime.heap.writeStep({
       lease,
@@ -213,6 +213,7 @@ export function registerEffectClientConformance({
       stepAttempt: options.attempt ?? 1,
       done: options.done ?? true,
       stepResponseJson: JSON.stringify({ paymentId: "pay_1" }),
+      ...(options.deleteWaitersOf ? { deleteWaitersOf: options.deleteWaitersOf } : {}),
     });
   }
 
@@ -779,6 +780,22 @@ export function registerEffectClientConformance({
         // Another step's waiter is unaffected.
         await settle(runtime, "pay:other", "done");
         expect(await claimedIds(runtime)).toEqual(["order-42"]);
+      });
+
+      it("deletes the waiters of the steps in deleteWaitersOf", async ({ runtime }) => {
+        await admitSuspended(runtime, "order-42");
+        await begin(runtime, "pay:abandoned");
+        await watch(runtime, "pay:abandoned", "order-42", "charge");
+
+        // A race records its decision under its own key and names the step
+        // of the branch it abandons.
+        await runtime.executions.requestWake({ executionId: "order-42", wakeAt: START });
+        const lease = await claimOne(runtime, "order-42");
+        await recordStep(runtime, lease, { stepKey: "race", deleteWaitersOf: ["charge"] });
+        await runtime.executions.acknowledge({ lease, outcome: { status: "suspended" } });
+
+        await settle(runtime, "pay:abandoned", "done");
+        expect(await claim(runtime)).toEqual([]);
       });
 
       it("keeps the waiter when a stale holder's step result is rejected", async (ctx) => {

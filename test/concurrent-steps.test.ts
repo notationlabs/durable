@@ -209,6 +209,19 @@ const router = {
     yield* step.delay("follow-up", 2 * DAY);
     return first.index;
   }),
+  "when-or-timeout-handler": workflow(async function* (step) {
+    const payments = step.store(PaymentStore);
+    const first = yield* step.race("payment-or-deadline", [
+      payments.when("paid", (state) => state.paid),
+      (async function* () {
+        yield* step.delay("deadline", DAY);
+        return yield* step.run("on-timeout", () => work("on-timeout", "timed out"));
+      })(),
+    ]);
+    observed.push(first);
+    yield* step.delay("follow-up", 2 * DAY);
+    return first.index;
+  }),
   "late-when-or-deadline": workflow(async function* (step) {
     const payments = step.store(PaymentStore);
     const first = yield* step.race("late-race", [
@@ -943,6 +956,30 @@ describe.each(runtimes)("concurrent steps on $name", ({ create }) => {
       expect(harness.storeWaiters()).toEqual([]);
     });
 
+    test("a payment made before the deadline wins against a deadline branch whose handler step finishes first", async () => {
+      await admit("when-or-timeout-handler");
+      expect(await deliver()).toEqual({ status: "suspended", wakeAt: START + DAY });
+
+      advance(MINUTE);
+      await runtime.stores.updateStore({
+        definition: PaymentStore,
+        id: ORDER,
+        updater(draft) {
+          draft.paid = true;
+        },
+      });
+      advance(DAY);
+      const getStore = runtime.stores.getStore.bind(runtime.stores);
+      vi.spyOn(runtime.stores, "getStore").mockImplementation(async (params) => {
+        await until(() => ran.includes("on-timeout"));
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        return getStore(params);
+      });
+      expect(await deliver()).toEqual({ status: "suspended", wakeAt: START + MINUTE + 3 * DAY });
+      expect(observed).toEqual([{ index: 0, value: true }]);
+      expect(ran).toEqual(["on-timeout"]);
+    });
+
     test("when against delay: the deadline passes first, so delay wins and a later store change changes nothing", async () => {
       await admit("when-or-deadline");
       expect(await deliver()).toEqual({ status: "suspended", wakeAt: START + DAY });
@@ -1484,6 +1521,26 @@ describe.each(runtimes)("concurrent steps on $name", ({ create }) => {
   describe("cancellation", () => {
     const cancel = (reason?: string) =>
       runtime.executions.cancel({ executionId: ORDER, ...(reason ? { reason } : {}) });
+
+    test("a recorded winner that reaches a passed delay again under a backwards clock is not cancelled there", async () => {
+      await admit("winner-passed-delay");
+      expect(await deliver()).toEqual({ status: "suspended", wakeAt: START + MINUTE });
+      advance(MINUTE);
+      expect(await deliver()).toEqual({ status: "suspended", wakeAt: START + 2 * MINUTE });
+      expect(await readStep("race")).toMatchObject({ decision: "won", index: 0 });
+
+      await cancel();
+      const lease = (await claim())!;
+      advance(-MINUTE - 1000);
+      const outcome = await run(lease);
+      expect(outcome).toEqual({ status: "suspended", wakeAt: START + MINUTE });
+      await runtime.executions.acknowledge({ lease, outcome });
+      expect(await readStep("d")).not.toMatchObject({ type: "step-cancelled" });
+
+      advance(MINUTE + 1000);
+      expect(await deliver()).toEqual({ status: "cancelled" });
+      expect(await readStep("after")).toMatchObject({ type: "step-cancelled" });
+    });
 
     test("each unfinished branch of all receives WorkflowCancelledError, runs its cleanup, and all then throws it", async () => {
       await admit("cancel-inside-all");

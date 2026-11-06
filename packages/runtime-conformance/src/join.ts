@@ -190,7 +190,7 @@ export function registerJoinClientConformance({
   function recordStep(
     runtime: Runtime,
     lease: ExecutionLease,
-    options: { stepKey?: string; attempt?: number; done?: boolean } = {}
+    options: { stepKey?: string; attempt?: number; done?: boolean; deleteWaitersOf?: string[] } = {}
   ) {
     return runtime.heap.writeStep({
       lease,
@@ -198,6 +198,7 @@ export function registerJoinClientConformance({
       stepAttempt: options.attempt ?? 1,
       done: options.done ?? true,
       stepResponseJson: JSON.stringify({ trackingNumber: "TRK-1" }),
+      ...(options.deleteWaitersOf ? { deleteWaitersOf: options.deleteWaitersOf } : {}),
     });
   }
 
@@ -480,6 +481,21 @@ export function registerJoinClientConformance({
 
         await complete(runtime, "ship-43", null);
         expect(await claimedIds(runtime)).toEqual(["charge-42"]);
+      });
+
+      it("deletes the waiters of the steps in deleteWaitersOf", async ({ runtime }) => {
+        await admitSuspended(runtime, "ship-42");
+        await admitSuspended(runtime, "charge-42");
+        await join(runtime, "charge-42", "join:ship", "ship-42");
+
+        // A race records its decision under its own key and names the step
+        // of the branch it abandons.
+        const done = await lease(runtime, "charge-42");
+        await recordStep(runtime, done, { stepKey: "race", deleteWaitersOf: ["join:ship"] });
+        await runtime.executions.acknowledge({ lease: done, outcome: { status: "suspended" } });
+
+        await complete(runtime, "ship-42", null);
+        expect(await claimedIds(runtime)).toEqual([]);
       });
 
       it("keeps the waiter when a stale holder's step result is rejected", async (ctx) => {

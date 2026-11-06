@@ -291,6 +291,9 @@ export function workflow<
         }
 
         const recorded = cached ? decodeStepRecord(cached.stepResponseJson) : null;
+        // A recorded step after a delay means the delay was passed in an
+        // earlier delivery.
+        if (cached) afterDelay = false;
         if (passed && !cached?.meta.done) {
           throw new Error(`Step "${stepKey}" no longer reaches its recorded outcome on replay`);
         }
@@ -306,7 +309,10 @@ export function workflow<
             !barrier.pending && (recorded instanceof StepStoreWait || recorded instanceof StepJoinWait);
           if (!checksFirst) branch.markLive();
           if (branch.stopped) return { status: "stopped" };
-          if (barrier.pending) {
+          // A branch that a recorded decision reads from passed this step on
+          // the first run, and reaches it again only when the clock reads
+          // earlier. It suspends there, and is not cancelled there.
+          if (barrier.pending && !(cached?.meta.done && branch.finishedBefore)) {
             // A delay is recorded done when it starts, so its cancellation
             // is written as the step's next attempt, which replay reads.
             const err = await barrier.park(branch, stepKey, stepAttempt);
@@ -371,15 +377,15 @@ export function workflow<
         // A stopped branch's step that was in flight is recorded, but the
         // branch's generator is not resumed.
         if (branch.stopped || branch.holds(stepKey)) return { status: "stopped" };
-        afterDelay = false;
         if ("throw" in action) {
           branch.at = undefined;
+          afterDelay = false;
           nextIteratorResult = await throwInto(action.throw);
           continue;
         }
         if ("resume" in action) {
           resumeWith = action.resume;
-          afterDelay = action.delay === true;
+          if (action.delay) afterDelay = true;
           continue;
         }
         return action;
@@ -764,7 +770,7 @@ class WorkflowThrew {
 }
 
 type DriveOutcome =
-  /** `afterDelay`: the branch's last step was a delay. */
+  /** `afterDelay`: the branch passed an elapsed delay in this delivery and reached no recorded step after it. */
   | { status: "returned"; value: unknown; afterDelay?: boolean }
   | { status: "suspended"; response: StepResponse }
   | { status: "stopped" };
@@ -787,9 +793,9 @@ function decide(
   finished: readonly number[]
 ): BranchesDecision | undefined {
   if (kind === "race") {
-    // A branch that returned at an elapsed delay loses to one that returned
-    // another way in the same delivery, as a timed `when` or `join` checks
-    // its condition before its deadline.
+    // A branch that passed an elapsed delay in this delivery loses to one
+    // that returned without, as a timed `when` or `join` checks its
+    // condition before its deadline.
     const returned = finished.filter((i) => states[i]!.status === "returned");
     const winner =
       returned.find((i) => !(states[i] as { afterDelay?: boolean }).afterDelay) ?? returned[0];

@@ -202,6 +202,15 @@ export class Combinator {
     return this.recorded && this.decidedOn(branch) === false;
   }
 
+  /**
+   * Whether the recorded decision reads its outcome from `branch`, which
+   * then finished on the first run.
+   */
+  recordedFrom(branch: DrivenBranch): boolean {
+    if (!this.recorded || this.decision?.decision === "cancelled") return false;
+    return this.decidedOn(branch) !== false;
+  }
+
   /** Under `rejected` or `won`, whether the decision is on `branch`. */
   private decidedOn(branch: DrivenBranch): boolean | undefined {
     const { decision } = this;
@@ -304,6 +313,17 @@ export class DrivenBranch {
   /** Whether a recorded decision above this branch stopped it waiting at `stepKey`. */
   holds(stepKey: string): boolean {
     return this.limits().some((combinator) => combinator.replayHeld.has(stepKey));
+  }
+
+  /**
+   * Whether a recorded decision above this branch reads from it, so the
+   * branch passed all its steps on the first run.
+   */
+  get finishedBefore(): boolean {
+    for (let branch: DrivenBranch = this; branch.parent; branch = branch.parent.owner) {
+      if (branch.parent.recordedFrom(branch)) return true;
+    }
+    return false;
   }
 
   /** Whether a recorded decision above this branch stopped it. */
