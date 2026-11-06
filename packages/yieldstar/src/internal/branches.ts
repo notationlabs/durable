@@ -60,8 +60,8 @@ export class StepBranches extends StepResponse {
 
 /**
  * What a settled combinator recorded. Branch values are not recorded: replay
- * resumes every branch through its recorded steps and the decision picks the
- * outcome.
+ * resumes branches through their recorded steps and the decision picks the
+ * outcome. Under `rejected` and `won`, replay resumes only branch `index`.
  * - `fulfilled`: every branch of a fail-fast `all` returned.
  * - `rejected`: branch `index` failed first in a fail-fast `all`.
  * - `settled`: every branch of a settle-mode `all` returned or failed.
@@ -84,11 +84,11 @@ export class StepBranchesDecision extends StepResponse {
   constructor(
     readonly decision: BranchesDecision,
     /**
-     * For `rejected` and `won`, the keys of the delays that branches were
-     * suspended at when the combinator decided. Replay stops a stopped
-     * branch at these delays even after they elapse.
+     * For `rejected` and `won`, the step keys that the other branches reached
+     * before the decision. Replay does not resume those branches, and
+     * reserves their keys instead.
      */
-    readonly delays: readonly string[] = []
+    readonly keys: readonly string[] = []
   ) {
     super();
   }
@@ -116,11 +116,11 @@ export class Limiter {
 }
 
 /**
- * Orders a combinator's decision write after the runtime calls and delay
- * writes already in flight under it, and those made after it behind it. Work
+ * Orders a combinator's decision write after the runtime calls already in
+ * flight under it, and those made after it behind it. Work
  * done in shared mode checks first whether its branch has stopped, so no
  * waiter is registered after the decision write deleted the waiters of
- * stopped branches, and no delay is written after the decision listed delays.
+ * stopped branches.
  */
 export class DecisionLock {
   private readers = 0;
@@ -155,14 +155,12 @@ export class DecisionLock {
 /** One combinator being driven in this delivery. */
 export class Combinator {
   decision: BranchesDecision | undefined;
-  /** Keys of the delays its branches and their nested branches suspended at. */
-  readonly delays = new Set<string>();
   /** Whether the decision was recorded before this delivery. */
   recorded = false;
   /** An error that ends the delivery, raised by one of the branches. */
   fatal: { err: unknown } | undefined;
-  /** Step keys its branches and their nested branches reached. */
-  readonly keys: string[] = [];
+  /** Step keys each branch and its nested branches reached, by branch index. */
+  readonly keys: string[][] = [];
   readonly branches: DrivenBranch[] = [];
   readonly limiter: Limiter;
   readonly lock = new DecisionLock();
@@ -178,10 +176,20 @@ export class Combinator {
     this.limiter = new Limiter(concurrency);
   }
 
-  /** Whether its branches must start no new work. */
-  get stopsBranches(): boolean {
+  /**
+   * Whether `branch` must stop: the combinator failed with an error that ends
+   * the delivery, or it decided `rejected` or `won` on another branch.
+   */
+  stops(branch: DrivenBranch): boolean {
     if (this.fatal) return true;
-    return this.decision !== undefined && this.decision.decision !== "cancelled";
+    const { decision } = this;
+    if (decision?.decision !== "rejected" && decision?.decision !== "won") return false;
+    return branch.index !== decision.index;
+  }
+
+  /** Step keys that the branches other than `index` reached. */
+  keysOutside(index: number): string[] {
+    return this.keys.flatMap((keys, i) => (i === index ? [] : keys));
   }
 
   /** Whether one of its branches may still reach a recorded step. */
@@ -199,7 +207,10 @@ export class DrivenBranch {
   /** The combinator this branch reached last. */
   inner: Combinator | undefined;
 
-  constructor(readonly parent?: Combinator) {}
+  constructor(
+    readonly parent?: Combinator,
+    readonly index = 0
+  ) {}
 
   /**
    * Whether the branch may still reach a recorded step in this delivery. A
@@ -232,33 +243,20 @@ export class DrivenBranch {
   }
 
   /**
-   * Whether a combinator above this branch settled with a decision other than
-   * `cancelled`, or failed with an error that ends the delivery. A stopped
-   * branch replays recorded steps and stops at the first step that needs new
-   * work.
+   * Whether a combinator above this branch decided on another branch, or
+   * failed with an error that ends the delivery. A stopped branch starts no
+   * new work, and its generator is not resumed.
    */
   get stopped(): boolean {
-    for (let combinator = this.parent; combinator; combinator = combinator.owner.parent) {
-      if (combinator.stopsBranches) return true;
-    }
-    return false;
-  }
-
-  /**
-   * Whether a combinator that stopped this branch lists the delay at
-   * `stepKey` as one that a branch was suspended at. A stopped branch stops
-   * at a recorded delay only if it is listed, whatever the clock says.
-   */
-  stopsAt(stepKey: string): boolean {
-    for (let combinator = this.parent; combinator; combinator = combinator.owner.parent) {
-      if (combinator.stopsBranches && combinator.delays.has(stepKey)) return true;
+    for (let branch: DrivenBranch = this; branch.parent; branch = branch.parent.owner) {
+      if (branch.parent.stops(branch)) return true;
     }
     return false;
   }
 
   reach(stepKey: string) {
-    for (let combinator = this.parent; combinator; combinator = combinator.owner.parent) {
-      combinator.keys.push(stepKey);
+    for (let branch: DrivenBranch = this; branch.parent; branch = branch.parent.owner) {
+      branch.parent.keys[branch.index]!.push(stepKey);
     }
   }
 
@@ -271,12 +269,6 @@ export class DrivenBranch {
     const hold = (i: number): Promise<T> =>
       i === locks.length ? fn() : locks[i]!.shared(() => hold(i + 1));
     return hold(0);
-  }
-
-  suspendAtDelay(stepKey: string) {
-    for (let combinator = this.parent; combinator; combinator = combinator.owner.parent) {
-      combinator.delays.add(stepKey);
-    }
   }
 
   /** Takes a concurrency slot in every combinator above this branch. */

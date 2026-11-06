@@ -259,6 +259,9 @@ export function workflow<
         if (!(iteratorResult.value instanceof StepKey)) {
           throw new Error("Step runners must yield a StepKey object");
         }
+        // A stopped branch reaches no key after its combinator decided, so
+        // the keys recorded with the decision are all the keys it reached.
+        if (branch.stopped) return { status: "stopped" };
         const stepKey = iteratorResult.value.key;
         const isCombinator = iteratorResult.value instanceof BranchesStepKey;
         if (stepKeys.has(stepKey)) {
@@ -280,24 +283,12 @@ export function workflow<
 
         const recorded = cached ? decodeStepRecord(cached.stepResponseJson) : null;
 
-        // A stopped branch stops at a recorded delay only if its decision
-        // lists it, so a clock that steps back does not stop it at a delay
-        // the first run passed.
-        const stopped = branch.stopped;
-        const needsWork = stopped
-          ? !cached?.meta.done || branch.stopsAt(stepKey)
-          : isUnfinishedStep(cached, recorded, clock());
         let thrown: { err: unknown } | undefined;
         if (cached?.meta.done && recorded instanceof StepCancelled) {
           thrown = { err: recorded.err };
-        } else if (!isCombinator && needsWork) {
-          // A stopped branch replays its recorded steps and stops at the
-          // first step that needs new work. A combinator is excluded: one
-          // without a record is still driven so that replay reaches the keys
-          // its branches reached, and it is not a cancellation point.
-          // A branch at a recorded delay is not caught up until it suspends
-          // there, so the decision lists every delay a branch suspended at.
-          if (!cached?.meta.done) branch.markLive();
+        } else if (!isCombinator && isUnfinishedStep(cached, recorded, clock())) {
+          // A combinator is not a cancellation point.
+          branch.markLive();
           if (branch.stopped) return { status: "stopped" };
           if (barrier.pending) {
             // A delay is recorded done when it starts, so its cancellation
@@ -307,6 +298,7 @@ export function workflow<
             thrown = { err };
           }
         }
+        if (branch.stopped) return { status: "stopped" };
         if (thrown) {
           // The step is suspended at its StepKey, so the throw reaches
           // workflow code without running the step.
@@ -345,7 +337,6 @@ export function workflow<
             stepAttempt,
             cached,
             recorded,
-            passDelay: stopped && recorded instanceof StepDelay,
             cachedResponse: cached
               ? recorded
               : unfinished && cacheCheck instanceof UnfinishedCacheCheck
@@ -356,6 +347,9 @@ export function workflow<
           if (live) branch.releaseSlot();
         }
 
+        // A stopped branch's step that was in flight is recorded, but the
+        // branch's generator is not resumed.
+        if (branch.stopped) return { status: "stopped" };
         if ("throw" in action) {
           nextIteratorResult = await throwInto(action.throw);
           continue;
@@ -379,8 +373,6 @@ export function workflow<
       stepAttempt: number;
       cached: HeapRecord | null;
       recorded: StepResponse | null;
-      /** Whether a stopped branch passes its recorded delay without reading the clock. */
-      passDelay: boolean;
       cachedResponse: StepResponse | null;
     }): Promise<StepAction> {
       const { branch, next, stepKey, cached, recorded } = params;
@@ -504,24 +496,13 @@ export function workflow<
           stepResponse instanceof StepJoinWait ||
           stepResponse instanceof StepEffectWait);
 
-      // Whether a delay suspends, read from the clock once.
-      let delaySuspends: boolean | undefined;
       if (!cached && stepResponseJson !== undefined && !suspendedOnStore) {
-        const step = { stepKey, stepAttempt, done: !needsRetry && !needsWake, stepResponseJson };
-        if (stepResponse instanceof StepDelay) {
-          // A decision lists the delays its branches suspended at, so a new
-          // delay is written and listed under the decision locks.
-          const { wakeAt } = stepResponse;
-          const written = await branch.shared(async () => {
-            if (branch.stopped) return STOPPED;
-            await writeStep(step);
-            delaySuspends = wakeAt > clock();
-            if (delaySuspends) branch.suspendAtDelay(stepKey);
-          });
-          if (written === STOPPED) return { status: "stopped" };
-        } else {
-          await writeStep(step);
-        }
+        await writeStep({
+          stepKey,
+          stepAttempt,
+          done: !needsRetry && !needsWake,
+          stepResponseJson,
+        });
       }
 
       if (stepResponse instanceof StepInvalid) {
@@ -538,14 +519,8 @@ export function workflow<
         }
         return { throw: stepResponse.err };
       }
-      if (stepResponse instanceof StepDelay) {
-        if (delaySuspends === undefined) {
-          // A branch at a recorded delay is not caught up until it
-          // suspends, so it is listed before its combinator can decide.
-          delaySuspends = !params.passDelay && stepResponse.wakeAt > clock();
-          if (delaySuspends) branch.suspendAtDelay(stepKey);
-        }
-        if (!delaySuspends) return { resume: undefined };
+      if (stepResponse instanceof StepDelay && stepResponse.wakeAt <= clock()) {
+        return { resume: undefined };
       }
       if (stepResponse instanceof StepResult) {
         return { resume: stepResponse };
@@ -557,7 +532,9 @@ export function workflow<
      * Drives the branches of `step.all` or `step.race` concurrently, records
      * the decision under `stepKey` once the combinator settles, and resolves
      * once no branch is running. A `recorded` decision is applied to the
-     * branches' replay instead. Rejects with an error that ends the delivery.
+     * branches' replay instead; under `rejected` or `won`, only the deciding
+     * branch is replayed and the other branches' keys are reserved. Rejects
+     * with an error that ends the delivery.
      */
     function runBranches(
       request: StepBranches,
@@ -569,12 +546,27 @@ export function workflow<
       const { combinator: kind, mode, concurrency, branches } = request.request;
       const combinator = new Combinator(owner, stepKey, stepAttempt, concurrency);
       combinator.decision = recorded?.decision;
-      recorded?.delays.forEach((key) => combinator.delays.add(key));
       combinator.recorded = recorded !== undefined;
       owner.inner = combinator;
-      const children = branches.map(() => new DrivenBranch(combinator));
+      const children = branches.map((_, i) => new DrivenBranch(combinator, i));
       combinator.branches.push(...children);
-      const states: BranchState[] = branches.map(() => ({ status: "running" }));
+      combinator.keys.push(...branches.map(() => []));
+      const decided =
+        recorded?.decision.decision === "rejected" || recorded?.decision.decision === "won"
+          ? recorded.decision.index
+          : undefined;
+      for (const key of decided === undefined ? [] : recorded!.keys) {
+        if (stepKeys.has(key)) {
+          throw new Error("Each step in a loop must have a unique cache key.");
+        }
+        stepKeys.add(key);
+        owner.reach(key);
+      }
+      const driven = children.filter((_, i) => decided === undefined || i === decided);
+      const states: BranchState[] = children.map((child) =>
+        driven.includes(child) ? { status: "running" } : { status: "stopped" }
+      );
+      for (const child of children) if (!driven.includes(child)) child.markDone();
       // Indexes of branches that returned or threw, in the order they did.
       const finished: number[] = [];
       let writing = false;
@@ -621,6 +613,13 @@ export function workflow<
           }
           if (running) return;
           const { decision } = combinator;
+          // A branch the decision reads from suspends on replay when the
+          // clock reads earlier than on the first run. The combinator
+          // suspends with it, as a single delay would.
+          if (decision && readsFrom(decision, states).some((state) => state.status === "suspended")) {
+            settle(() => ({ status: "suspended", response: earliestWake(states) }));
+            return;
+          }
           if (
             decision &&
             (decision.decision !== "cancelled" ||
@@ -643,19 +642,21 @@ export function workflow<
           barrier.enter();
           // Only these decisions stop branches. Under the others every branch
           // has finished, so its waiters are already deleted.
-          const stops = decision.decision === "rejected" || decision.decision === "won";
+          const keys =
+            decision.decision === "rejected" || decision.decision === "won"
+              ? combinator.keysOutside(decision.index)
+              : [];
           combinator.lock
             .exclusive(() =>
               writeStep({
                 stepKey,
                 stepAttempt,
                 done: true,
-                // Encoded under the lock, after every delay write in flight.
                 stepResponseJson: encodeStepRecord(
-                  new StepBranchesDecision(decision, [...combinator.delays]),
+                  new StepBranchesDecision(decision, keys),
                   stepKey
                 ).json,
-                ...(stops ? { deleteWaitersOf: combinator.keys } : {}),
+                ...(keys.length > 0 ? { deleteWaitersOf: keys } : {}),
               })
             )
             .catch((err) => {
@@ -670,8 +671,9 @@ export function workflow<
         };
 
         combinator.evaluate = evaluate;
-        barrier.enter(children.length);
-        children.forEach((child, i) => {
+        barrier.enter(driven.length);
+        driven.forEach((child) => {
+          const i = child.index;
           drive(branches[i]!, child)
             .then(
               (outcome) => {
@@ -775,6 +777,19 @@ function decide(
       : undefined;
   }
   return finished.length === states.length ? { decision: "settled" } : undefined;
+}
+
+/** The branch states that the combinator's value or error is read from under `decision`. */
+function readsFrom(decision: BranchesDecision, states: readonly BranchState[]): readonly BranchState[] {
+  switch (decision.decision) {
+    case "rejected":
+    case "won":
+      return [states[decision.index]!];
+    case "cancelled":
+      return [];
+    default:
+      return states;
+  }
 }
 
 /**

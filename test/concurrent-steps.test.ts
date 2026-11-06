@@ -286,6 +286,18 @@ const router = {
       })(),
     ]);
   }),
+  "loser-key-after-decision": workflow(async function* (step) {
+    yield* step.race("race", [
+      step.run("fast", () => work("fast", "fast")),
+      (async function* () {
+        yield* step.run("slow", () => work("slow", "slow"));
+        observed.push("loser resumed");
+        yield* step.run("T", () => work("T-loser", "loser"));
+      })(),
+    ]);
+    yield* step.delay("after", MINUTE);
+    return yield* step.run("T", () => work("T-after", "after"));
+  }),
   "fail-then-succeed": workflow(async function* (step) {
     return yield* step.race("first", [
       step.run("a", () => fail("a")),
@@ -905,7 +917,7 @@ describe.each(runtimes)("concurrent steps on $name", ({ create }) => {
       advance(2 * MINUTE);
       slow.open();
       expect(await delivery).toEqual({ status: "suspended", wakeAt: START + 2 * MINUTE + DAY });
-      expect(await readStep("race")).toMatchObject({ decision: "won", index: 0, delays: ["d"] });
+      expect(await readStep("race")).toMatchObject({ decision: "won", index: 0, keys: ["d"] });
 
       advance(DAY);
       expect(await deliver()).toEqual({ status: "completed", result: "after" });
@@ -913,7 +925,7 @@ describe.each(runtimes)("concurrent steps on $name", ({ create }) => {
       expect(ran.sort()).toEqual(["K-after", "slow"]);
     });
 
-    test("the winner of a recorded race replays a delay it passed when the clock steps back", async () => {
+    test("when the clock steps back, the winner of a recorded race suspends at a delay it passed and recovers", async () => {
       await admit("winner-passed-delay");
       expect(await deliver()).toEqual({ status: "suspended", wakeAt: START + MINUTE });
       advance(MINUTE);
@@ -923,7 +935,12 @@ describe.each(runtimes)("concurrent steps on $name", ({ create }) => {
       advance(MINUTE);
       const lease = (await claim())!;
       advance(-MINUTE - 1000);
-      expect(await run(lease)).toEqual({ status: "suspended", wakeAt: START + 2 * MINUTE });
+      const outcome = await run(lease);
+      expect(outcome).toEqual({ status: "suspended", wakeAt: START + MINUTE });
+      await runtime.executions.acknowledge({ lease, outcome });
+
+      advance(MINUTE + 1000);
+      expect(await deliver()).toEqual({ status: "completed", result: 0 });
       expect(observed).toEqual([0, 0]);
     });
 
@@ -942,7 +959,7 @@ describe.each(runtimes)("concurrent steps on $name", ({ create }) => {
       await new Promise((resolve) => setTimeout(resolve, 20));
       delay.open();
       expect(await delivery).toEqual({ status: "suspended", wakeAt: START + DAY });
-      expect(await readStep("race")).toMatchObject({ decision: "won", index: 0, delays: ["d"] });
+      expect(await readStep("race")).toMatchObject({ decision: "won", index: 0, keys: ["d"] });
 
       advance(DAY);
       expect(await deliver()).toEqual({ status: "completed", result: "done" });
@@ -963,6 +980,24 @@ describe.each(runtimes)("concurrent steps on $name", ({ create }) => {
       await until(() => observed.includes("race returned"));
       slow.open();
       expect((await delivery)?.status).toBe("suspended");
+    });
+
+    test("a key a losing branch would reach only after the decision is free for a later step", async () => {
+      const slow = closeGate("slow");
+      await admit("loser-key-after-decision");
+      const lease = (await claim())!;
+      const delivery = run(lease);
+      await until(async () => (await readStep("race")) !== null);
+      expect(await readStep("race")).toMatchObject({ decision: "won", index: 0, keys: ["slow"] });
+      slow.open();
+      const outcome = await delivery;
+      expect(outcome).toEqual({ status: "suspended", wakeAt: START + MINUTE });
+      await runtime.executions.acknowledge({ lease, outcome });
+
+      advance(MINUTE);
+      expect(await deliver()).toEqual({ status: "completed", result: "after" });
+      expect(observed).toEqual([]);
+      expect(ran.sort()).toEqual(["T-after", "fast", "slow"]);
     });
 
     test("a failed branch does not end the race: a later success wins", async () => {
@@ -1013,7 +1048,7 @@ describe.each(runtimes)("concurrent steps on $name", ({ create }) => {
       for (const [stepKey, json] of [
         ["a", '{"result":"a","type":"step-result"}'],
         ["b", '{"result":"b","type":"step-result"}'],
-        ["first", '{"decision":"won","delays":[],"index":1,"type":"branches-decision"}'],
+        ["first", '{"decision":"won","index":1,"keys":["a"],"type":"branches-decision"}'],
       ] as const) {
         await runtime.heap.writeStep({ lease, stepKey, stepAttempt: 0, done: true, stepResponseJson: json });
       }
@@ -1139,7 +1174,7 @@ describe.each(runtimes)("concurrent steps on $name", ({ create }) => {
       expect((result as { error: Error }).error.message).toMatch(/unique cache key/);
     });
 
-    test("a losing branch whose running step fails after the race settles runs its catch and finally blocks", async () => {
+    test("a losing branch whose running step fails after the race settles records the error and is not resumed", async () => {
       const slow = closeGate("slow-fail");
       await admit("loser-fails-late");
       const lease = (await claim())!;
@@ -1151,7 +1186,7 @@ describe.each(runtimes)("concurrent steps on $name", ({ create }) => {
       expect(await readStep("slow-fail")).toMatchObject({ type: "step-error", done: true });
       advance(MINUTE);
       expect(await deliver()).toEqual({ status: "completed", result: 0 });
-      expect(ran.sort()).toEqual(["catch", "catch", "fast", "finally", "finally", "slow-fail"]);
+      expect(ran.sort()).toEqual(["fast", "slow-fail"]);
     });
 
     test("replay reaches the keys a losing branch reached after it caught a step error", async () => {
