@@ -8,9 +8,11 @@ export interface RuntimeOptions {
   /** Every client of the runtime reads time from this clock. Defaults to `Date.now`. */
   clock?: () => number;
   /**
-   * Rejects a keyless step that has no record with `WorkflowReplayError`
-   * (`STEP_KEY_REQUIRED`). A keyless step that already has a record still
-   * replays. Off by default; it will default to on in the next major version.
+   * Parks an execution whose replay reaches a keyless step that has no
+   * record, with divergence code `STEP_KEY_REQUIRED`. A keyless step that
+   * already has a record still replays. The runner reads it from the runtime
+   * it was constructed with, which under the worker invoker is the worker's.
+   * Off by default; it will default to on in the next major version.
    */
   requireStepKeys?: boolean;
 }

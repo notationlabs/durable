@@ -91,8 +91,8 @@ export type DurableWorkflowFn<Params, Result> = IfDurable<
 
 export type WorkflowOptions = {
   /**
-   * A non-negative integer. The first delivery of each execution records it,
-   * and every later delivery exposes the recorded version as
+   * A non-negative integer. The first step write of each execution records
+   * it, and every later delivery exposes the recorded version as
    * `event.workflowVersion`, whatever the code declares by then. A
    * workflow defined without options has version 1.
    */
@@ -142,7 +142,6 @@ function createWorkflowGenerator<
 >(workflowFn: WorkflowFn<Params, Result, Context>, declaredVersion: number) {
   return async function* workflowGenerator({
     event: deliveryEvent,
-    workflowVersion: recordedVersion,
     lease,
     signal,
     cancellation,
@@ -162,9 +161,9 @@ function createWorkflowGenerator<
     const { executionId } = deliveryEvent;
     // The steps the history recorded before this delivery that replay has
     // not requested yet. A key is deleted once it is requested.
-    const unconsumedSteps = new Set(
-      await infrastructure(() => heapClient.listStepKeys({ executionId }))
-    );
+    const history = await infrastructure(() => heapClient.readHistory({ executionId }));
+    const unconsumedSteps = new Set(history.stepKeys);
+    const recordedVersion = history.workflowVersion;
     // An execution with history but no recorded version was first delivered
     // before versions were recorded, by code that declared none.
     const workflowVersion = recordedVersion ?? (unconsumedSteps.size > 0 ? 1 : declaredVersion);
@@ -188,9 +187,23 @@ function createWorkflowGenerator<
     // the divergence is cleared.
     let divergence: ReplayDivergenceError | undefined;
 
-    function diverge(code: ReplayDivergenceError["code"], message: string, stepKey?: string) {
-      divergence ??= new ReplayDivergenceError(code, message, stepKey);
+    function diverge(
+      code: ReplayDivergenceError["code"],
+      message: string,
+      stepKey?: string,
+      cause?: unknown
+    ) {
+      divergence ??= new ReplayDivergenceError(code, message, stepKey, cause);
       return divergence;
+    }
+
+    /** The divergence of a recorded step whose outcome replay no longer reaches. */
+    function unreachable(stepKey: string) {
+      return diverge(
+        "NONDETERMINISTIC_REPLAY",
+        `Step "${stepKey}" no longer reaches its recorded outcome on replay`,
+        stepKey
+      );
     }
 
     /** Whether a branch must stop: a combinator above it stopped it, or replay has diverged. */
@@ -421,12 +434,7 @@ function createWorkflowGenerator<
         // The first run resumed the branch past this step before the decision.
         const passed = !isCombinator && branch.limited;
 
-        let cached = await infrastructure(() =>
-          heapClient.readStep({
-            executionId,
-            stepKey,
-          })
-        );
+        let cached = await infrastructure(() => heapClient.readStep({ executionId, stepKey }));
 
         const recordedKind = cached?.meta.kind;
         if (recordedKind !== undefined && recordedKind !== requested.kind) {
@@ -467,11 +475,7 @@ function createWorkflowGenerator<
           passed &&
           (!cached?.meta.done || (recorded instanceof StepDelay && !(recorded instanceof StepDelayPassed)))
         ) {
-          throw diverge(
-            "NONDETERMINISTIC_REPLAY",
-            `Step "${stepKey}" no longer reaches its recorded outcome on replay`,
-            stepKey
-          );
+          throw unreachable(stepKey);
         }
 
         const unfinishedStep = isUnfinishedStep(cached, recorded, clock());
@@ -518,19 +522,14 @@ function createWorkflowGenerator<
           return { status: "suspended", response: new StepDelay(recorded.wakeAt) };
         }
         if (!thrown && !cached && requested.keyless) {
+          // Nothing is recorded, so once the step is given a key, clearing
+          // the divergence replays it under that key.
           if (requireStepKeys) {
-            const record = encodeStepRecord(
-              new StepError(
-                new WorkflowReplayError(
-                  "STEP_KEY_REQUIRED",
-                  `A step without a key has no record, and the runtime requires step keys. Pass an explicit key to the step at this call site.`,
-                  stepKey
-                )
-              ),
+            throw diverge(
+              "STEP_KEY_REQUIRED",
+              `A step without a key has no record, and the runtime requires step keys. Pass an explicit key to the step at this call site.`,
               stepKey
             );
-            await writeStep({ stepKey, stepAttempt, done: true, stepResponseJson: record.json });
-            thrown = { err: (record.response as StepError).err };
           } else {
             logger.warn(
               { executionId, stepKey },
@@ -831,11 +830,7 @@ function createWorkflowGenerator<
           (decision.decision === "rejected" || decision.decision === "won") &&
           decision.index >= branches.length
         ) {
-          throw diverge(
-            "NONDETERMINISTIC_REPLAY",
-            `Step "${stepKey}" no longer reaches its recorded outcome on replay`,
-            stepKey
-          );
+          throw unreachable(stepKey);
         }
         combinator.replayKeys = new Set(recorded.keys);
         combinator.replayHeld = new Set(recorded.held);
@@ -894,13 +889,7 @@ function createWorkflowGenerator<
               states.every((state) => state.status === "returned" || state.status === "threw"))
           ) {
             settle(() =>
-              applyDecision(stepKey, decision, states, () =>
-                diverge(
-                  "NONDETERMINISTIC_REPLAY",
-                  `Step "${stepKey}" no longer reaches its recorded outcome on replay`,
-                  stepKey
-                )
-              )
+              applyDecision(stepKey, decision, states, unreachable)
             );
             return;
           }
@@ -1004,7 +993,17 @@ function createWorkflowGenerator<
       // A failed or cancelled outcome is terminal, so the whole history must
       // be consumed before it is recorded.
       if (!InfrastructureError.is(thrown) && !ReplayDivergenceError.is(thrown)) {
-        assertConsumed();
+        // The divergence names the error, which is not recorded anywhere
+        // else and is often the real cause, such as a crash in new code.
+        const [unconsumed] = unconsumedSteps;
+        if (unconsumed !== undefined) {
+          throw diverge(
+            "NONDETERMINISTIC_REPLAY",
+            `Replay did not reach recorded step "${unconsumed}", because the workflow threw: ${describeError(thrown)}`,
+            undefined,
+            thrown
+          );
+        }
       }
       throw thrown;
     }
@@ -1019,6 +1018,10 @@ function createWorkflowGenerator<
         throw new Error("The workflow stopped without an outcome");
     }
   };
+}
+
+function describeError(err: unknown) {
+  return err instanceof Error ? `${err.name}: ${err.message}` : String(err);
 }
 
 /** An error that workflow code threw, as opposed to one the driver raised. */
@@ -1071,23 +1074,23 @@ function decide(
 
 /**
  * The combinator's value or error under `decision`, read from what its
- * branches returned or threw. Throws `diverged()` if the branches no longer
- * reach the recorded outcome, as when workflow code changed.
+ * branches returned or threw. Throws `diverged(stepKey)` if the branches no
+ * longer reach the recorded outcome, as when workflow code changed.
  */
 function applyDecision(
   stepKey: string,
   decision: BranchesDecision,
   states: readonly BranchState[],
-  diverged: () => Error
+  diverged: (stepKey: string) => Error
 ): StepAction {
   const value = (i: number) => {
     const state = states[i];
-    if (state?.status !== "returned") throw diverged();
+    if (state?.status !== "returned") throw diverged(stepKey);
     return state.value;
   };
   const error = (i: number) => {
     const state = states[i];
-    if (state?.status !== "threw") throw diverged();
+    if (state?.status !== "threw") throw diverged(stepKey);
     return state.err;
   };
   switch (decision.decision) {

@@ -49,7 +49,7 @@ export function createWorkflowInvoker(params: {
     workflowEndEmitter,
     deliver(
       event: DeliveryEvent,
-      { lease, signal, cancellation, workflowVersion }: DeliveryOptions
+      { lease, signal, cancellation }: DeliveryOptions
     ) {
       const { executionId } = event;
 
@@ -145,7 +145,6 @@ export function createWorkflowInvoker(params: {
                 event: { ...event, ...encoded },
                 lease,
                 ...(cancellation ? { cancellation } : {}),
-                ...(workflowVersion !== undefined ? { workflowVersion } : {}),
               };
               request(delivery);
               return;

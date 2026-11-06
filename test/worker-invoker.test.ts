@@ -79,18 +79,13 @@ test("resolves with a suspended outcome and its wakeAt", { timeout: 2_000 }, asy
   ).resolves.toEqual({ status: "suspended", wakeAt: 1234 });
 });
 
-test("passes the recorded workflow version to the worker and resolves with a diverged outcome", { timeout: 2_000 }, async () => {
-  const delivery = event({ executionId: "worker-diverged" });
+test("resolves with a diverged outcome", { timeout: 2_000 }, async () => {
   await expect(
-    createWorkflowInvoker({
-      workerPath: new URL("diverged.mjs", fixtures).href,
-      logger,
-    }).deliver(delivery, { ...optionsFor(delivery), workflowVersion: 3 })
+    deliver({ fixture: "diverged.mjs", executionId: "worker-diverged" })
   ).resolves.toEqual({
     status: "diverged",
     code: "NONDETERMINISTIC_REPLAY",
     stepKey: "charge-v3",
-    workflowVersion: 3,
   });
 });
 

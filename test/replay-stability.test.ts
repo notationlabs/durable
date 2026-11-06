@@ -155,7 +155,6 @@ describe.each(runtimes)("replay stability on $name", ({ create }) => {
         lease,
         signal,
         ...(record.cancellation ? { cancellation: record.cancellation } : {}),
-        ...(record.workflowVersion !== undefined ? { workflowVersion: record.workflowVersion } : {}),
       }
     );
   }
@@ -172,7 +171,7 @@ describe.each(runtimes)("replay stability on $name", ({ create }) => {
   const record = async (executionId = ORDER) => (await runtime.executions.get(executionId))!;
 
   const stepKeys = async (executionId = ORDER) =>
-    (await runtime.heap.listStepKeys({ executionId })).sort();
+    (await runtime.heap.readHistory({ executionId })).stepKeys.sort();
 
   async function readStep(stepKey: string, executionId = ORDER) {
     const stored = await runtime.heap.readStep({ executionId, stepKey });
@@ -208,10 +207,11 @@ describe.each(runtimes)("replay stability on $name", ({ create }) => {
       expect(warnings[0]!.msg).toMatch(/^Deprecated: a step without a key/);
     });
 
-    test("a keyless step without a record under requireStepKeys is recorded and thrown as STEP_KEY_REQUIRED", async () => {
+    test("a keyless step without a record under requireStepKeys parks the execution as STEP_KEY_REQUIRED and records nothing", async () => {
       deploy(
         {
           [WORKFLOW]: workflow(async function* (step) {
+            yield* step.run("reserve-stock", work("reserve-stock", "reserved"));
             try {
               yield* step.run(work("keyless", 1));
             } catch (err) {
@@ -223,39 +223,65 @@ describe.each(runtimes)("replay stability on $name", ({ create }) => {
         requiringStepKeys(runtime)
       );
       await admit();
-      expect(await deliver()).toMatchObject({ status: "completed", result: "caught" });
-      expect(ran).toEqual([]);
-      expect(observed).toHaveLength(1);
-      expect(observed[0]).toBeInstanceOf(WorkflowReplayError);
-      expect(observed[0]).toMatchObject({ code: "STEP_KEY_REQUIRED" });
-      const [keyless] = (await stepKeys()).filter((key) => key !== "$$workflow-result$$");
-      expect(await readStep(keyless!)).toMatchObject({
-        type: "step-error",
-        err: { $type: "error", name: "WorkflowReplayError", code: "STEP_KEY_REQUIRED" },
-        done: true,
-      });
+      expect(await deliver()).toEqual({ status: "diverged", code: "STEP_KEY_REQUIRED", stepKey: expect.any(String) });
+      expect(ran).toEqual(["reserve-stock"]);
+      expect(observed).toEqual([]);
+      expect(await stepKeys()).toEqual(["reserve-stock"]);
+      expect((await record()).divergence).toMatchObject({ code: "STEP_KEY_REQUIRED" });
     });
 
-    test("a keyless step in a branch of a settled combinator throws STEP_KEY_REQUIRED again on replay", async () => {
+    test("giving a keyless step a key and clearing STEP_KEY_REQUIRED runs the step under its key", async () => {
+      await suspendOnV1();
+      deploy(
+        {
+          [WORKFLOW]: workflow(async function* (step) {
+            yield* step.run("reserve-stock", work("reserve-stock", "reserved"));
+            yield* step.run("charge", work("charge", "charged"));
+            yield* step.delay("courier", DAY);
+            yield* step.run(work("notify", "notified"));
+            return "shipped";
+          }),
+        },
+        requiringStepKeys(runtime)
+      );
+      advance(DAY);
+      expect(await deliver()).toMatchObject({ status: "diverged", code: "STEP_KEY_REQUIRED" });
+
+      deploy(
+        {
+          [WORKFLOW]: workflow(async function* (step) {
+            yield* step.run("reserve-stock", work("reserve-stock", "reserved"));
+            yield* step.run("charge", work("charge", "charged"));
+            yield* step.delay("courier", DAY);
+            yield* step.run("notify", work("notify", "notified"));
+            return "shipped";
+          }),
+        },
+        requiringStepKeys(runtime)
+      );
+      expect(await runtime.executions.clearDivergence(ORDER)).toEqual({ status: "cleared" });
+      expect(await deliver()).toEqual({ status: "completed", result: "shipped" });
+      expect(ran).toEqual(["notify"]);
+    });
+
+    test("a keyless step in a branch of a combinator parks the execution as STEP_KEY_REQUIRED", async () => {
       deploy(
         {
           [WORKFLOW]: workflow(async function* (step) {
             try {
               yield* step.all("lookups", [step.run(work("keyless", 1)), step.run("stock", work("stock", 1))]);
             } catch (err) {
-              observed.push((err as WorkflowReplayError).code);
+              observed.push(err);
             }
-            yield* step.delay("courier", DAY);
-            return "shipped";
+            return "caught";
           }),
         },
         requiringStepKeys(runtime)
       );
       await admit();
-      expect(await deliver()).toMatchObject({ status: "suspended" });
-      advance(DAY);
-      expect(await deliver()).toMatchObject({ status: "completed", result: "shipped" });
-      expect(observed).toEqual(["STEP_KEY_REQUIRED", "STEP_KEY_REQUIRED"]);
+      expect(await deliver()).toMatchObject({ status: "diverged", code: "STEP_KEY_REQUIRED" });
+      expect(ran).not.toContain("keyless");
+      expect(observed).toEqual([]);
     });
 
     test("a keyless step with an existing record under requireStepKeys replays normally", async () => {
@@ -550,6 +576,24 @@ describe.each(runtimes)("replay stability on $name", ({ create }) => {
       advance(DAY);
       expect(await claim()).toBeUndefined();
       expect((await record()).divergence).toBeDefined();
+    });
+
+    test("an error thrown before replay reaches the history parks the execution and is named in the divergence", async () => {
+      await suspendOnV1();
+      deploy({
+        [WORKFLOW]: workflow(async function* (step) {
+          yield* step.run("reserve-stock", work("reserve-stock", "reserved"));
+          throw new TypeError("order.items is undefined");
+        }),
+      });
+      advance(DAY);
+      expect(await deliver()).toEqual({ status: "diverged", code: "NONDETERMINISTIC_REPLAY" });
+      const [warning] = warnings;
+      const err = (warning!.obj as { err: Error }).err;
+      expect(err.message).toMatch(
+        /^Replay did not reach recorded step "(charge|courier)", because the workflow threw: TypeError: order.items is undefined$/
+      );
+      expect(err.cause).toBeInstanceOf(TypeError);
     });
 
     test("fixed code and clearDivergence make the execution due at once, and it continues", async () => {

@@ -46,7 +46,7 @@ export class WorkflowRunner<
     event: DeliveryEvent,
     options: DeliveryOptions & { logger?: Logger }
   ): Promise<WorkflowRunOutcome> => {
-    const { lease, signal, cancellation, workflowVersion, logger = this.logger } = options;
+    const { lease, signal, cancellation, logger = this.logger } = options;
     const workflow = this.router[event.workflowId];
 
     if (!workflow) {
@@ -70,13 +70,12 @@ export class WorkflowRunner<
         lease,
         signal,
         cancellation,
-        workflowVersion,
       });
     } catch (err) {
       if (InfrastructureError.is(err)) throw err;
       if (ReplayDivergenceError.is(err)) {
         logger.warn(
-          { executionId: event.executionId, code: err.code, stepKey: err.stepKey },
+          { executionId: event.executionId, code: err.code, stepKey: err.stepKey, err },
           `Replay diverged from the recorded history; the execution is parked until its divergence is cleared: ${err.message}`
         );
         return {
@@ -100,7 +99,7 @@ export class WorkflowRunner<
       case "join-wait":
         return { status: "suspended", wakeAt: response.wakeAt };
     }
-  }
+  };
 
   private async runWorkflows<
     Params extends EventParams,
@@ -112,16 +111,14 @@ export class WorkflowRunner<
     lease: ExecutionLease;
     signal: AbortSignal;
     cancellation: DeliveryOptions["cancellation"];
-    workflowVersion: DeliveryOptions["workflowVersion"];
     logger: Logger;
   }): Promise<
     WorkflowResult<Result> | StepDelay | StepEffectWait | StepStoreWait | StepJoinWait
   > {
-    const { workflow, event, lease, signal, cancellation, workflowVersion, logger } = params;
+    const { workflow, event, lease, signal, cancellation, logger } = params;
 
     const workflowIterator = workflow({
       event,
-      ...(workflowVersion !== undefined ? { workflowVersion } : {}),
       lease,
       signal,
       ...(cancellation ? { cancellation } : {}),

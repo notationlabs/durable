@@ -11,6 +11,7 @@ export class MemoryHeapClient implements HeapClient {
   private isLeaseCurrent: (lease: ExecutionLease) => boolean;
   private onStepDone?: (step: { executionId: string; stepKey: string }) => void;
   private markCancellationDelivered?: (executionId: string) => void;
+  private readWorkflowVersion?: (executionId: string) => number | undefined;
   private recordWorkflowVersion?: (executionId: string, workflowVersion: number | undefined) => void;
 
   constructor(params: {
@@ -30,6 +31,8 @@ export class MemoryHeapClient implements HeapClient {
      * execution has no request.
      */
     markCancellationDelivered?: (executionId: string) => void;
+    /** Reads the workflow version recorded on an execution. */
+    readWorkflowVersion?: (executionId: string) => number | undefined;
     /**
      * Records the workflow version on an execution that has none,
      * synchronously, in the same critical section as a step record.
@@ -39,6 +42,7 @@ export class MemoryHeapClient implements HeapClient {
     this.isLeaseCurrent = params.isLeaseCurrent;
     this.onStepDone = params.onStepDone;
     this.markCancellationDelivered = params.markCancellationDelivered;
+    this.readWorkflowVersion = params.readWorkflowVersion;
     this.recordWorkflowVersion = params.recordWorkflowVersion;
   }
 
@@ -55,8 +59,10 @@ export class MemoryHeapClient implements HeapClient {
     return clone(attempts[0]);
   }
 
-  async listStepKeys(params: { executionId: string }): Promise<string[]> {
-    return [...(this.stepKeys.get(params.executionId) ?? [])];
+  async readHistory(params: { executionId: string }) {
+    const stepKeys = [...(this.stepKeys.get(params.executionId) ?? [])];
+    const workflowVersion = this.readWorkflowVersion?.(params.executionId);
+    return workflowVersion !== undefined ? { stepKeys, workflowVersion } : { stepKeys };
   }
 
   async writeStep(params: {

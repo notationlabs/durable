@@ -230,6 +230,11 @@ export class MemoryExecutionClient implements ExecutionClient {
     this.executions.set(executionId, markCancellationDelivered(state, this.clock()));
   }
 
+  /** @internal The workflow version recorded on an execution, for the heap's history read. */
+  readWorkflowVersion(executionId: string): number | undefined {
+    return this.executions.get(executionId)?.workflowVersion ?? undefined;
+  }
+
   /**
    * @internal Synchronously records the workflow version on an execution
    * that has none, for the heap's fenced writes. The caller checks the lease

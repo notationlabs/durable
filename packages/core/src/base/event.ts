@@ -55,15 +55,15 @@ export type WorkflowEvent<
   params: Params;
   context: Context;
   /**
-   * The version recorded by the execution's first delivery, whatever version
-   * the current code declares. 1 for a workflow that declares none.
+   * The version recorded by the execution's first step write, whatever
+   * version the current code declares. 1 for a workflow that declares none.
    */
   workflowVersion: number;
 };
 
 /**
- * The event a delivery is dispatched with. The driver adds `workflowVersion`:
- * the recorded one, or the version the workflow declares.
+ * The event a delivery is dispatched with. The driver adds `workflowVersion`
+ * from the heap: the recorded one, or the version the workflow declares.
  */
 export type DeliveryEvent<
   Params extends EventParams = EventParams,

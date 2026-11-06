@@ -50,7 +50,7 @@ type TestContext = {
 };
 
 /**
- * Registers the runtime-adapter suite for replay stability: `HeapClient.listStepKeys`,
+ * Registers the runtime-adapter suite for replay stability: `HeapClient.readHistory`,
  * step kinds, the recorded workflow version, the `diverged` acknowledgement,
  * `ExecutionClient.clearDivergence` and `list({ diverged })`.
  */
@@ -178,15 +178,18 @@ export function registerReplayStabilityClientConformance({
   }
 
   async function steps(runtime: Runtime, executionId: string): Promise<string[]> {
-    return [...(await runtime.heap.listStepKeys({ executionId }))].sort();
+    return [...(await runtime.heap.readHistory({ executionId })).stepKeys].sort();
   }
 
   async function kindOf(runtime: Runtime, executionId: string, stepKey: string) {
     return (await runtime.heap.readStep({ executionId, stepKey }))?.meta.kind;
   }
 
+  /** The version on the execution record, checked against the one `readHistory` returns. */
   async function versionOf(runtime: Runtime, executionId: string) {
-    return (await runtime.executions.get(executionId))?.workflowVersion;
+    const recorded = (await runtime.executions.get(executionId))?.workflowVersion;
+    expect((await runtime.heap.readHistory({ executionId })).workflowVersion).toBe(recorded);
+    return recorded;
   }
 
   async function divergenceOf(runtime: Runtime, executionId: string) {
@@ -250,8 +253,8 @@ export function registerReplayStabilityClientConformance({
       }) => {
         await admit(runtime, "order-4");
         await admit(runtime, "order-42");
-        expect(await runtime.heap.listStepKeys({ executionId: "order-4" })).toEqual([]);
-        expect(await runtime.heap.listStepKeys({ executionId: "order-unknown" })).toEqual([]);
+        expect((await runtime.heap.readHistory({ executionId: "order-4" })).stepKeys).toEqual([]);
+        expect((await runtime.heap.readHistory({ executionId: "order-unknown" })).stepKeys).toEqual([]);
 
         const [first] = await runtime.executions.claimDue({
           limit: 1,
@@ -259,7 +262,7 @@ export function registerReplayStabilityClientConformance({
           filter: { executionIds: ["order-42"] },
         });
         await writeStep(runtime, first, "reserve-stock", { kind: "run" });
-        expect(await runtime.heap.listStepKeys({ executionId: "order-4" })).toEqual([]);
+        expect((await runtime.heap.readHistory({ executionId: "order-4" })).stepKeys).toEqual([]);
         expect(await steps(runtime, "order-42")).toEqual(["reserve-stock"]);
       });
 
@@ -272,7 +275,7 @@ export function registerReplayStabilityClientConformance({
         expect(await writeStep(runtime, holder, "reserve-stock", { kind: "run" })).toEqual({
           status: "lost",
         });
-        expect(await runtime.heap.listStepKeys({ executionId: "order-42" })).toEqual([]);
+        expect((await runtime.heap.readHistory({ executionId: "order-42" })).stepKeys).toEqual([]);
       });
 
       it("records the kind of each step recordCancellation writes", async ({ runtime, peer }) => {
@@ -307,8 +310,13 @@ export function registerReplayStabilityClientConformance({
         expect(await runtime.executions.get("order-42")).not.toHaveProperty("workflowVersion");
         const holder = await claimOne(runtime, "order-42");
         expect(await runtime.executions.get("order-42")).not.toHaveProperty("workflowVersion");
+        expect(await runtime.heap.readHistory({ executionId: "order-42" })).toEqual({ stepKeys: [] });
 
         await writeStep(runtime, holder, "reserve-stock", { kind: "run", workflowVersion: 2 });
+        expect(await peer.heap.readHistory({ executionId: "order-42" })).toEqual({
+          stepKeys: ["reserve-stock"],
+          workflowVersion: 2,
+        });
         expect(await versionOf(peer, "order-42")).toBe(2);
         const [listed] = (await peer.executions.list()).executions;
         expect(listed).toMatchObject({ executionId: "order-42", workflowVersion: 2 });
@@ -711,7 +719,7 @@ export function registerReplayStabilityClientConformance({
             workflowVersion: 2,
             divergence: { code: "NONDETERMINISTIC_REPLAY", stepKey: "charge-v3" },
           });
-          expect(await restarted.heap.listStepKeys({ executionId: "order-42" })).toEqual(["charge"]);
+          expect((await restarted.heap.readHistory({ executionId: "order-42" })).stepKeys).toEqual(["charge"]);
           expect(await kindOf(restarted, "order-42", "charge")).toBe("run");
           await restarted.executions.requestWake({ executionId: "order-42", wakeAt: START });
           advance(LONG_AFTER);

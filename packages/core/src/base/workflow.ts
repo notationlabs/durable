@@ -17,12 +17,6 @@ export type WorkflowGeneratorParams<
 > = {
   /** The driver adds `workflowVersion` to it before workflow code sees it. */
   event: DeliveryEvent<Params, Context>;
-  /**
-   * The workflow version on the record, when one is recorded. Without it,
-   * the driver exposes 1 for an execution that has step records, and the
-   * version the workflow declares for one that has none.
-   */
-  workflowVersion?: number;
   /** Every heap step write is fenced by this lease. */
   lease: ExecutionLease;
   /**

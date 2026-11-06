@@ -57,8 +57,10 @@ export class SqliteHeapClient implements HeapClient {
     return toHeapRecord(result);
   }
 
-  async listStepKeys(params: { executionId: string }): Promise<string[]> {
-    return this.stepResponsesDao.listStepKeys(params.executionId);
+  async readHistory(params: { executionId: string }) {
+    const stepKeys = this.stepResponsesDao.listStepKeys(params.executionId);
+    const workflowVersion = this.executionsDao.getState(params.executionId)?.workflowVersion;
+    return workflowVersion != null ? { stepKeys, workflowVersion } : { stepKeys };
   }
 
   /**

@@ -238,9 +238,6 @@ export class ExecutionDispatcher {
               lease,
               signal: renewal.signal,
               ...(record.cancellation ? { cancellation: record.cancellation } : {}),
-              ...(record.workflowVersion !== undefined
-                ? { workflowVersion: record.workflowVersion }
-                : {}),
             }
           ),
           lease,

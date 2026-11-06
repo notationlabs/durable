@@ -54,15 +54,12 @@ export class WorkflowRaceError extends Error {
   }
 }
 
-export type ReplayErrorCode = "STEP_KEY_REQUIRED" | "PATCH_IN_COMBINATOR";
+export type ReplayErrorCode = "PATCH_IN_COMBINATOR";
 
 /**
- * Thrown to workflow code when a step cannot be recorded safely for replay:
- * a keyless step without a record under `requireStepKeys`
- * (`STEP_KEY_REQUIRED`), or `step.patched` inside a combinator branch
- * (`PATCH_IN_COMBINATOR`). Replay throws it again: `STEP_KEY_REQUIRED` from
- * the step's record, and `PATCH_IN_COMBINATOR` from the same call, which is
- * not recorded.
+ * Thrown to workflow code when `step.patched` is called inside a combinator
+ * branch (`PATCH_IN_COMBINATOR`). Nothing is recorded, so replay throws it
+ * again from the same call.
  */
 export class WorkflowReplayError extends Error {
   readonly code: ReplayErrorCode;

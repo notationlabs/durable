@@ -43,6 +43,7 @@ export class MemoryRuntime extends Runtime {
       },
       markCancellationDelivered: (executionId) =>
         this.executions.markCancellationDelivered(executionId),
+      readWorkflowVersion: (executionId) => this.executions.readWorkflowVersion(executionId),
       recordWorkflowVersion: (executionId, workflowVersion) =>
         this.executions.recordWorkflowVersion(executionId, workflowVersion),
     });

@@ -17,11 +17,14 @@ export abstract class HeapClient {
   }): Promise<HeapRecord | null>;
 
   /**
-   * Lists every step key the execution has a record for, once each, in no
-   * particular order. A delivery reads it once to check that replay
-   * consumes every recorded step.
+   * Reads what a delivery needs before replay: every step key the execution
+   * has a record for, once each, in no particular order, and the workflow
+   * version recorded on the execution, if any. A delivery reads it once.
    */
-  abstract listStepKeys(params: { executionId: string }): Promise<string[]>;
+  abstract readHistory(params: { executionId: string }): Promise<{
+    stepKeys: string[];
+    workflowVersion?: number;
+  }>;
 
   /**
    * Records one attempt of a step, fenced by `lease`. The token check and the

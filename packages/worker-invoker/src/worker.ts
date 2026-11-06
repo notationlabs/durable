@@ -43,8 +43,6 @@ export type WorkerDelivery = {
   };
   lease: ExecutionLease;
   cancellation?: ExecutionCancellation;
-  /** The workflow version on the record, when one is recorded. */
-  workflowVersion?: number;
 };
 
 export type WorkerRequest = WorkerDelivery;
@@ -81,7 +79,7 @@ export function createWorkflowWorker(
       // delivery's signal never aborts inside the worker.
       const { signal } = new AbortController();
       process.on("message", async (message: WorkerRequest) => {
-        const { event, lease, cancellation, workflowVersion } = message;
+        const { event, lease, cancellation } = message;
         try {
           const workflowEvent: DeliveryEvent = {
             ...event,
@@ -92,7 +90,6 @@ export function createWorkflowWorker(
             lease,
             signal,
             ...(cancellation ? { cancellation } : {}),
-            ...(workflowVersion !== undefined ? { workflowVersion } : {}),
             logger,
           });
           send({ status: "outcome", outcome: serializeOutcome(outcome) });

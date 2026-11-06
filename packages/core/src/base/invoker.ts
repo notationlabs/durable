@@ -22,8 +22,6 @@ export type DeliveryOptions = {
    * first unfinished step.
    */
   cancellation?: ExecutionCancellation;
-  /** The workflow version on the record, when one is recorded. */
-  workflowVersion?: number;
 };
 
 export type WorkflowInvoker = {

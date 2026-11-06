@@ -44,7 +44,17 @@ export type ExecutionCancellation = {
   deliveredAt?: number;
 };
 
-export type ExecutionDivergenceCode = "NONDETERMINISTIC_REPLAY" | "STEP_SCHEMA_CHANGED";
+/**
+ * - `NONDETERMINISTIC_REPLAY`: replay requested steps that do not match the
+ *   recorded ones;
+ * - `STEP_SCHEMA_CHANGED`: a recorded value no longer passes its step's schema;
+ * - `STEP_KEY_REQUIRED`: a keyless step has no record, and the runtime
+ *   requires step keys.
+ */
+export type ExecutionDivergenceCode =
+  | "NONDETERMINISTIC_REPLAY"
+  | "STEP_SCHEMA_CHANGED"
+  | "STEP_KEY_REQUIRED";
 
 /**
  * Set on an execution when a delivery found that the workflow code no longer
@@ -150,9 +160,10 @@ export function isLeaseLost(value: unknown): value is LeaseLost {
  *   code threw `WorkflowCancelledError`. The acknowledgement records the
  *   request's `reason` and `source` as the outcome.
  *
- * - `diverged`: replay no longer matches the recorded history. Nothing more
- *   was written. The acknowledgement records `divergence` and parks the
- *   execution instead of recording an outcome.
+ * - `diverged`: replay no longer matches the recorded history. No step
+ *   started after the divergence, but a step already in flight in another
+ *   branch was recorded. The acknowledgement records `divergence` and parks
+ *   the execution instead of recording an outcome.
  *
  * Infrastructure errors are never outcomes: the delivery rejects instead.
  */
@@ -482,8 +493,9 @@ export class ReplayDivergenceError extends Error {
   readonly code: ExecutionDivergenceCode;
   readonly stepKey?: string;
 
-  constructor(code: ExecutionDivergenceCode, message: string, stepKey?: string) {
-    super(message);
+  /** `cause` is the error workflow code threw, when it threw before replay reached its history. */
+  constructor(code: ExecutionDivergenceCode, message: string, stepKey?: string, cause?: unknown) {
+    super(message, cause !== undefined ? { cause } : undefined);
     this.name = "ReplayDivergenceError";
     this.code = code;
     if (stepKey !== undefined) this.stepKey = stepKey;
