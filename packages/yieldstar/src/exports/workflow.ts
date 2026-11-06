@@ -181,7 +181,12 @@ function createWorkflowGenerator<
         ({ stepKey }) => stepKey
       )
     );
-    // Set once replay diverges. No fenced write is made after it.
+    // The answer each patch ID gave in this delivery, so a second call with
+    // the same ID gives the same answer.
+    const patches = new Map<string, boolean>();
+    // Set once replay diverges. No branch starts new work after it, but a
+    // step in flight is still recorded, so that it does not run again after
+    // the divergence is cleared.
     let divergence: ReplayDivergenceError | undefined;
 
     function diverge(code: ReplayDivergenceError["code"], message: string, stepKey?: string) {
@@ -234,7 +239,6 @@ function createWorkflowGenerator<
       stepResponseJson: string;
       deleteWaitersOf?: readonly string[];
     }) {
-      if (divergence) throw divergence;
       stopIfAborted(signal);
       const stepKind = stepKinds.get(params.stepKey);
       const written = await infrastructure(() =>
@@ -399,33 +403,24 @@ function createWorkflowGenerator<
         if (!branch.allows(stepKey)) return { status: "stopped" };
         if (requested instanceof PatchStepKey && branch.parent) {
           // Whether a branch passed the patch point depends on how branches
-          // interleave, so a patch is rejected inside any branch. A repeat
-          // of the ID in another branch throws the same error unrecorded.
-          const err = new WorkflowReplayError(
-            "PATCH_IN_COMBINATOR",
-            `step.patched("${requested.patchId}") cannot be called inside a step.all or step.race branch`,
-            stepKey
-          );
-          if (!stepKeys.has(stepKey)) {
-            stepKeys.add(stepKey);
-            stepKinds.set(stepKey, "patched");
-            branch.reach(stepKey);
-            const cached = await infrastructure(() =>
-              heapClient.readStep({ executionId, stepKey })
-            );
-            if (!cached) {
-              await writeStep({
-                stepKey,
-                stepAttempt: 0,
-                done: true,
-                stepResponseJson: encodeStepRecord(new StepError(err), stepKey).json,
-              });
-            }
-          }
-          if (startsNoWork(branch)) return { status: "stopped" };
+          // interleave, so a patch is rejected inside any branch. The error
+          // is not recorded: replay reaches the same call in a branch and
+          // throws it again. The key is reached, so that a recorded decision
+          // lets replay of a stopped branch reach it too.
+          branch.reach(stepKey);
           branch.at = undefined;
           afterDelay = false;
-          nextIteratorResult = await throwInto(err);
+          nextIteratorResult = await throwInto(
+            new WorkflowReplayError(
+              "PATCH_IN_COMBINATOR",
+              `step.patched("${requested.patchId}") cannot be called inside a step.all or step.race branch`,
+              stepKey
+            )
+          );
+          continue;
+        }
+        if (requested instanceof PatchStepKey && patches.has(stepKey)) {
+          resumeWith = new StepResult(patches.get(stepKey));
           continue;
         }
         if (stepKeys.has(stepKey)) {
@@ -467,6 +462,7 @@ function createWorkflowGenerator<
             });
             applies = true;
           }
+          patches.set(stepKey, applies);
           resumeWith = new StepResult(applies);
           continue;
         }

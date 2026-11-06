@@ -182,7 +182,7 @@ Outside a combinator, the driver checks before each new step that every recorded
 
 **Detection in an unsettled combinator happens late.** In the second row, `score-fraud-v2` has no record, so its step function runs and its result is recorded before the delivery diverges. Gate changes to the branches of a combinator that may be unsettled on [`event.workflowVersion`](./replay-stability.md#workflow-versions).
 
-`step.patched` cannot be called inside a branch. It records and throws `WorkflowReplayError` with code `PATCH_IN_COMBINATOR`, because whether a branch passed a point depends on how the branches interleave. Call `step.patched` before the combinator and use its result to build the branches. See [Patches inside combinators](./replay-stability.md#patches-inside-combinators).
+`step.patched` cannot be called inside a branch. It throws `WorkflowReplayError` with code `PATCH_IN_COMBINATOR` without recording it, because whether a branch passed a point depends on how the branches interleave. Call `step.patched` before the combinator and use its result to build the branches. See [Patches inside combinators](./replay-stability.md#patches-inside-combinators).
 
 ## Cancellation
 

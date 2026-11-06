@@ -62,6 +62,8 @@ const runtime = new SqliteRuntime(db, { requireStepKeys: true });
 
 With `requireStepKeys: true`, a keyless step that has no record does not run. The driver records `WorkflowReplayError` with code `STEP_KEY_REQUIRED` as the step's error and throws it into workflow code. Workflow code can catch it like any other step error, and replay throws it again from the record.
 
+Adding an explicit key at that call site fixes new executions. An execution that caught the error and recorded later steps has the error recorded under the call-site key. On the new code, the keyed step has no record and would run before the later records, so the execution diverges. Gate the keyed step on `step.patched` and keep the keyless call in the other branch while such executions can still be delivered.
+
 A keyless step that already has a record under its call-site key replays as usual. This is important because it means that turning the option on does not break executions that are in flight: their keyless steps that have already run keep their records.
 
 The option is off by default. It will default to on in the next major version.
@@ -242,11 +244,13 @@ yield* step.delay("courier", 2 * DAY);
 | Order 43, on a later delivery                    | `true`                         | The marker is recorded |
 | An order suspended on `charge`'s retry backoff at the deploy | `true`, and records a marker | Every record is consumed when it reaches the patch |
 
+A second `step.patched` call with the same ID in the same delivery returns the same answer as the first.
+
 A marker counts as a recorded step. Keep the `step.patched` call in the code while any execution that recorded the marker can still be delivered: removing it leaves the marker unconsumed, and the execution diverges.
 
 ### Patches inside combinators
 
-Inside a `step.all` or `step.race` branch, whether the execution passed a point depends on how the branches interleave. A `step.patched` call inside any branch therefore records `WorkflowReplayError` with code `PATCH_IN_COMBINATOR` under the marker's key, and throws it into the branch. Two branches that call `patched` with the same ID both throw `PATCH_IN_COMBINATOR`, not a duplicate-key error.
+Inside a `step.all` or `step.race` branch, whether the execution passed a point depends on how the branches interleave. A `step.patched` call inside any branch therefore throws `WorkflowReplayError` with code `PATCH_IN_COMBINATOR` into the branch. Nothing is recorded: replay reaches the same call inside a branch and throws the same error again. Two branches that call `patched` with the same ID both throw `PATCH_IN_COMBINATOR`, not a duplicate-key error.
 
 Call `step.patched` before the combinator and pass the result in, or gate the change on `event.workflowVersion`:
 
@@ -271,7 +275,7 @@ Gate a schema change on `event.workflowVersion` or `step.patched`, so executions
 | Error or code | Reaches workflow code | Cause |
 | --- | --- | --- |
 | `WorkflowReplayError` `STEP_KEY_REQUIRED` | Yes, recorded as the step's error | A keyless step has no record under `requireStepKeys` |
-| `WorkflowReplayError` `PATCH_IN_COMBINATOR` | Yes, recorded as the step's error | `step.patched` was called inside a `step.all` or `step.race` branch |
+| `WorkflowReplayError` `PATCH_IN_COMBINATOR` | Yes, not recorded | `step.patched` was called inside a `step.all` or `step.race` branch |
 | Divergence `NONDETERMINISTIC_REPLAY` | No | The code no longer matches the history |
 | Divergence `STEP_SCHEMA_CHANGED` | No | A schema rejects on replay a value it accepted on the first run |
 

@@ -163,7 +163,7 @@ Thrown by `step.race` when every branch fails, and by an empty race. `code` is `
 
 ## `WorkflowReplayError`
 
-Thrown to workflow code when a step cannot be recorded safely for replay. `err.code` is `"STEP_KEY_REQUIRED"` (a keyless step has no record and the runtime was created with `requireStepKeys: true`) or `"PATCH_IN_COMBINATOR"` (`step.patched` was called inside a `step.all` or `step.race` branch), and `err.stepKey` names the step. It is recorded as the step's error, so replay throws the same class and code. It is registered by default. See [Replay Stability](../manual/replay-stability.md).
+Thrown to workflow code when a step cannot be recorded safely for replay. `err.code` is `"STEP_KEY_REQUIRED"` (a keyless step has no record and the runtime was created with `requireStepKeys: true`) or `"PATCH_IN_COMBINATOR"` (`step.patched` was called inside a `step.all` or `step.race` branch), and `err.stepKey` names the step. `STEP_KEY_REQUIRED` is recorded as the step's error, and replay throws the same class and code. `PATCH_IN_COMBINATOR` is not recorded, and replay throws it again from the same call. It is registered by default. See [Replay Stability](../manual/replay-stability.md).
 
 A divergence is not a `WorkflowReplayError`. It never reaches workflow code; see [Divergence](../manual/replay-stability.md#divergence).
 
@@ -241,7 +241,7 @@ const applies = yield* step.patched("patch-id"); // boolean
 
 A keyless `step.run`, `step.delay` or `step.poll`, and a store's keyless `get()` and `when(selector)`, take their key from a hash of their call site. They are deprecated: the driver logs a warning when one has no record and runs, and a runtime created with `requireStepKeys: true` throws `WorkflowReplayError` (`STEP_KEY_REQUIRED`) instead of running it. See [Step keys](../manual/replay-stability.md#step-keys).
 
-`step.patched(id)` returns `true` when a marker for `id` is recorded, `false` without recording anything when the execution's history has steps that replay has not requested yet, and otherwise records a marker under the key `$$patch$$:<id>` and returns `true`. Inside a `step.all` or `step.race` branch it records and throws `WorkflowReplayError` (`PATCH_IN_COMBINATOR`). An ID that is not a string throws a `TypeError`, and an empty ID throws an `Error`. See [Patches](../manual/replay-stability.md#patches).
+`step.patched(id)` returns `true` when a marker for `id` is recorded, `false` without recording anything when the execution's history has steps that replay has not requested yet, and otherwise records a marker under the key `$$patch$$:<id>` and returns `true`. A second call with the same ID in the same delivery returns the same answer. Inside a `step.all` or `step.race` branch it throws `WorkflowReplayError` (`PATCH_IN_COMBINATOR`) and records nothing. An ID that is not a string throws a `TypeError`, and an empty ID throws an `Error`. See [Patches](../manual/replay-stability.md#patches).
 
 `step.store` returns a `WorkflowStore` handle synchronously and records no step, so a loop or helper can request the same store again. `id` defaults to `event.executionId`. The handle has the readonly properties `definition`, `id` and `key`, and the durable operations `get`, `select`, `update`, `updateFrom`, `deleteFrom`, `when` and `take`, each of which creates a missing store from the definition's `initial` – see [Durable Stores](../manual/stores.md) and [Waiting on State](../manual/store-waiting.md). Helpers that take the step runner can type it as `StepRunner`.
 

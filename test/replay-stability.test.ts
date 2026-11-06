@@ -236,6 +236,28 @@ describe.each(runtimes)("replay stability on $name", ({ create }) => {
       });
     });
 
+    test("a keyless step in a branch of a settled combinator throws STEP_KEY_REQUIRED again on replay", async () => {
+      deploy(
+        {
+          [WORKFLOW]: workflow(async function* (step) {
+            try {
+              yield* step.all("lookups", [step.run(work("keyless", 1)), step.run("stock", work("stock", 1))]);
+            } catch (err) {
+              observed.push((err as WorkflowReplayError).code);
+            }
+            yield* step.delay("courier", DAY);
+            return "shipped";
+          }),
+        },
+        requiringStepKeys(runtime)
+      );
+      await admit();
+      expect(await deliver()).toMatchObject({ status: "suspended" });
+      advance(DAY);
+      expect(await deliver()).toMatchObject({ status: "completed", result: "shipped" });
+      expect(observed).toEqual(["STEP_KEY_REQUIRED", "STEP_KEY_REQUIRED"]);
+    });
+
     test("a keyless step with an existing record under requireStepKeys replays normally", async () => {
       const keyless = workflow(async function* (step) {
         const value = yield* step.run(work("keyless", 1));
@@ -469,6 +491,54 @@ describe.each(runtimes)("replay stability on $name", ({ create }) => {
       expect(ran).toEqual([]);
     });
 
+    test("a step in flight in one branch when another branch diverges is recorded, and does not run again after clearDivergence", async () => {
+      let chargeStarted!: () => void;
+      const started = new Promise<void>((resolve) => (chargeStarted = resolve));
+      const rejectAfterCharge: StandardSchemaV1<string, number> = {
+        "~standard": {
+          version: 1,
+          vendor: "test",
+          async validate(value) {
+            await started;
+            return rejectEverything["~standard"].validate(value);
+          },
+        },
+      };
+      const pair = (schema: StandardSchemaV1<string, number>) =>
+        workflow(async function* (step) {
+          yield* step.all("pair", [
+            step.run("total", () => "42", { schema }),
+            (async function* () {
+              yield* step.delay("wait", MINUTE);
+              return yield* step.run("charge", async () => {
+                ran.push("charge");
+                chargeStarted();
+                await new Promise((resolve) => setTimeout(resolve, 5));
+                return "charged";
+              });
+            })(),
+          ]);
+          yield* step.delay("courier", DAY);
+          return "shipped";
+        });
+      deploy({ [WORKFLOW]: pair(numberFromString) });
+      await admit();
+      expect(await deliver()).toMatchObject({ status: "suspended" });
+
+      deploy({ [WORKFLOW]: pair(rejectAfterCharge) });
+      advance(MINUTE);
+      expect(await deliver()).toMatchObject({ status: "diverged", code: "STEP_SCHEMA_CHANGED" });
+      expect(ran).toEqual(["charge"]);
+      expect(await readStep("charge")).toMatchObject({ result: "charged", done: true });
+
+      deploy({ [WORKFLOW]: pair(numberFromString) });
+      expect(await runtime.executions.clearDivergence(ORDER)).toEqual({ status: "cleared" });
+      expect(await deliver()).toMatchObject({ status: "suspended" });
+      advance(DAY);
+      expect(await deliver()).toMatchObject({ status: "completed", result: "shipped" });
+      expect(ran).toEqual(["charge"]);
+    });
+
     test("a wake for a diverged execution does not deliver it, and stays pending", async () => {
       await suspendOnV1();
       deploy({ [WORKFLOW]: workflow(async function* () {}) });
@@ -687,7 +757,7 @@ describe.each(runtimes)("replay stability on $name", ({ create }) => {
       expect(await stepKeys("order:42")).toEqual(["charge", "courier", "reserve-stock"]);
     });
 
-    test("a diverged delivery makes no fenced write after the divergence", async () => {
+    test("a diverged delivery runs and records no step after the divergence", async () => {
       await suspendOnV1();
       deploy({
         [WORKFLOW]: workflow(async function* (step) {
@@ -774,7 +844,7 @@ describe.each(runtimes)("replay stability on $name", ({ create }) => {
       expect(ran).toEqual(["receipt", "charge"]);
     });
 
-    test("patched inside a combinator branch is recorded and thrown as PATCH_IN_COMBINATOR", async () => {
+    test("patched inside a combinator branch is thrown as PATCH_IN_COMBINATOR without a record", async () => {
       deploy({
         [WORKFLOW]: workflow(async function* (step) {
           try {
@@ -790,10 +860,82 @@ describe.each(runtimes)("replay stability on $name", ({ create }) => {
       expect(observed).toHaveLength(1);
       expect(observed[0]).toBeInstanceOf(WorkflowReplayError);
       expect(observed[0]).toMatchObject({ code: "PATCH_IN_COMBINATOR" });
-      expect(await readStep("$$patch$$:send-receipt")).toMatchObject({
-        type: "step-error",
-        err: { name: "WorkflowReplayError", code: "PATCH_IN_COMBINATOR" },
+      expect(await stepKeys()).not.toContain("$$patch$$:send-receipt");
+    });
+
+    test("a caught PATCH_IN_COMBINATOR in a settled combinator is thrown again on replay", async () => {
+      deploy({
+        [WORKFLOW]: workflow(async function* (step) {
+          try {
+            yield* step.all("lookups", [step.patched("send-receipt"), step.run("stock", work("stock", 1))]);
+          } catch (err) {
+            observed.push((err as WorkflowReplayError).code);
+          }
+          yield* step.delay("courier", DAY);
+          return "shipped";
+        }),
       });
+      await admit();
+      expect(await deliver()).toMatchObject({ status: "suspended" });
+      advance(DAY);
+      expect(await deliver()).toMatchObject({ status: "completed", result: "shipped" });
+      expect(observed).toEqual(["PATCH_IN_COMBINATOR", "PATCH_IN_COMBINATOR"]);
+    });
+
+    test("a caught PATCH_IN_COMBINATOR does not make a later patched with the same ID return true", async () => {
+      await suspendOnV1();
+      deploy({
+        [WORKFLOW]: workflow(async function* (step) {
+          try {
+            yield* step.all("lookups", [step.patched("send-receipt"), step.run("stock", work("stock", 1))]);
+          } catch {}
+          yield* step.run("reserve-stock", work("reserve-stock", "reserved"));
+          observed.push(yield* step.patched("send-receipt"));
+          yield* step.run("charge", work("charge", "charged"));
+          yield* step.delay("courier", DAY);
+        }),
+      });
+      advance(DAY);
+      expect(await deliver()).toMatchObject({ status: "completed" });
+      expect(observed).toEqual([false]);
+    });
+
+    test("patched called twice with the same ID returns the same answer both times", async () => {
+      const twice = workflow(async function* (step) {
+        yield* step.run("reserve-stock", work("reserve-stock", "reserved"));
+        observed.push(yield* step.patched("send-receipt"));
+        yield* step.run("charge", work("charge", "charged"));
+        observed.push(yield* step.patched("send-receipt"));
+        yield* step.delay("courier", DAY);
+        return "shipped";
+      });
+      deploy({ [WORKFLOW]: twice });
+      await admit();
+      expect(await deliver()).toMatchObject({ status: "suspended" });
+      expect(observed).toEqual([true, true]);
+
+      observed = [];
+      advance(DAY);
+      expect(await deliver()).toMatchObject({ status: "completed", result: "shipped" });
+      expect(observed).toEqual([true, true]);
+    });
+
+    test("patched called twice with the same ID returns false both times for an execution past the patch point", async () => {
+      await suspendOnV1();
+      deploy({
+        [WORKFLOW]: workflow(async function* (step) {
+          yield* step.run("reserve-stock", work("reserve-stock", "reserved"));
+          observed.push(yield* step.patched("send-receipt"));
+          yield* step.run("charge", work("charge", "charged"));
+          yield* step.delay("courier", DAY);
+          observed.push(yield* step.patched("send-receipt"));
+          return "shipped";
+        }),
+      });
+      advance(DAY);
+      expect(await deliver()).toMatchObject({ status: "completed", result: "shipped" });
+      expect(observed).toEqual([false, false]);
+      expect(await stepKeys()).not.toContain("$$patch$$:send-receipt");
     });
 
     test("two branches that call patched with the same ID both throw PATCH_IN_COMBINATOR, not a duplicate-key error", async () => {

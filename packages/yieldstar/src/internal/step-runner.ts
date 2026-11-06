@@ -423,9 +423,10 @@ export function createStepRunner(params: {
    * `false`, and records nothing, when the history has recorded steps that
    * replay has not reached yet, since the original run passed this point
    * without the patch. Otherwise replay is at the edge of the history: it
-   * records a marker and returns `true`. Inside a `step.all` or `step.race`
-   * branch it records and throws `WorkflowReplayError`
-   * (`PATCH_IN_COMBINATOR`).
+   * records a marker and returns `true`. A second call with the same ID in
+   * a delivery returns the same answer. Inside a `step.all` or `step.race`
+   * branch it throws `WorkflowReplayError` (`PATCH_IN_COMBINATOR`) and
+   * records nothing.
    */
   function patched(patchId: string): AsyncGenerator<StepResponse, boolean, any> {
     assertNonEmpty("step.patched", "patch ID", patchId);
