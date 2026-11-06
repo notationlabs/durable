@@ -41,43 +41,27 @@ export type ObservationErrorCode =
   | "FORBIDDEN"
   | "INTERNAL_ERROR";
 
+/** The execution a request names, as observation middleware receives it. */
+export type ObservedExecution = {
+  executionId: string;
+  /**
+   * Reads the record. It resolves `undefined` for an unknown ID, so a
+   * policy that calls it can reveal whether the execution exists.
+   */
+  load(): Promise<ExecutionRecord | undefined>;
+};
+
 /**
  * What an observation route, `/cancel` or `/clear-divergence` passes to
  * observation middleware.
  */
 export type ObservationRequest =
-  | {
-      operation: "poll" | "wait" | "events";
-      executionId: string;
-      /**
-       * Reads the record. It resolves `undefined` for an unknown ID, so a
-       * policy that calls it can reveal whether the execution exists.
-       */
-      load(): Promise<ExecutionRecord | undefined>;
-    }
+  | ({ operation: "poll" | "wait" | "events" | "clear-divergence" } & ObservedExecution)
   | {
       operation: "list";
       filter: { workflowId?: string; status?: ExecutionStatus; diverged?: boolean };
     }
-  | {
-      operation: "cancel";
-      executionId: string;
-      force: boolean;
-      /**
-       * Reads the record. It resolves `undefined` for an unknown ID, so a
-       * policy that calls it can reveal whether the execution exists.
-       */
-      load(): Promise<ExecutionRecord | undefined>;
-    }
-  | {
-      operation: "clear-divergence";
-      executionId: string;
-      /**
-       * Reads the record. It resolves `undefined` for an unknown ID, so a
-       * policy that calls it can reveal whether the execution exists.
-       */
-      load(): Promise<ExecutionRecord | undefined>;
-    };
+  | ({ operation: "cancel"; force: boolean } & ObservedExecution);
 
 /**
  * Allows or denies an observation, cancel or clear-divergence request. It

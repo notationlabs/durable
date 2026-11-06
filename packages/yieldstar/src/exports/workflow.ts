@@ -93,8 +93,8 @@ export type WorkflowOptions = {
   /**
    * A non-negative integer. The first delivery of each execution records it,
    * and every later delivery exposes the recorded version as
-   * `event.workflowVersion`, whatever the code declares by then.
-   * @default 1
+   * `event.workflowVersion`, whatever the code declares by then. A
+   * workflow defined without options has version 1.
    */
   version: number;
 };

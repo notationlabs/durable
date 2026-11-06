@@ -3,6 +3,7 @@ export {
   type ObservationErrorCode,
   type ObservationMiddlewareFunction,
   type ObservationRequest,
+  type ObservedExecution,
   type RouteHandler,
   type Routes,
 } from "./http-server";
