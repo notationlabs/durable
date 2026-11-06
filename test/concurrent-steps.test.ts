@@ -1317,7 +1317,7 @@ describe.each(runtimes)("concurrent steps on $name", ({ create }) => {
       expect(ran).toEqual([]);
     });
 
-    test("a recorded index past the last branch fails as a changed outcome", async () => {
+    test("a recorded index past the last branch diverges", async () => {
       await admit("tie");
       const lease = (await claim())!;
       await runtime.heap.writeStep({
@@ -1327,8 +1327,11 @@ describe.each(runtimes)("concurrent steps on $name", ({ create }) => {
         done: true,
         stepResponseJson: '{"decision":"won","held":[],"index":5,"keys":[],"type":"branches-decision"}',
       });
-      const outcome = await run(lease);
-      expect((outcome as { error: Error }).error.message).toMatch(/no longer reaches its recorded outcome/);
+      expect(await run(lease)).toMatchObject({
+        status: "diverged",
+        code: "NONDETERMINISTIC_REPLAY",
+        stepKey: "first",
+      });
     });
 
     test("replay keeps the state a losing branch set before the decision, and stops it where the first run did", async () => {
