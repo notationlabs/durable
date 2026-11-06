@@ -21,7 +21,7 @@ export type SettledResults<B extends readonly Branch<unknown>[]> = {
 
 export type RaceResult<B extends readonly Branch<unknown>[]> = {
   [I in keyof B]: B[I] extends Branch<infer T>
-    ? { index: I extends `${infer N extends number}` ? N : never; value: T }
+    ? { index: I extends `${infer N extends number}` ? N : number; value: T }
     : never;
 }[number];
 
@@ -61,7 +61,8 @@ export class StepBranches extends StepResponse {
 /**
  * What a settled combinator recorded. Branch values are not recorded: replay
  * resumes branches through their recorded steps and the decision picks the
- * outcome. Under `rejected` and `won`, replay resumes only branch `index`.
+ * outcome. Under `rejected` and `won`, replay stops the other branches where
+ * the first run stopped them.
  * - `fulfilled`: every branch of a fail-fast `all` returned.
  * - `rejected`: branch `index` failed first in a fail-fast `all`.
  * - `settled`: every branch of a settle-mode `all` returned or failed.
@@ -85,10 +86,15 @@ export class StepBranchesDecision extends StepResponse {
     readonly decision: BranchesDecision,
     /**
      * For `rejected` and `won`, the step keys that the other branches reached
-     * before the decision. Replay does not resume those branches, and
-     * reserves their keys instead.
+     * before the decision. On replay, those branches stop at any other key.
      */
-    readonly keys: readonly string[] = []
+    readonly keys: readonly string[] = [],
+    /**
+     * The subset of `keys` at which a branch was waiting when the decision
+     * was made: its generator was not resumed past them. On replay, those
+     * branches stop at these keys.
+     */
+    readonly held: readonly string[] = []
   ) {
     super();
   }
@@ -116,11 +122,11 @@ export class Limiter {
 }
 
 /**
- * Orders a combinator's decision write after the runtime calls already in
- * flight under it, and those made after it behind it. Work
- * done in shared mode checks first whether its branch has stopped, so no
- * waiter is registered after the decision write deleted the waiters of
- * stopped branches.
+ * Orders a combinator's decision write against the runtime calls in its
+ * branches. The write waits for the calls already in flight. Calls made
+ * after the write starts wait for it to finish. Work done in shared mode
+ * checks first whether its branch has stopped, so no waiter is registered
+ * after the decision write deleted the waiters of stopped branches.
  */
 export class DecisionLock {
   private readers = 0;
@@ -161,6 +167,9 @@ export class Combinator {
   fatal: { err: unknown } | undefined;
   /** Step keys each branch and its nested branches reached, by branch index. */
   readonly keys: string[][] = [];
+  /** Under a recorded `rejected` or `won`, the record's `keys` and `held`. */
+  replayKeys = new Set<string>();
+  replayHeld = new Set<string>();
   readonly branches: DrivenBranch[] = [];
   readonly limiter: Limiter;
   readonly lock = new DecisionLock();
@@ -182,14 +191,39 @@ export class Combinator {
    */
   stops(branch: DrivenBranch): boolean {
     if (this.fatal) return true;
+    return !this.recorded && this.decidedOn(branch) === false;
+  }
+
+  /**
+   * Whether `branch` is replayed up to where the recorded decision stopped
+   * it, and no further.
+   */
+  limits(branch: DrivenBranch): boolean {
+    return this.recorded && this.decidedOn(branch) === false;
+  }
+
+  /** Under `rejected` or `won`, whether the decision is on `branch`. */
+  private decidedOn(branch: DrivenBranch): boolean | undefined {
     const { decision } = this;
-    if (decision?.decision !== "rejected" && decision?.decision !== "won") return false;
-    return branch.index !== decision.index;
+    if (decision?.decision !== "rejected" && decision?.decision !== "won") return undefined;
+    return branch.index === decision.index;
   }
 
   /** Step keys that the branches other than `index` reached. */
   keysOutside(index: number): string[] {
     return this.keys.flatMap((keys, i) => (i === index ? [] : keys));
+  }
+
+  /** Step keys at which the branches other than `index`, or their nested branches, wait. */
+  heldOutside(index: number): string[] {
+    const held: string[] = [];
+    const collect = (branch: DrivenBranch) => {
+      if (branch.at === undefined) return;
+      held.push(branch.at);
+      if (branch.inner?.stepKey === branch.at) branch.inner.branches.forEach(collect);
+    };
+    this.branches.forEach((branch, i) => i !== index && collect(branch));
+    return held;
   }
 
   /** Whether one of its branches may still reach a recorded step. */
@@ -206,6 +240,11 @@ export class DrivenBranch {
   private done = false;
   /** The combinator this branch reached last. */
   inner: Combinator | undefined;
+  /**
+   * The step key the branch is at: reached, but the generator is not yet
+   * resumed past it.
+   */
+  at: string | undefined;
 
   constructor(
     readonly parent?: Combinator,
@@ -254,7 +293,34 @@ export class DrivenBranch {
     return false;
   }
 
+  /**
+   * Whether a recorded decision above this branch lets it reach `stepKey`.
+   * A branch the decision stopped may reach only the keys listed with it.
+   */
+  allows(stepKey: string): boolean {
+    return this.limits().every((combinator) => combinator.replayKeys.has(stepKey));
+  }
+
+  /** Whether a recorded decision above this branch stopped it waiting at `stepKey`. */
+  holds(stepKey: string): boolean {
+    return this.limits().some((combinator) => combinator.replayHeld.has(stepKey));
+  }
+
+  /** Whether a recorded decision above this branch stopped it. */
+  get limited(): boolean {
+    return this.limits().length > 0;
+  }
+
+  private limits(): Combinator[] {
+    const combinators: Combinator[] = [];
+    for (let branch: DrivenBranch = this; branch.parent; branch = branch.parent.owner) {
+      if (branch.parent.limits(branch)) combinators.push(branch.parent);
+    }
+    return combinators;
+  }
+
   reach(stepKey: string) {
+    this.at = stepKey;
     for (let branch: DrivenBranch = this; branch.parent; branch = branch.parent.owner) {
       branch.parent.keys[branch.index]!.push(stepKey);
     }

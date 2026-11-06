@@ -249,6 +249,7 @@ export function workflow<
           iteratorResult = nextIteratorResult;
           nextIteratorResult = null;
         } else {
+          branch.at = undefined;
           iteratorResult = await next(resumeWith);
         }
         resumeWith = undefined;
@@ -264,11 +265,18 @@ export function workflow<
         if (branch.stopped) return { status: "stopped" };
         const stepKey = iteratorResult.value.key;
         const isCombinator = iteratorResult.value instanceof BranchesStepKey;
+        // On replay, a branch that a recorded decision stopped stops where
+        // the first run stopped it: at a key it did not reach, or after
+        // reaching a key it was waiting at.
+        if (!branch.allows(stepKey)) return { status: "stopped" };
         if (stepKeys.has(stepKey)) {
           throw new Error("Each step in a loop must have a unique cache key.");
         }
         stepKeys.add(stepKey);
         branch.reach(stepKey);
+        if (!isCombinator && branch.holds(stepKey)) return { status: "stopped" };
+        // The first run resumed the branch past this step before the decision.
+        const passed = !isCombinator && branch.limited;
 
         let cached = await infrastructure(() =>
           heapClient.readStep({
@@ -282,11 +290,14 @@ export function workflow<
         }
 
         const recorded = cached ? decodeStepRecord(cached.stepResponseJson) : null;
+        if (passed && !cached?.meta.done) {
+          throw new Error(`Step "${stepKey}" no longer reaches its recorded outcome on replay`);
+        }
 
         let thrown: { err: unknown } | undefined;
         if (cached?.meta.done && recorded instanceof StepCancelled) {
           thrown = { err: recorded.err };
-        } else if (!isCombinator && isUnfinishedStep(cached, recorded, clock())) {
+        } else if (!isCombinator && !passed && isUnfinishedStep(cached, recorded, clock())) {
           // A combinator is not a cancellation point.
           branch.markLive();
           if (branch.stopped) return { status: "stopped" };
@@ -302,6 +313,7 @@ export function workflow<
         if (thrown) {
           // The step is suspended at its StepKey, so the throw reaches
           // workflow code without running the step.
+          branch.at = undefined;
           nextIteratorResult = await throwInto(thrown.err);
           continue;
         }
@@ -337,6 +349,7 @@ export function workflow<
             stepAttempt,
             cached,
             recorded,
+            passed,
             cachedResponse: cached
               ? recorded
               : unfinished && cacheCheck instanceof UnfinishedCacheCheck
@@ -349,8 +362,9 @@ export function workflow<
 
         // A stopped branch's step that was in flight is recorded, but the
         // branch's generator is not resumed.
-        if (branch.stopped) return { status: "stopped" };
+        if (branch.stopped || branch.holds(stepKey)) return { status: "stopped" };
         if ("throw" in action) {
+          branch.at = undefined;
           nextIteratorResult = await throwInto(action.throw);
           continue;
         }
@@ -373,6 +387,8 @@ export function workflow<
       stepAttempt: number;
       cached: HeapRecord | null;
       recorded: StepResponse | null;
+      /** The first run resumed the branch past this step, so a delay resumes whatever the clock reads. */
+      passed: boolean;
       cachedResponse: StepResponse | null;
     }): Promise<StepAction> {
       const { branch, next, stepKey, cached, recorded } = params;
@@ -519,7 +535,7 @@ export function workflow<
         }
         return { throw: stepResponse.err };
       }
-      if (stepResponse instanceof StepDelay && stepResponse.wakeAt <= clock()) {
+      if (stepResponse instanceof StepDelay && (params.passed || stepResponse.wakeAt <= clock())) {
         return { resume: undefined };
       }
       if (stepResponse instanceof StepResult) {
@@ -532,9 +548,9 @@ export function workflow<
      * Drives the branches of `step.all` or `step.race` concurrently, records
      * the decision under `stepKey` once the combinator settles, and resolves
      * once no branch is running. A `recorded` decision is applied to the
-     * branches' replay instead; under `rejected` or `won`, only the deciding
-     * branch is replayed and the other branches' keys are reserved. Rejects
-     * with an error that ends the delivery.
+     * branches' replay instead; under `rejected` or `won`, the other branches
+     * stop where the record says. Rejects with an error that ends the
+     * delivery.
      */
     function runBranches(
       request: StepBranches,
@@ -551,22 +567,18 @@ export function workflow<
       const children = branches.map((_, i) => new DrivenBranch(combinator, i));
       combinator.branches.push(...children);
       combinator.keys.push(...branches.map(() => []));
-      const decided =
-        recorded?.decision.decision === "rejected" || recorded?.decision.decision === "won"
-          ? recorded.decision.index
-          : undefined;
-      for (const key of decided === undefined ? [] : recorded!.keys) {
-        if (stepKeys.has(key)) {
-          throw new Error("Each step in a loop must have a unique cache key.");
+      if (recorded) {
+        const { decision } = recorded;
+        if (
+          (decision.decision === "rejected" || decision.decision === "won") &&
+          decision.index >= branches.length
+        ) {
+          throw new Error(`Step "${stepKey}" no longer reaches its recorded outcome on replay`);
         }
-        stepKeys.add(key);
-        owner.reach(key);
+        combinator.replayKeys = new Set(recorded.keys);
+        combinator.replayHeld = new Set(recorded.held);
       }
-      const driven = children.filter((_, i) => decided === undefined || i === decided);
-      const states: BranchState[] = children.map((child) =>
-        driven.includes(child) ? { status: "running" } : { status: "stopped" }
-      );
-      for (const child of children) if (!driven.includes(child)) child.markDone();
+      const states: BranchState[] = children.map(() => ({ status: "running" }));
       // Indexes of branches that returned or threw, in the order they did.
       const finished: number[] = [];
       let writing = false;
@@ -602,6 +614,7 @@ export function workflow<
           if (
             !combinator.decision &&
             !owner.stopped &&
+            !owner.limited &&
             !combinator.replaying &&
             !(barrier.pending && running)
           ) {
@@ -628,7 +641,7 @@ export function workflow<
             settle(() => applyDecision(stepKey, decision, states));
             return;
           }
-          if (owner.stopped) {
+          if (owner.stopped || owner.limited) {
             settle(() => ({ status: "stopped" }));
             return;
           }
@@ -642,10 +655,9 @@ export function workflow<
           barrier.enter();
           // Only these decisions stop branches. Under the others every branch
           // has finished, so its waiters are already deleted.
-          const keys =
-            decision.decision === "rejected" || decision.decision === "won"
-              ? combinator.keysOutside(decision.index)
-              : [];
+          const stops = decision.decision === "rejected" || decision.decision === "won";
+          const keys = stops ? combinator.keysOutside(decision.index) : [];
+          const held = stops ? combinator.heldOutside(decision.index) : [];
           combinator.lock
             .exclusive(() =>
               writeStep({
@@ -653,7 +665,7 @@ export function workflow<
                 stepAttempt,
                 done: true,
                 stepResponseJson: encodeStepRecord(
-                  new StepBranchesDecision(decision, keys),
+                  new StepBranchesDecision(decision, keys, held),
                   stepKey
                 ).json,
                 ...(keys.length > 0 ? { deleteWaitersOf: keys } : {}),
@@ -671,8 +683,8 @@ export function workflow<
         };
 
         combinator.evaluate = evaluate;
-        barrier.enter(driven.length);
-        driven.forEach((child) => {
+        barrier.enter(children.length);
+        children.forEach((child) => {
           const i = child.index;
           drive(branches[i]!, child)
             .then(

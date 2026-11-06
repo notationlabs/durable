@@ -96,7 +96,7 @@ function encodeResponse(response: StepResponse, stepKey: string): string {
     return `{"err":${encodeThrownValue(response.err)},"type":"step-cancelled"}`;
   }
   if (response instanceof StepBranchesDecision) {
-    return encodeDecision(response.decision, response.keys);
+    return encodeDecision(response.decision, response.keys, response.held);
   }
   if (response instanceof StepDelay) {
     return `{"type":"step-delay","wakeAt":${JSON.stringify(response.wakeAt)}}`;
@@ -114,14 +114,18 @@ function encodeResponse(response: StepResponse, stepKey: string): string {
   throw new Error(`Cannot record a ${response.type} step response`);
 }
 
-function encodeDecision(decision: BranchesDecision, keys: readonly string[]): string {
+function encodeDecision(
+  decision: BranchesDecision,
+  keys: readonly string[],
+  held: readonly string[]
+): string {
   const type = `"type":"branches-decision"`;
   switch (decision.decision) {
     case "rejected":
     case "won":
       return (
         `{"decision":"${decision.decision}","index":${JSON.stringify(decision.index)}` +
-        `,"keys":${JSON.stringify(keys)},${type}}`
+        `,"held":${JSON.stringify(held)},"keys":${JSON.stringify(keys)},${type}}`
       );
     case "cancelled":
       return `{"decision":"cancelled","err":${encodeThrownValue(decision.err)},${type}}`;
@@ -138,12 +142,18 @@ function decodeDecision(record: Record<string, unknown>): StepBranchesDecision {
       return new StepBranchesDecision({ decision: record.decision });
     case "rejected":
     case "won": {
-      const { index, keys } = record;
-      if (typeof index !== "number") break;
-      if (!Array.isArray(keys) || !keys.every((key) => typeof key === "string")) {
+      const { index, keys, held } = record;
+      if (!Number.isInteger(index) || (index as number) < 0) break;
+      const isKeys = (value: unknown): value is string[] =>
+        Array.isArray(value) && value.every((key) => typeof key === "string");
+      if (!isKeys(keys) || !isKeys(held)) {
         throw new Error(`Invalid step record: a ${record.decision} decision has no keys`);
       }
-      return new StepBranchesDecision({ decision: record.decision, index }, keys);
+      return new StepBranchesDecision(
+        { decision: record.decision, index: index as number },
+        keys,
+        held
+      );
     }
     case "cancelled":
       return new StepBranchesDecision({
