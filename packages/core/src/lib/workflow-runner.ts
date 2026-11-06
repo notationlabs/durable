@@ -1,7 +1,6 @@
 import type { Logger } from "pino";
 import type {
   WorkflowGenerator,
-  WorkflowEvent,
   EventParams,
   ExecutionLease,
   WorkflowRunOutcome,
@@ -42,55 +41,20 @@ export class WorkflowRunner<
    * A workflow that throws `WorkflowCancelledError` ends `cancelled` only when
    * the delivery carried a cancellation request; otherwise it ends `failed`.
    * A replay that diverges from the recorded history ends `diverged`.
-   *
-   * The event's `workflowVersion` is `options.workflowVersion` when the
-   * record has one. Otherwise it is 1 when the execution already has step
-   * records, and the version the workflow declares when it has none. The
-   * outcome carries it, so the acknowledgement can record it.
    */
   run = async (
-    deliveryEvent: DeliveryEvent,
+    event: DeliveryEvent,
     options: DeliveryOptions & { logger?: Logger }
   ): Promise<WorkflowRunOutcome> => {
-    const { lease, signal, cancellation, logger = this.logger } = options;
-    const workflow = this.router[deliveryEvent.workflowId];
+    const { lease, signal, cancellation, workflowVersion, logger = this.logger } = options;
+    const workflow = this.router[event.workflowId];
 
     if (!workflow) {
       return {
         status: "failed",
-        error: new Error(`No workflow registered for "${deliveryEvent.workflowId}"`),
+        error: new Error(`No workflow registered for "${event.workflowId}"`),
       };
     }
-
-    // An execution with history but no recorded version was first delivered
-    // before versions were recorded, by code that declared none.
-    const workflowVersion =
-      options.workflowVersion ??
-      ((await this.hasHistory(deliveryEvent.executionId)) ? 1 : (workflow.workflowVersion ?? 1));
-    const event: WorkflowEvent = { ...deliveryEvent, workflowVersion };
-    const outcome = await this.runEvent(workflow, event, {
-      lease,
-      signal,
-      cancellation,
-      logger,
-    });
-    return { ...outcome, workflowVersion };
-  };
-
-  private async hasHistory(executionId: string) {
-    try {
-      return (await this.runtime.heap.listStepKeys({ executionId })).length > 0;
-    } catch (err) {
-      throw new InfrastructureError(err);
-    }
-  }
-
-  private async runEvent(
-    workflow: WorkflowGenerator<any, any, any>,
-    event: WorkflowEvent,
-    options: Pick<DeliveryOptions, "lease" | "signal" | "cancellation"> & { logger: Logger }
-  ): Promise<WorkflowRunOutcome> {
-    const { lease, signal, cancellation, logger } = options;
 
     let response:
       | WorkflowResult<unknown>
@@ -106,6 +70,7 @@ export class WorkflowRunner<
         lease,
         signal,
         cancellation,
+        workflowVersion,
       });
     } catch (err) {
       if (InfrastructureError.is(err)) throw err;
@@ -143,18 +108,20 @@ export class WorkflowRunner<
     Context extends EventContext
   >(params: {
     workflow: WorkflowGenerator<Params, Result, Context>;
-    event: WorkflowEvent<Params, Context>;
+    event: DeliveryEvent<Params, Context>;
     lease: ExecutionLease;
     signal: AbortSignal;
     cancellation: DeliveryOptions["cancellation"];
+    workflowVersion: DeliveryOptions["workflowVersion"];
     logger: Logger;
   }): Promise<
     WorkflowResult<Result> | StepDelay | StepEffectWait | StepStoreWait | StepJoinWait
   > {
-    const { workflow, event, lease, signal, cancellation, logger } = params;
+    const { workflow, event, lease, signal, cancellation, workflowVersion, logger } = params;
 
     const workflowIterator = workflow({
       event,
+      ...(workflowVersion !== undefined ? { workflowVersion } : {}),
       lease,
       signal,
       ...(cancellation ? { cancellation } : {}),

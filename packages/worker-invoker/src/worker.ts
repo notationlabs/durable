@@ -53,8 +53,8 @@ export type SerializedOutcome =
   | Extract<WorkflowRunOutcome, { status: "suspended" }>
   | Extract<WorkflowRunOutcome, { status: "cancelled" }>
   | Extract<WorkflowRunOutcome, { status: "diverged" }>
-  | { status: "completed"; result: string; workflowVersion?: number }
-  | { status: "failed"; error: string; workflowVersion?: number };
+  | { status: "completed"; result: string }
+  | { status: "failed"; error: string };
 
 /** The exit code of a worker whose runtime process has gone. */
 export const WORKER_ORPHANED_EXIT_CODE = 75;
@@ -113,14 +113,12 @@ function serializeOutcome(outcome: WorkflowRunOutcome): SerializedOutcome {
   ) {
     return outcome;
   }
-  const version =
-    outcome.workflowVersion !== undefined ? { workflowVersion: outcome.workflowVersion } : {};
   if (outcome.status === "failed") {
-    return { status: "failed", error: encodeThrownValue(outcome.error), ...version };
+    return { status: "failed", error: encodeThrownValue(outcome.error) };
   }
   const result = durableValueCodec.encode(outcome.result);
   if (result.status === "encoded") {
-    return { status: "completed", result: result.canonical, ...version };
+    return { status: "completed", result: result.canonical };
   }
   // As acknowledgement would record it.
   const error = new WorkflowValueError(
@@ -128,5 +126,5 @@ function serializeOutcome(outcome: WorkflowRunOutcome): SerializedOutcome {
     WORKFLOW_RESULT_STEP_KEY,
     `Workflow result is not a durable value: ${result.message}`
   );
-  return { status: "failed", error: encodeThrownValue(error), ...version };
+  return { status: "failed", error: encodeThrownValue(error) };
 }

@@ -19,7 +19,6 @@ import {
   type EffectDescriptor,
   type EffectLookup,
 } from "yieldstar";
-import { withoutVersion } from "./outcome";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -133,8 +132,7 @@ function setup(overrides: Partial<Descriptor> = {}) {
         duration: DEFAULT_LEASE_DURATION,
       });
     }
-    return withoutVersion(
-      await invoker.deliver(
+    return await invoker.deliver(
         {
           workflowId: "charge-order",
           executionId: "order-42",
@@ -142,8 +140,7 @@ function setup(overrides: Partial<Descriptor> = {}) {
           context: new Map(),
         },
         { lease: lease!, signal }
-      )
-    );
+      );
   }
 
   const readStep = async (stepKey: string) => {

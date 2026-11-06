@@ -23,7 +23,6 @@ import {
   workflow,
   type SettledResult,
 } from "yieldstar";
-import { withoutVersion } from "./outcome";
 
 const isBun = "Bun" in globalThis;
 const { createSqliteDb } = isBun
@@ -807,8 +806,7 @@ describe.each(runtimes)("concurrent steps on $name", ({ create }) => {
   /** Runs one delivery under `lease` as the dispatcher would, without acknowledging it. */
   async function run(lease: ExecutionLease, signal = new AbortController().signal) {
     const record = (await runtime.executions.get(lease.executionId))!;
-    return withoutVersion(
-      await runner.run(
+    return await runner.run(
         {
           workflowId: record.workflowId,
           executionId: lease.executionId,
@@ -820,8 +818,7 @@ describe.each(runtimes)("concurrent steps on $name", ({ create }) => {
           signal,
           ...(record.cancellation ? { cancellation: record.cancellation } : {}),
         }
-      )
-    );
+      );
   }
 
   /** Claims the execution if it is due, runs it and acknowledges the outcome. */

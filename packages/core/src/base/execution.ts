@@ -74,8 +74,8 @@ export type ExecutionDivergence = {
  *
  * `parent` is present, and immutable, only on executions admitted by `start`.
  * `cancellation` is present once `cancel` has recorded a request.
- * `workflowVersion` is present once a delivery has made its first fenced
- * write. `divergence` is present while the execution is parked after a
+ * `workflowVersion` is present once a delivery has written its first step
+ * record or cancellation record. `divergence` is present while the execution is parked after a
  * divergent replay.
  */
 export interface ExecutionRecord {
@@ -154,18 +154,14 @@ export function isLeaseLost(value: unknown): value is LeaseLost {
  *   was written. The acknowledgement records `divergence` and parks the
  *   execution instead of recording an outcome.
  *
- * `workflowVersion` is the version the delivery exposed. The acknowledgement
- * records it when the execution has none.
- *
  * Infrastructure errors are never outcomes: the delivery rejects instead.
  */
-export type WorkflowRunOutcome = (
+export type WorkflowRunOutcome =
   | { status: "completed"; result: unknown }
   | { status: "suspended"; wakeAt?: number }
   | { status: "failed"; error: Error }
   | { status: "cancelled" }
-  | { status: "diverged"; code: ExecutionDivergenceCode; stepKey?: string }
-) & { workflowVersion?: number };
+  | { status: "diverged"; code: ExecutionDivergenceCode; stepKey?: string };
 
 export type ExecutionAdmissionRequest = {
   executionId?: string;

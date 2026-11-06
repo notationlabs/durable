@@ -1,5 +1,5 @@
 import type { Logger } from "pino";
-import type { EventParams, WorkflowEvent, EventContext } from "./event";
+import type { DeliveryEvent, EventParams, EventContext } from "./event";
 import type { EffectClient } from "./effect";
 import type {
   ExecutionCancellation,
@@ -15,7 +15,14 @@ export type WorkflowGeneratorParams<
   Params extends EventParams,
   Context extends EventContext
 > = {
-  event: WorkflowEvent<Params, Context>;
+  /** The driver adds `workflowVersion` to it before workflow code sees it. */
+  event: DeliveryEvent<Params, Context>;
+  /**
+   * The workflow version on the record, when one is recorded. Without it,
+   * the driver exposes 1 for an execution that has step records, and the
+   * version the workflow declares for one that has none.
+   */
+  workflowVersion?: number;
   /** Every heap step write is fenced by this lease. */
   lease: ExecutionLease;
   /**
@@ -44,13 +51,9 @@ export type WorkflowGenerator<
   Params extends EventParams,
   Result,
   Context extends EventContext
-> = {
-  (
-    genParams: WorkflowGeneratorParams<Params, Context>
-  ): AsyncGenerator<StepResponse, WorkflowResult<Result>, StepResponse>;
-  /** The version the workflow declares. A delivery with none recorded exposes it. @default 1 */
-  readonly workflowVersion?: number;
-};
+> = (
+  genParams: WorkflowGeneratorParams<Params, Context>
+) => AsyncGenerator<StepResponse, WorkflowResult<Result>, StepResponse>;
 
 export type WorkflowGeneratorReturnType<CG> = CG extends WorkflowGenerator<
   infer Params,

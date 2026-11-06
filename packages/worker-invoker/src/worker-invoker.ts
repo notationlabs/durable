@@ -169,21 +169,18 @@ export function createWorkflowInvoker(params: {
 }
 
 function deserializeOutcome(outcome: SerializedOutcome): WorkflowRunOutcome {
-  const version =
-    outcome.workflowVersion !== undefined ? { workflowVersion: outcome.workflowVersion } : {};
   switch (outcome.status) {
     case "suspended":
     case "cancelled":
     case "diverged":
       return outcome;
     case "completed":
-      return { status: "completed", result: decodeOrThrow(outcome.result), ...version };
+      return { status: "completed", result: decodeOrThrow(outcome.result) };
     case "failed": {
       const error = decodeOrThrow(outcome.error);
       return {
         status: "failed",
         error: error instanceof Error ? error : new Error(String(error)),
-        ...version,
       };
     }
   }

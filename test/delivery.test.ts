@@ -22,7 +22,6 @@ import {
   defineStore,
   workflow,
 } from "yieldstar";
-import { withoutVersion } from "./outcome";
 
 const logger = { info() {}, error() {}, warn() {} } as unknown as Logger;
 
@@ -64,12 +63,10 @@ function setup<W extends WorkflowRouter>(
       if (!lease) throw new Error(`could not lease "${executionId}"`);
       leases.set(executionId, lease);
     }
-    return withoutVersion(
-      await invoker.deliver(event(workflowId, executionId), {
+    return await invoker.deliver(event(workflowId, executionId), {
         lease,
         signal: new AbortController().signal,
-      })
-    );
+      });
   }
 
   return { runtime, runner, invoker, dispatcher, sdk, deliver };

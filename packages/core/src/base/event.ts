@@ -62,7 +62,7 @@ export type WorkflowEvent<
 };
 
 /**
- * The event a delivery is dispatched with. The runner adds `workflowVersion`:
+ * The event a delivery is dispatched with. The driver adds `workflowVersion`:
  * the recorded one, or the version the workflow declares.
  */
 export type DeliveryEvent<

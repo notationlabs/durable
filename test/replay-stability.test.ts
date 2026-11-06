@@ -202,7 +202,7 @@ describe.each(runtimes)("replay stability on $name", ({ create }) => {
         }),
       });
       await admit();
-      expect(await deliver()).toEqual({ status: "completed", result: 1, workflowVersion: 1 });
+      expect(await deliver()).toEqual({ status: "completed", result: 1 });
       expect(ran).toEqual(["keyless"]);
       expect(warnings).toHaveLength(1);
       expect(warnings[0]!.msg).toMatch(/^Deprecated: a step without a key/);
@@ -286,12 +286,12 @@ describe.each(runtimes)("replay stability on $name", ({ create }) => {
     test("an execution first delivered under version 2 replays on version 3 code with version 2", async () => {
       deploy({ [WORKFLOW]: versioned(2) });
       await admit();
-      expect(await deliver()).toMatchObject({ status: "suspended", workflowVersion: 2 });
+      expect(await deliver()).toMatchObject({ status: "suspended" });
       expect((await record()).workflowVersion).toBe(2);
 
       deploy({ [WORKFLOW]: versioned(3) });
       advance(MINUTE);
-      expect(await deliver()).toEqual({ status: "completed", result: 2, workflowVersion: 2 });
+      expect(await deliver()).toEqual({ status: "completed", result: 2 });
       expect(observed).toEqual([2, 2]);
       expect((await record()).workflowVersion).toBe(2);
     });
@@ -342,15 +342,16 @@ describe.each(runtimes)("replay stability on $name", ({ create }) => {
       expect((await record()).workflowVersion).toBe(3);
     });
 
-    test("a workflow that fails before any step records its version with the acknowledgement", async () => {
+    test("a workflow that fails before any step records no version", async () => {
       deploy({
         [WORKFLOW]: workflow({ version: 4 }, async function* () {
           throw new Error("declined");
         }),
       });
       await admit();
-      expect(await deliver()).toMatchObject({ status: "failed", workflowVersion: 4 });
-      expect(await record()).toMatchObject({ status: "failed", workflowVersion: 4 });
+      expect(await deliver()).toMatchObject({ status: "failed" });
+      expect(await record()).toMatchObject({ status: "failed" });
+      expect((await record()).workflowVersion).toBeUndefined();
     });
 
     test("an execution with step records but no recorded version, from before versions, is version 1", async () => {
@@ -374,7 +375,7 @@ describe.each(runtimes)("replay stability on $name", ({ create }) => {
         }),
       });
       advance(MINUTE);
-      expect(await deliver()).toMatchObject({ status: "suspended", workflowVersion: 1 });
+      expect(await deliver()).toMatchObject({ status: "suspended" });
       expect(observed).toEqual([1]);
       expect((await record()).workflowVersion).toBe(1);
     });
@@ -403,7 +404,6 @@ describe.each(runtimes)("replay stability on $name", ({ create }) => {
         status: "diverged",
         code: "NONDETERMINISTIC_REPLAY",
         stepKey: "charge-v3",
-        workflowVersion: 1,
       });
       expect(ran).toEqual([]);
       expect(await stepKeys()).toEqual(["charge", "courier", "reserve-stock"]);

@@ -41,7 +41,6 @@ async function diverge(runtime: Runtime, executionId: string) {
       status: "diverged",
       code: "NONDETERMINISTIC_REPLAY",
       stepKey: "charge-v3",
-      workflowVersion: 2,
     },
   });
 }
@@ -159,7 +158,7 @@ for (const backendKind of backendKinds) {
       });
     });
 
-    test("poll and list show workflowVersion and divergence, and list filters by diverged", async () => {
+    test("poll and list show divergence, and list filters by diverged", async () => {
       const { runtime } = openBackend(backendKind);
       const { url } = serveRoutes(runtime);
       await admit(runtime, "order-42");
@@ -167,7 +166,7 @@ for (const backendKind of backendKinds) {
       await diverge(runtime, "order-42");
 
       const view = await decoded(await post(url, "poll", { executionId: "order-42" }));
-      expect(view).toMatchObject({ status: "admitted", workflowVersion: 2, divergence });
+      expect(view).toMatchObject({ status: "admitted", divergence });
       const listed = (await decoded(await post(url, "list", { diverged: true }))) as {
         executions: { executionId: string }[];
       };

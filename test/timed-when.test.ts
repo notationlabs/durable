@@ -14,7 +14,6 @@ import { MemoryRuntime } from "@yieldstar/test-runtime";
 import { SqliteRuntime } from "@yieldstar/sqlite-runtime";
 import { testSchema } from "@yieldstar/test-utils";
 import { defineStore, workflow, type TimedWhenResult } from "yieldstar";
-import { withoutVersion } from "./outcome";
 
 const isBun = "Bun" in globalThis;
 const { createSqliteDb } = isBun
@@ -173,8 +172,7 @@ describe.each(runtimes)("timed store.when on $name", ({ create }) => {
   /** Runs one delivery under `lease` without acknowledging it. */
   async function run(lease: ExecutionLease) {
     const record = await runtime.executions.get(lease.executionId);
-    return withoutVersion(
-      await runner.run(
+    return await runner.run(
         {
           workflowId: record!.workflowId,
           executionId: lease.executionId,
@@ -182,8 +180,7 @@ describe.each(runtimes)("timed store.when on $name", ({ create }) => {
           context: new Map(),
         },
         { lease, signal: new AbortController().signal }
-      )
-    );
+      );
   }
 
   /** Claims the execution if it is due, runs it and acknowledges the outcome. */
@@ -509,7 +506,7 @@ describe.each(runtimes)("timed store.when on $name", ({ create }) => {
       },
       { lease: lease!, signal: new AbortController().signal }
     );
-    expect(outcome).toEqual({ status: "suspended", workflowVersion: 1 });
+    expect(outcome).toEqual({ status: "suspended" });
     await runtime.executions.acknowledge({ lease: lease!, outcome });
     expect(await readStep()).toEqual({ type: "store-wait", done: false });
 
@@ -626,6 +623,5 @@ test("timed when requires an explicit key and a finite deadline", async () => {
   expect(outcome).toEqual({
     status: "completed",
     result: { untimed: "approved", timed: { status: "matched", value: "approved" } },
-    workflowVersion: 1,
   });
 });

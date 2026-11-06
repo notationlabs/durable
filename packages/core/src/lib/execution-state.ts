@@ -82,7 +82,7 @@ export type ExecutionState = {
   parent: ExecutionParent | null;
   /** Set by the first cancellation request, and kept whatever the outcome. */
   cancellation: ExecutionCancellationState | null;
-  /** Set by the first fenced write of any delivery, and never changed. */
+  /** Set by the first step record or cancellation record of any delivery, and never changed. */
   workflowVersion: number | null;
   /**
    * Set by a `diverged` acknowledgement. While set, `nextClaimAt` is null, so
@@ -497,8 +497,6 @@ export function acknowledgeExecution(
   }
 
   const { outcome, now } = params;
-  const workflowVersion = state.workflowVersion ?? outcome.workflowVersion ?? null;
-
   if (outcome.status === "diverged") {
     return {
       // Like a release, the wakes the lease covered stay pending, but the
@@ -506,7 +504,6 @@ export function acknowledgeExecution(
       // rather than redelivered.
       state: {
         ...state,
-        workflowVersion,
         dueAt: earliest(state.dueAt, state.claimedDueAt),
         claimedDueAt: null,
         leaseExpiresAt: null,
@@ -523,7 +520,6 @@ export function acknowledgeExecution(
   }
 
   const ended = {
-    workflowVersion,
     divergence: null,
     claimedDueAt: null,
     leaseExpiresAt: null,

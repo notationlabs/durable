@@ -209,8 +209,8 @@ Order 42 started under version 2, so it keeps the `charge` step and replays with
 
 - A version is a non-negative integer. `workflow` throws a `TypeError` for any other value.
 - A workflow that declares no version is version 1.
-- The version is recorded by the delivery's first fenced write: a step record, a cancellation record, or the acknowledgement. A workflow that fails before any step records its version with the `failed` acknowledgement.
-- If a delivery ends before any fenced write, for example because the worker crashed, no history exists yet. The next delivery is again a first delivery and records the version deployed by then. A version deployed between admission and the first delivery is therefore the one the execution records.
+- The version is recorded by the delivery's first step record or cancellation record. A workflow that fails before any step records no version.
+- If a delivery ends before any step record, for example because the worker crashed, no history exists yet. The next delivery is again a first delivery and records the version deployed by then. A version deployed between admission and the first delivery is therefore the one the execution records.
 - Execution views carry `workflowVersion` once it is recorded.
 
 ### Executions from before this release

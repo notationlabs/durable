@@ -132,16 +132,17 @@ export function workflow(
   if (typeof version !== "number" || !Number.isSafeInteger(version) || version < 0) {
     throw new TypeError("workflow version must be a non-negative integer");
   }
-  return Object.assign(createWorkflowGenerator(workflowFn), { workflowVersion: version });
+  return createWorkflowGenerator(workflowFn, version);
 }
 
 function createWorkflowGenerator<
   Params extends EventParams,
   Result,
   Context extends EventContext
->(workflowFn: WorkflowFn<Params, Result, Context>) {
+>(workflowFn: WorkflowFn<Params, Result, Context>, declaredVersion: number) {
   return async function* workflowGenerator({
-    event,
+    event: deliveryEvent,
+    workflowVersion: recordedVersion,
     lease,
     signal,
     cancellation,
@@ -158,27 +159,30 @@ function createWorkflowGenerator<
     WorkflowResult<Result>,
     StepResponse
   > {
-    const stepRunner = createStepRunner({ event, clock });
-    const workflowIterator = workflowFn(stepRunner, event, logger);
-    const { executionId } = event;
-    const clients: RuntimeClients = {
-      stores: storeClient,
-      executions: executionClient,
-      joins: joinClient,
-    };
-    const { workflowVersion } = event;
-    // The keys this delivery requested, shared by every branch, so a key
-    // repeated across branches is rejected. A recorded step counts as
-    // consumed once its key is in this set.
-    const stepKeys = new Set<string>();
-    // The kind each requested key was requested as, stored with its records.
-    const stepKinds = new Map<string, string>();
+    const { executionId } = deliveryEvent;
     // Every step the history recorded before this delivery. It is not
     // updated, since the records this delivery writes are for keys in
     // `stepKeys`.
     const recordedSteps = new Set(
       await infrastructure(() => heapClient.listStepKeys({ executionId }))
     );
+    // An execution with history but no recorded version was first delivered
+    // before versions were recorded, by code that declared none.
+    const workflowVersion = recordedVersion ?? (recordedSteps.size > 0 ? 1 : declaredVersion);
+    const event: WorkflowEvent<Params, Context> = { ...deliveryEvent, workflowVersion };
+    const stepRunner = createStepRunner({ event, clock });
+    const workflowIterator = workflowFn(stepRunner, event, logger);
+    const clients: RuntimeClients = {
+      stores: storeClient,
+      executions: executionClient,
+      joins: joinClient,
+    };
+    // The keys this delivery requested, shared by every branch, so a key
+    // repeated across branches is rejected. A recorded step counts as
+    // consumed once its key is in this set.
+    const stepKeys = new Set<string>();
+    // The kind each requested key was requested as, stored with its records.
+    const stepKinds = new Map<string, string>();
     // The answer each patch ID gave in this delivery, so a second call with
     // the same ID gives the same answer.
     const patches = new Map<string, boolean>();

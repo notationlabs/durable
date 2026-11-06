@@ -320,7 +320,7 @@ export function registerReplayStabilityClientConformance({
         await writeStep(runtime, first, "reserve-stock", { workflowVersion: 2 });
         await writeStep(runtime, first, "charge", { workflowVersion: 3 });
         expect(
-          await acknowledge(runtime, first, { status: "suspended", workflowVersion: 3 })
+          await acknowledge(runtime, first, { status: "suspended" })
         ).toEqual({ status: "suspended" });
         expect(await versionOf(runtime, "order-42")).toBe(2);
 
@@ -328,11 +328,7 @@ export function registerReplayStabilityClientConformance({
         const second = await lease(runtime, "order-42");
         await writeStep(runtime, second, "ship", { workflowVersion: 4 });
         expect(
-          await acknowledge(runtime, second, {
-            status: "completed",
-            result: null,
-            workflowVersion: 4,
-          })
+          await acknowledge(runtime, second, { status: "completed", result: null })
         ).toEqual({ status: "completed", result: null });
         expect(await versionOf(runtime, "order-42")).toBe(2);
       });
@@ -358,28 +354,13 @@ export function registerReplayStabilityClientConformance({
         expect(await runtime.executions.get("order-42")).not.toHaveProperty("workflowVersion");
       });
 
-      it("records the version with an acknowledgement when no write did", async ({ runtime }) => {
+      it("records no version with an acknowledgement", async ({ runtime }) => {
         await admit(runtime, "order-42");
-        expect(
-          await acknowledge(runtime, await claimOne(runtime, "order-42"), {
-            status: "suspended",
-            workflowVersion: 2,
-          })
-        ).toEqual({ status: "suspended" });
-        expect(await versionOf(runtime, "order-42")).toBe(2);
-
-        await admit(runtime, "order-43");
-        expect(
-          await acknowledge(runtime, await claimOne(runtime, "order-43"), {
-            status: "completed",
-            result: { shipped: true },
-            workflowVersion: 3,
-          })
-        ).toEqual({ status: "completed", result: { shipped: true } });
-        expect(await runtime.executions.get("order-43")).toMatchObject({
+        await acknowledge(runtime, await claimOne(runtime, "order-42"), {
           status: "completed",
-          workflowVersion: 3,
+          result: { shipped: true },
         });
+        expect(await runtime.executions.get("order-42")).not.toHaveProperty("workflowVersion");
       });
 
       it("records the version with recordCancellation", async ({ runtime }) => {
@@ -428,7 +409,6 @@ export function registerReplayStabilityClientConformance({
             status: "diverged",
             code: "NONDETERMINISTIC_REPLAY",
             stepKey: "charge-v3",
-            workflowVersion: 3,
           })
         ).toEqual({ status: "diverged" });
 
@@ -475,22 +455,6 @@ export function registerReplayStabilityClientConformance({
         expect(record!.divergence).toEqual({
           code: "STEP_SCHEMA_CHANGED",
           detectedAt: clock.now,
-        });
-      });
-
-      it("takes the version from the outcome when the record has none, and records it", async ({
-        runtime,
-      }) => {
-        await admit(runtime, "order-42");
-        await acknowledge(runtime, await claimOne(runtime, "order-42"), {
-          status: "diverged",
-          code: "NONDETERMINISTIC_REPLAY",
-          stepKey: "charge-v3",
-          workflowVersion: 3,
-        });
-        expect(await runtime.executions.get("order-42")).toMatchObject({
-          workflowVersion: 3,
-          divergence: { code: "NONDETERMINISTIC_REPLAY" },
         });
       });
 

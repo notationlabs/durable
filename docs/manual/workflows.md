@@ -104,7 +104,7 @@ interface ExecutionRecord {
   unacknowledgedDeliveryCount: number; // consecutive deliveries that ended without an outcome
   parent?: { executionId: string; stepKey: string; detached: boolean }; // set when step.start or step.call admitted it
   cancellation?: ExecutionCancellation; // set when cancel recorded a request
-  workflowVersion?: number; // set by the first delivery's first fenced write
+  workflowVersion?: number; // set by the first step record or cancellation record
   divergence?: ExecutionDivergence; // set while the execution is parked after a divergent replay
 }
 ```

@@ -20,7 +20,6 @@ import {
   type TimedJoinResult,
 } from "yieldstar";
 import { cleanup, createTestSdk, sdkKinds } from "./observation-harness";
-import { withoutVersion } from "./outcome";
 
 const isBun = "Bun" in globalThis;
 const { createSqliteDb } = isBun
@@ -233,8 +232,7 @@ describe.each(runtimes)("step.join and step.call on $name", ({ create }) => {
   /** Runs one delivery under `lease` without acknowledging it. */
   async function run(lease: ExecutionLease) {
     const record = await runtime.executions.get(lease.executionId);
-    return withoutVersion(
-      await runner.run(
+    return await runner.run(
         {
           workflowId: record!.workflowId as keyof typeof router,
           executionId: lease.executionId,
@@ -242,8 +240,7 @@ describe.each(runtimes)("step.join and step.call on $name", ({ create }) => {
           context: new Map(),
         },
         { lease, signal: new AbortController().signal }
-      )
-    );
+      );
   }
 
   /** Claims the execution if it is due, runs it and acknowledges the outcome. */
