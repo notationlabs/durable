@@ -567,6 +567,26 @@ describe.each(runtimes)("replay stability on $name", ({ create }) => {
       expect(await runtime.executions.clearDivergence(ORDER)).toEqual({ status: "not-diverged" });
     });
 
+    test("a divergent delivery before a pending delay is due does not record the delay as passed", async () => {
+      await suspendOnV1();
+      deploy({
+        [WORKFLOW]: workflow(async function* (step) {
+          yield* step.run("reserve-stock", work("reserve-stock", "reserved"));
+          yield* step.delay("courier", DAY);
+          return "shipped";
+        }),
+      });
+      advance(MINUTE);
+      await runtime.executions.requestWake({ executionId: ORDER, wakeAt: Date.now() });
+      expect(await deliver()).toMatchObject({ status: "diverged", stepKey: "courier" });
+
+      deploy({ [WORKFLOW]: placeOrderV1 });
+      expect(await runtime.executions.clearDivergence(ORDER)).toEqual({ status: "cleared" });
+      expect(await deliver()).toMatchObject({ status: "suspended" });
+      advance(DAY);
+      expect(await deliver()).toMatchObject({ status: "completed", result: "shipped" });
+    });
+
     test("clearDivergence with code that still diverges sets divergence again on the next delivery", async () => {
       await suspendOnV1();
       deploy({ [WORKFLOW]: workflow(async function* () {}) });

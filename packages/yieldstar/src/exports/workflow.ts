@@ -484,15 +484,7 @@ function createWorkflowGenerator<
           );
         }
 
-        // A recorded delay with records after it was passed by the original
-        // run, even if this host's clock reads earlier than its wakeAt. Delays
-        // recorded before passed delays were recorded need this.
-        const passedInHistory =
-          !branch.parent &&
-          cached?.meta.done === true &&
-          recorded instanceof StepDelay &&
-          firstUnconsumed() !== undefined;
-        const unfinishedStep = !passedInHistory && isUnfinishedStep(cached, recorded, clock());
+        const unfinishedStep = isUnfinishedStep(cached, recorded, clock());
         // Outside every combinator, steps run one at a time, so a step about
         // to do new work must find the whole history consumed. Inside a
         // combinator, branches interleave differently on each delivery, and
@@ -596,7 +588,6 @@ function createWorkflowGenerator<
             stepAttempt,
             cached,
             recorded,
-            passedInHistory,
             cachedResponse: cached
               ? recorded
               : unfinished && cacheCheck instanceof UnfinishedCacheCheck
@@ -636,8 +627,6 @@ function createWorkflowGenerator<
       stepAttempt: number;
       cached: HeapRecord | null;
       recorded: StepResponse | null;
-      /** A recorded delay that counts as elapsed whatever the clock reads. */
-      passedInHistory: boolean;
       cachedResponse: StepResponse | null;
     }): Promise<StepAction> {
       const { branch, next, stepKey, cached, recorded } = params;
@@ -755,7 +744,7 @@ function createWorkflowGenerator<
       const passesNow =
         stepResponse instanceof StepDelay &&
         !(recorded instanceof StepDelayPassed) &&
-        (params.passedInHistory || stepResponse.wakeAt <= clock());
+        stepResponse.wakeAt <= clock();
       if (passesNow && !cached) stepResponse = new StepDelayPassed(stepResponse.wakeAt);
       if (
         !cached &&

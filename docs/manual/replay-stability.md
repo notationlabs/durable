@@ -286,5 +286,6 @@ Gate a schema change on `event.workflowVersion` or `step.patched`, so executions
 Code edits that used to re-run steps silently now park executions. After you deploy this release, list executions with `diverged: true` to find any that a deploy has parked.
 
 - **Records without a kind.** Step records written before this release have no step kind, so the driver does not compare their kind. Code that requests such a record's key as another kind of step, such as `step.delay("charge", ms)` for an old `step.run("charge", ...)` record, does not diverge.
+- **Delays recorded by an earlier release.** An earlier release recorded a delay once, when it started, and read the clock again on every replay. This release reads the clock for such a delay too. If a host's clock reads earlier than the delay's end, and the execution has records after the delay, the delivery diverges. Call `clearDivergence` once the clocks agree.
 - **Executions without a version.** See [Executions from before this release](#executions-from-before-this-release).
 - **Shared SQLite files.** Every process that shares a SQLite file must run this release before any execution is parked. A process on an earlier version does not read the divergence, and delivers a parked execution again. See [`@yieldstar/sqlite-runtime`](../packages/sqlite-runtime.md).
