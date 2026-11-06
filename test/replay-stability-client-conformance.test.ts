@@ -110,9 +110,7 @@ test("a database created before replay stability reads its rows with no version,
     const record = await peer.executions.get("order-42");
     expect(record).not.toHaveProperty("workflowVersion");
     expect(record).not.toHaveProperty("divergence");
-    expect(await peer.heap.listSteps({ executionId: "order-42" })).toEqual([
-      { stepKey: "reserve-stock" },
-    ]);
+    expect(await peer.heap.listStepKeys({ executionId: "order-42" })).toEqual(["reserve-stock"]);
     expect(
       (await peer.heap.readStep({ executionId: "order-42", stepKey: "reserve-stock" }))!.meta
     ).toEqual({ attempt: 1, done: true });
@@ -141,11 +139,13 @@ test("a database created before replay stability reads its rows with no version,
       workflowVersion: 2,
       divergence: { code: "NONDETERMINISTIC_REPLAY", stepKey: "ship", workflowVersion: 2 },
     });
+    expect((await peer.heap.listStepKeys({ executionId: "order-42" })).sort()).toEqual([
+      "charge",
+      "reserve-stock",
+    ]);
     expect(
-      (await peer.heap.listSteps({ executionId: "order-42" })).sort((a, b) =>
-        a.stepKey.localeCompare(b.stepKey)
-      )
-    ).toEqual([{ stepKey: "charge", kind: "run" }, { stepKey: "reserve-stock" }]);
+      (await peer.heap.readStep({ executionId: "order-42", stepKey: "charge" }))!.meta.kind
+    ).toBe("run");
   } finally {
     db.close();
   }

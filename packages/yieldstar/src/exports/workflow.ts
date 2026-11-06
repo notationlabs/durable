@@ -177,9 +177,7 @@ function createWorkflowGenerator<
     // updated, since the records this delivery writes are for keys in
     // `stepKeys`.
     const recordedSteps = new Set(
-      (await infrastructure(() => heapClient.listSteps({ executionId }))).map(
-        ({ stepKey }) => stepKey
-      )
+      await infrastructure(() => heapClient.listStepKeys({ executionId }))
     );
     // The answer each patch ID gave in this delivery, so a second call with
     // the same ID gives the same answer.

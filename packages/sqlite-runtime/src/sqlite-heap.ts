@@ -6,7 +6,6 @@ import {
   type ExecutionState,
   type HeapClient,
   type HeapRecord,
-  type HeapStep,
   type LeaseLost,
 } from "@yieldstar/core";
 import { EffectWaitersDao } from "./dao/effect-waiters-dao";
@@ -58,11 +57,8 @@ export class SqliteHeapClient implements HeapClient {
     return toHeapRecord(result);
   }
 
-  async listSteps(params: { executionId: string }): Promise<HeapStep[]> {
-    return this.stepResponsesDao.listSteps(params.executionId).map((row) => ({
-      stepKey: row.step_key,
-      ...(row.step_kind !== null ? { kind: row.step_kind } : {}),
-    }));
+  async listStepKeys(params: { executionId: string }): Promise<string[]> {
+    return this.stepResponsesDao.listStepKeys(params.executionId);
   }
 
   /**

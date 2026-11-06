@@ -390,7 +390,7 @@ abstract readStep(params: {
   stepKey: string;
 }): Promise<HeapRecord | null>;
 
-abstract listSteps(params: { executionId: string }): Promise<HeapStep[]>;
+abstract listStepKeys(params: { executionId: string }): Promise<string[]>;
 
 abstract writeStep(params: {
   lease: ExecutionLease;
@@ -413,11 +413,9 @@ abstract recordCancellation(params: {
   }[];
   workflowVersion?: number;
 }): Promise<(HeapRecord | null)[] | LeaseLost>;
-
-type HeapStep = { stepKey: string; kind?: string };
 ```
 
-`listSteps` lists every step key the execution has a record for, with the kind of its latest attempt, in no particular order. The driver reads it once at the start of each delivery, to check that replay requests every recorded step.
+`listStepKeys` lists every step key the execution has a record for, once each, in no particular order. The driver reads it once at the start of each delivery, to check that replay requests every recorded step.
 
 `readStep` returns the latest attempt. `writeStep` is fenced by `lease`: if the lease is not current, nothing changes and it returns `lost`. A `done` record deletes the step's store, effect and join waiters in the same write, and also deletes the waiters of every step named in `deleteWaitersOf`. The driver passes `deleteWaitersOf` when it records a `step.all` or `step.race` decision, with the steps that its abandoned branches reached, so their waiters go in the same write. `deleteWaitersOf` is ignored for a record that is not done or already exists. Records are keyed by execution, step key and attempt, and never change once written. Rewriting an existing record succeeds without changing it and resolves with the record as stored, so the caller can compare it with the value it wrote. `stepKind` is stored with the record and returned as `meta.kind`. When `workflowVersion` is given and the execution has no version recorded, the same write records it.
 

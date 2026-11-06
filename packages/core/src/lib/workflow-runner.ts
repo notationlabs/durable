@@ -79,7 +79,7 @@ export class WorkflowRunner<
 
   private async hasHistory(executionId: string) {
     try {
-      return (await this.runtime.heap.listSteps({ executionId })).length > 0;
+      return (await this.runtime.heap.listStepKeys({ executionId })).length > 0;
     } catch (err) {
       throw new InfrastructureError(err);
     }

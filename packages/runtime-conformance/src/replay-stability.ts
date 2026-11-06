@@ -4,7 +4,6 @@ import {
   redeliveryDelay,
   type ExecutionLease,
   type ExecutionListRequest,
-  type HeapStep,
   type Runtime,
   type WorkflowRunOutcome,
 } from "@yieldstar/core";
@@ -51,7 +50,7 @@ type TestContext = {
 };
 
 /**
- * Registers the runtime-adapter suite for replay stability: `HeapClient.listSteps`,
+ * Registers the runtime-adapter suite for replay stability: `HeapClient.listStepKeys`,
  * step kinds, the recorded workflow version, the `diverged` acknowledgement,
  * `ExecutionClient.clearDivergence` and `list({ diverged })`.
  */
@@ -178,9 +177,12 @@ export function registerReplayStabilityClientConformance({
     });
   }
 
-  async function steps(runtime: Runtime, executionId: string): Promise<HeapStep[]> {
-    const listed = await runtime.heap.listSteps({ executionId });
-    return [...listed].sort((a, b) => a.stepKey.localeCompare(b.stepKey));
+  async function steps(runtime: Runtime, executionId: string): Promise<string[]> {
+    return [...(await runtime.heap.listStepKeys({ executionId }))].sort();
+  }
+
+  async function kindOf(runtime: Runtime, executionId: string, stepKey: string) {
+    return (await runtime.heap.readStep({ executionId, stepKey }))?.meta.kind;
   }
 
   async function versionOf(runtime: Runtime, executionId: string) {
@@ -199,7 +201,7 @@ export function registerReplayStabilityClientConformance({
 
   describe(`${name} replay stability client conformance`, () => {
     describe("step listing", () => {
-      it("lists every recorded step key with the kind of its latest attempt", async ({
+      it("lists every recorded step key once, and reads the kind of its latest attempt", async ({
         runtime,
         peer,
       }) => {
@@ -212,11 +214,13 @@ export function registerReplayStabilityClientConformance({
         await writeStep(runtime, holder, "legacy");
 
         expect(await steps(peer, "order-42")).toEqual([
-          { stepKey: "charge", kind: "effect" },
-          { stepKey: "legacy" },
-          { stepKey: "reserve-stock", kind: "run" },
-          { stepKey: "wait-courier", kind: "when" },
+          "charge",
+          "legacy",
+          "reserve-stock",
+          "wait-courier",
         ]);
+        expect(await kindOf(peer, "order-42", "charge")).toBe("effect");
+        expect(await kindOf(peer, "order-42", "wait-courier")).toBe("when");
       });
 
       it("stores the kind on the record as meta.kind, and omits it when none was given", async ({
@@ -246,8 +250,8 @@ export function registerReplayStabilityClientConformance({
       }) => {
         await admit(runtime, "order-4");
         await admit(runtime, "order-42");
-        expect(await runtime.heap.listSteps({ executionId: "order-4" })).toEqual([]);
-        expect(await runtime.heap.listSteps({ executionId: "order-unknown" })).toEqual([]);
+        expect(await runtime.heap.listStepKeys({ executionId: "order-4" })).toEqual([]);
+        expect(await runtime.heap.listStepKeys({ executionId: "order-unknown" })).toEqual([]);
 
         const [first] = await runtime.executions.claimDue({
           limit: 1,
@@ -255,10 +259,8 @@ export function registerReplayStabilityClientConformance({
           filter: { executionIds: ["order-42"] },
         });
         await writeStep(runtime, first, "reserve-stock", { kind: "run" });
-        expect(await runtime.heap.listSteps({ executionId: "order-4" })).toEqual([]);
-        expect(await steps(runtime, "order-42")).toEqual([
-          { stepKey: "reserve-stock", kind: "run" },
-        ]);
+        expect(await runtime.heap.listStepKeys({ executionId: "order-4" })).toEqual([]);
+        expect(await steps(runtime, "order-42")).toEqual(["reserve-stock"]);
       });
 
       it("lists nothing for a write a stale lease made", async ({ runtime }) => {
@@ -270,7 +272,7 @@ export function registerReplayStabilityClientConformance({
         expect(await writeStep(runtime, holder, "reserve-stock", { kind: "run" })).toEqual({
           status: "lost",
         });
-        expect(await runtime.heap.listSteps({ executionId: "order-42" })).toEqual([]);
+        expect(await runtime.heap.listStepKeys({ executionId: "order-42" })).toEqual([]);
       });
 
       it("records the kind of each step recordCancellation writes", async ({ runtime, peer }) => {
@@ -293,10 +295,9 @@ export function registerReplayStabilityClientConformance({
           { stepResponseJson: "{}", meta: { attempt: 1, done: true, kind: "when" } },
           { stepResponseJson: "{}", meta: { attempt: 1, done: true } },
         ]);
-        expect(await steps(peer, "order-42")).toEqual([
-          { stepKey: "charge" },
-          { stepKey: "wait-courier", kind: "when" },
-        ]);
+        expect(await steps(peer, "order-42")).toEqual(["charge", "wait-courier"]);
+        expect(await kindOf(peer, "order-42", "wait-courier")).toBe("when");
+        expect(await kindOf(peer, "order-42", "charge")).toBeUndefined();
       });
     });
 
@@ -749,9 +750,8 @@ export function registerReplayStabilityClientConformance({
             workflowVersion: 2,
             divergence: { code: "NONDETERMINISTIC_REPLAY", stepKey: "charge-v3" },
           });
-          expect(await restarted.heap.listSteps({ executionId: "order-42" })).toEqual([
-            { stepKey: "charge", kind: "run" },
-          ]);
+          expect(await restarted.heap.listStepKeys({ executionId: "order-42" })).toEqual(["charge"]);
+          expect(await kindOf(restarted, "order-42", "charge")).toBe("run");
           await restarted.executions.requestWake({ executionId: "order-42", wakeAt: START });
           advance(LONG_AFTER);
           expect(await claim(restarted)).toEqual([]);

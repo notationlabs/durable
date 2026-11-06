@@ -2,7 +2,6 @@ import type {
   ExecutionLease,
   HeapClient,
   HeapRecord,
-  HeapStep,
   LeaseLost,
 } from "@yieldstar/core";
 
@@ -56,13 +55,8 @@ export class MemoryHeapClient implements HeapClient {
     return clone(attempts[0]);
   }
 
-  async listSteps(params: { executionId: string }): Promise<HeapStep[]> {
-    const steps: HeapStep[] = [];
-    for (const stepKey of this.stepKeys.get(params.executionId) ?? []) {
-      const kind = this.cache[this.getKey({ executionId: params.executionId, stepKey })]?.[0]?.meta.kind;
-      steps.push({ stepKey, ...(kind !== undefined ? { kind } : {}) });
-    }
-    return steps;
+  async listStepKeys(params: { executionId: string }): Promise<string[]> {
+    return [...(this.stepKeys.get(params.executionId) ?? [])];
   }
 
   async writeStep(params: {

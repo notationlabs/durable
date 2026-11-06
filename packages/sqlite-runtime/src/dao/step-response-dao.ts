@@ -10,11 +10,6 @@ class StepReponseRow {
   step_kind!: string | null;
 }
 
-class StepKindRow {
-  step_key!: string;
-  step_kind!: string | null;
-}
-
 export class StepResponsesDao {
   private db: SqliteDriver;
 
@@ -55,18 +50,13 @@ export class StepResponsesDao {
     });
   }
 
-  /** Each step key of the execution, with the kind of its latest attempt. */
-  listSteps(executionId: string) {
+  listStepKeys(executionId: string) {
     return this.db
-      .query<StepKindRow>(
-        `SELECT step_key, step_kind FROM step_responses AS latest
-         WHERE execution_id = $executionId
-           AND step_attempt = (
-             SELECT MAX(step_attempt) FROM step_responses
-             WHERE execution_id = latest.execution_id AND step_key = latest.step_key
-           )`
+      .query<{ step_key: string }>(
+        `SELECT DISTINCT step_key FROM step_responses WHERE execution_id = $executionId`
       )
-      .all({ $executionId: executionId });
+      .all({ $executionId: executionId })
+      .map((row) => row.step_key);
   }
 
   getAllSteps() {

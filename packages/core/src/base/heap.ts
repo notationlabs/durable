@@ -10,13 +10,6 @@ export type HeapRecord = {
   };
 };
 
-/** One recorded step of an execution. */
-export type HeapStep = {
-  stepKey: string;
-  /** As in `HeapRecord.meta.kind`. */
-  kind?: string;
-};
-
 export abstract class HeapClient {
   abstract readStep(params: {
     executionId: string;
@@ -24,11 +17,11 @@ export abstract class HeapClient {
   }): Promise<HeapRecord | null>;
 
   /**
-   * Lists every step key the execution has a record for, with the kind of
-   * its latest attempt, in no particular order. A delivery reads it once to
-   * check that replay consumes every recorded step.
+   * Lists every step key the execution has a record for, once each, in no
+   * particular order. A delivery reads it once to check that replay
+   * consumes every recorded step.
    */
-  abstract listSteps(params: { executionId: string }): Promise<HeapStep[]>;
+  abstract listStepKeys(params: { executionId: string }): Promise<string[]>;
 
   /**
    * Records one attempt of a step, fenced by `lease`. The token check and the

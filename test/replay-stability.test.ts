@@ -172,7 +172,7 @@ describe.each(runtimes)("replay stability on $name", ({ create }) => {
   const record = async (executionId = ORDER) => (await runtime.executions.get(executionId))!;
 
   const stepKeys = async (executionId = ORDER) =>
-    (await runtime.heap.listSteps({ executionId })).map(({ stepKey }) => stepKey).sort();
+    (await runtime.heap.listStepKeys({ executionId })).sort();
 
   async function readStep(stepKey: string, executionId = ORDER) {
     const stored = await runtime.heap.readStep({ executionId, stepKey });

@@ -1,4 +1,4 @@
-export type { HeapClient, HeapRecord, HeapStep } from "./base/heap";
+export type { HeapClient, HeapRecord } from "./base/heap";
 export type { DeliveryOptions, WorkflowInvoker } from "./base/invoker";
 export { WorkerExitedError } from "./base/invoker";
 export type { RuntimeOptions } from "./base/runtime";
