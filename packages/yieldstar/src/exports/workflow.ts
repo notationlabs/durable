@@ -26,7 +26,7 @@ import {
   type RuntimeClients,
   infrastructure,
 } from "../internal/runtime-call";
-import { StepEffectCall, executeEffectCall } from "../internal/effect-call";
+import { EFFECT_NOT_DUE, StepEffectCall, executeEffectCall } from "../internal/effect-call";
 import {
   BranchesStepKey,
   CancellationBarrier,
@@ -495,7 +495,7 @@ export function workflow<
         if (callResult === STOPPED) return { status: "stopped" };
         // The effect is still pending and its next attempt is not yet due.
         // The step suspends again without recording an attempt.
-        if ("status" in callResult && callResult.status === "early") {
+        if (callResult === EFFECT_NOT_DUE) {
           return { status: "suspended", response: recorded! };
         }
         iteratorResult = await next(callResult);
@@ -536,6 +536,14 @@ export function workflow<
         !(recorded instanceof StepDelayPassed) &&
         stepResponse.wakeAt <= clock();
       if (passesNow && !cached) stepResponse = new StepDelayPassed(stepResponse.wakeAt);
+      if (
+        !cached &&
+        stepResponse instanceof StepError &&
+        // 1-indexed vs 0-indexed
+        stepResponse.maxAttempts > stepAttempt + 1
+      ) {
+        stepResponse = new StepRetrying(stepResponse, clock() + stepResponse.retryInterval);
+      }
 
       let stepResponseJson: string | undefined;
       if (!cached) {
@@ -544,19 +552,7 @@ export function workflow<
         stepResponse = record.response;
       }
 
-      const needsRetry =
-        !cached?.meta.done &&
-        stepResponse instanceof StepError &&
-        // 1-indexed vs 0-indexed
-        stepResponse.maxAttempts > stepAttempt + 1;
-      if (needsRetry && !cached) {
-        const record = encodeStepRecord(
-          new StepRetrying(stepResponse as StepError, clock() + (stepResponse as StepError).retryInterval),
-          stepKey
-        );
-        stepResponseJson = record.json;
-        stepResponse = record.response;
-      }
+      const needsRetry = !cached && stepResponse instanceof StepRetrying;
       // A watched effect stays unfinished, so the next delivery begins it
       // again; its waiter is deleted when the step's result is recorded.
       const needsWake =

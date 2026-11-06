@@ -132,7 +132,7 @@ if (first.index === 1) {
 
 A branch that fails does not end the race. If every branch fails, `step.race` throws `WorkflowRaceError` with code `ALL_BRANCHES_FAILED` and each branch's error in `errors`, in branch order. An empty race throws `WorkflowRaceError` with no errors. `errors` is kept when the error ends the execution `failed`.
 
-`step.race` replaces the special cases for a wait with a deadline. `store.when(key, selector, { deadline })` and `step.join(key, id, { deadline })` remain, and behave as a race between the wait and a delay.
+A timed `store.when(key, selector, { deadline })` or `step.join(key, id, { deadline })` behaves like a race between the wait and a delay.
 
 ### Ties
 
@@ -153,7 +153,7 @@ When the payment and the deadline are both due in one delivery, a step after eit
 A losing race branch, and an unfinished branch of a `fail-fast` `step.all` after a failure, are abandoned:
 
 - **Stopped at once.** The branch starts no new step, and its generator is not resumed after the decision, so its `catch` and `finally` blocks do not run.
-- **Replayed up to the decision.** The decision record lists every step key the abandoned branches reached before the decision, and the keys among them at which a branch was waiting: its step was in flight, it was suspended there, or the step had finished but the branch was not yet resumed. On replay, an abandoned branch is resumed through its recorded steps. It stops at a key it was waiting at, or at a key it did not reach. Its workflow code therefore runs up to the same point on every delivery, whatever the clock reads and whatever was recorded after the decision.
+- **Replayed up to the decision.** The decision record lists every step key the abandoned branches reached before the decision, and the keys among them at which a branch was waiting: its step was in flight, it was suspended there, or the step had finished but the branch was not yet resumed. The record therefore grows with the number of steps the abandoned branches reached. A `fail-fast` `step.all` over 1,000 branches of five steps can list about 5,000 keys, and every delivery reads them on replay. On replay, an abandoned branch is resumed through its recorded steps. It stops at a key it was waiting at, or at a key it did not reach. Its workflow code therefore runs up to the same point on every delivery, whatever the clock reads and whatever was recorded after the decision.
 - **Waiters deleted.** The write that records the decision deletes the store, effect and join waiters of every step at which an abandoned branch was waiting. The other steps they reached are finished, and their records already deleted their waiters. A payment at minute thirty-one does not wake `place-order`. The losing delay's wake time is not requested again.
 - **In-flight functions finish.** A `step.run` function that is already running is not interrupted. Its result is recorded but not used, and the combinator returns only after it is recorded. The delivery therefore acknowledges only after every write from an abandoned branch. The decision write also waits for every runtime call already in flight in the combinator's branches, including a `step.effect` call, so a slow effect call delays the decision, and with it the step after the combinator. Runtime calls in branches outside the combinator do not delay it. The branch is not resumed with the function's value or error, on the first run or on replay.
 
