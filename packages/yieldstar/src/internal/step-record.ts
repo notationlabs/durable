@@ -17,6 +17,13 @@ import {
 } from "@yieldstar/core";
 import { StepBranchesDecision, type BranchesDecision } from "./branches";
 
+/**
+ * A delay that a delivery passed. The driver records it as the delay's next
+ * attempt before it resumes the workflow past the delay, so replay resumes
+ * past it whatever the clock reads.
+ */
+export class StepDelayPassed extends StepDelay {}
+
 /** A `StepCacheCheck` that resumes with the step's unfinished record as a `StepUnfinished`, not null. */
 export class UnfinishedCacheCheck extends StepCacheCheck {}
 
@@ -97,6 +104,9 @@ function encodeResponse(response: StepResponse, stepKey: string): string {
   }
   if (response instanceof StepBranchesDecision) {
     return encodeDecision(response.decision, response.keys, response.held);
+  }
+  if (response instanceof StepDelayPassed) {
+    return `{"passed":true,"type":"step-delay","wakeAt":${JSON.stringify(response.wakeAt)}}`;
   }
   if (response instanceof StepDelay) {
     return `{"type":"step-delay","wakeAt":${JSON.stringify(response.wakeAt)}}`;
@@ -192,7 +202,9 @@ export function decodeStepRecord(json: string): StepResponse {
       case "branches-decision":
         return decodeDecision(record);
       case "step-delay":
-        return new StepDelay(record.wakeAt);
+        return record.passed === true
+          ? new StepDelayPassed(record.wakeAt)
+          : new StepDelay(record.wakeAt);
       case "effect-wait":
         return new StepEffectWait(record.wakeAt);
       case "store-wait":

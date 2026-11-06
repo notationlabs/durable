@@ -144,6 +144,8 @@ A combinator without a recorded decision decides only once every branch has caug
 
 A wait that is satisfied when the delivery checks it wins against a delay that elapsed. If the payment lands at minute one but the delivery it wakes runs after minute thirty, `when` still wins. A race picks a branch that passed an elapsed delay in the same delivery only if no other branch returned. This includes a branch that runs a step after the delay, such as `step.run("on-timeout", ...)`, even when that step finishes before the wait's check. A timed `store.when` and `step.join` work the same way: they check their condition before their deadline.
 
+When the payment and the deadline are both due in one delivery, the `on-timeout` step therefore runs, and the race still returns the payment. Do not put side effects after a delay inside a race branch. Put them after the race, under a check of `first.index`, as `release-stock` is in the example.
+
 ## Abandoned branches
 
 A losing race branch, and an unfinished branch of a `fail-fast` `step.all` after a failure, are abandoned:

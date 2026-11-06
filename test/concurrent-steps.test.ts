@@ -36,7 +36,7 @@ const MINUTE = 60_000;
 const DAY = 24 * 60 * MINUTE;
 const ORDER = "order-42";
 
-const PaymentStore = defineStore("payments", testSchema<{ paid?: boolean }>(), {
+const PaymentStore = defineStore("payments", testSchema<{ paid?: boolean; refunded?: boolean }>(), {
   initial: () => ({}),
 });
 
@@ -220,6 +220,30 @@ const router = {
     ]);
     observed.push(first);
     yield* step.delay("follow-up", 2 * DAY);
+    return first.index;
+  }),
+  "nested-race-clock-back": workflow(async function* (step) {
+    const payments = step.store(PaymentStore);
+    const first = yield* step.race("outer", [
+      (async function* () {
+        yield* step.race("inner", [step.delay("d", MINUTE), step.delay("long", DAY)]);
+        return yield* payments.when("s2", (state) => state.refunded);
+      })(),
+      payments.when("y", (state) => state.paid),
+    ]);
+    yield* step.delay("after", DAY);
+    return first.index;
+  }),
+  "flat-race-clock-back": workflow(async function* (step) {
+    const payments = step.store(PaymentStore);
+    const first = yield* step.race("outer", [
+      (async function* () {
+        yield* step.delay("d", MINUTE);
+        return yield* payments.when("s2", (state) => state.refunded);
+      })(),
+      payments.when("y", (state) => state.paid),
+    ]);
+    yield* step.delay("after", DAY);
     return first.index;
   }),
   "late-when-or-deadline": workflow(async function* (step) {
@@ -1050,24 +1074,55 @@ describe.each(runtimes)("concurrent steps on $name", ({ create }) => {
       expect(ran.sort()).toEqual(["K-after", "slow"]);
     });
 
-    test("when the clock steps back, the winner of a recorded race suspends at a delay it passed and recovers", async () => {
+    test("when the clock steps back, the winner of a recorded race passes a delay it passed before", async () => {
       await admit("winner-passed-delay");
       expect(await deliver()).toEqual({ status: "suspended", wakeAt: START + MINUTE });
       advance(MINUTE);
       expect(await deliver()).toEqual({ status: "suspended", wakeAt: START + 2 * MINUTE });
       expect(await readStep("race")).toMatchObject({ decision: "won", index: 0 });
 
+      expect(await readStep("d")).toMatchObject({ type: "step-delay", passed: true });
+
       advance(MINUTE);
       const lease = (await claim())!;
       advance(-MINUTE - 1000);
       const outcome = await run(lease);
-      expect(outcome).toEqual({ status: "suspended", wakeAt: START + MINUTE });
+      expect(outcome).toEqual({ status: "suspended", wakeAt: START + 2 * MINUTE });
       await runtime.executions.acknowledge({ lease, outcome });
+      expect(observed).toEqual([0, 0]);
 
       advance(MINUTE + 1000);
       expect(await deliver()).toEqual({ status: "completed", result: 0 });
-      expect(observed).toEqual([0, 0]);
     });
+
+    test.each(["nested-race-clock-back", "flat-race-clock-back"] as const)(
+      "%s: a decision made under a backwards clock lists the steps a branch reached before",
+      async (fixture) => {
+        await admit(fixture);
+        expect(await deliver()).toEqual({ status: "suspended", wakeAt: START + MINUTE });
+        advance(MINUTE);
+        expect((await deliver())?.status).toBe("suspended");
+        expect(harness.storeWaiters().sort()).toEqual(["s2", "y"]);
+
+        await runtime.stores.updateStore({
+          definition: PaymentStore,
+          id: ORDER,
+          updater(draft) {
+            draft.paid = true;
+          },
+        });
+        const lease = (await claim())!;
+        advance(-1000);
+        const outcome = await run(lease);
+        await runtime.executions.acknowledge({ lease, outcome });
+        expect(await readStep("outer")).toMatchObject({ decision: "won", index: 1 });
+        expect(((await readStep("outer")) as { keys: string[] }).keys).toContain("s2");
+        expect(harness.storeWaiters()).toEqual([]);
+
+        advance(DAY + 1000);
+        expect(await deliver()).toEqual({ status: "completed", result: 1 });
+      }
+    );
 
     test("a delay written while the race decides is listed in the decision", async () => {
       const fast = closeGate("fast");
@@ -1533,12 +1588,9 @@ describe.each(runtimes)("concurrent steps on $name", ({ create }) => {
       const lease = (await claim())!;
       advance(-MINUTE - 1000);
       const outcome = await run(lease);
-      expect(outcome).toEqual({ status: "suspended", wakeAt: START + MINUTE });
+      expect(outcome).toEqual({ status: "cancelled" });
       await runtime.executions.acknowledge({ lease, outcome });
       expect(await readStep("d")).not.toMatchObject({ type: "step-cancelled" });
-
-      advance(MINUTE + 1000);
-      expect(await deliver()).toEqual({ status: "cancelled" });
       expect(await readStep("after")).toMatchObject({ type: "step-cancelled" });
     });
 

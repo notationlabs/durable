@@ -12,6 +12,7 @@ import { isIterable } from "../internal/utils";
 import {
   StepCancelled,
   StepUnfinished,
+  StepDelayPassed,
   UnfinishedCacheCheck,
   decodeStepRecord,
   encodeStepRecord,
@@ -294,14 +295,17 @@ export function workflow<
         // A recorded step after a delay means the delay was passed in an
         // earlier delivery.
         if (cached) afterDelay = false;
-        if (passed && !cached?.meta.done) {
+        if (
+          passed &&
+          (!cached?.meta.done || (recorded instanceof StepDelay && !(recorded instanceof StepDelayPassed)))
+        ) {
           throw new Error(`Step "${stepKey}" no longer reaches its recorded outcome on replay`);
         }
 
         let thrown: { err: unknown } | undefined;
         if (cached?.meta.done && recorded instanceof StepCancelled) {
           thrown = { err: recorded.err };
-        } else if (!isCombinator && !passed && isUnfinishedStep(cached, recorded, clock())) {
+        } else if (!isCombinator && isUnfinishedStep(cached, recorded, clock())) {
           // A combinator is not a cancellation point. A store or join wait
           // checks its condition before it counts as caught up, so a wait
           // satisfied before this delivery wins against a delay that elapsed.
@@ -309,10 +313,7 @@ export function workflow<
             !barrier.pending && (recorded instanceof StepStoreWait || recorded instanceof StepJoinWait);
           if (!checksFirst) branch.markLive();
           if (branch.stopped) return { status: "stopped" };
-          // A branch that a recorded decision reads from passed this step on
-          // the first run, and reaches it again only when the clock reads
-          // earlier. It suspends there, and is not cancelled there.
-          if (barrier.pending && !(cached?.meta.done && branch.finishedBefore)) {
+          if (barrier.pending) {
             // A delay is recorded done when it starts, so its cancellation
             // is written as the step's next attempt, which replay reads.
             const err = await barrier.park(branch, stepKey, stepAttempt);
@@ -363,7 +364,6 @@ export function workflow<
             stepAttempt,
             cached,
             recorded,
-            passed,
             cachedResponse: cached
               ? recorded
               : unfinished && cacheCheck instanceof UnfinishedCacheCheck
@@ -403,8 +403,6 @@ export function workflow<
       stepAttempt: number;
       cached: HeapRecord | null;
       recorded: StepResponse | null;
-      /** The first run resumed the branch past this step, so a delay resumes whatever the clock reads. */
-      passed: boolean;
       cachedResponse: StepResponse | null;
     }): Promise<StepAction> {
       const { branch, next, stepKey, cached, recorded } = params;
@@ -508,6 +506,14 @@ export function workflow<
         stepResponse = new StepInvalid();
       }
 
+      // A delay that elapsed is recorded as passed before the workflow
+      // resumes past it, so replay does not read the clock for it again.
+      const passesNow =
+        stepResponse instanceof StepDelay &&
+        !(recorded instanceof StepDelayPassed) &&
+        stepResponse.wakeAt <= clock();
+      if (passesNow && !cached) stepResponse = new StepDelayPassed(stepResponse.wakeAt);
+
       let stepResponseJson: string | undefined;
       if (!cached) {
         const record = encodeStepRecord(stepResponse, stepKey);
@@ -551,8 +557,20 @@ export function workflow<
         }
         return { throw: stepResponse.err };
       }
-      if (stepResponse instanceof StepDelay && (params.passed || stepResponse.wakeAt <= clock())) {
-        return { resume: undefined, delay: true };
+      if (stepResponse instanceof StepDelay) {
+        if (recorded instanceof StepDelayPassed) return { resume: undefined };
+        if (passesNow) {
+          if (cached) {
+            if (branch.stopped) return { status: "stopped" };
+            await writeStep({
+              stepKey,
+              stepAttempt,
+              done: true,
+              stepResponseJson: encodeStepRecord(new StepDelayPassed(stepResponse.wakeAt), stepKey).json,
+            });
+          }
+          return { resume: undefined, delay: true };
+        }
       }
       if (stepResponse instanceof StepResult) {
         return { resume: stepResponse };
@@ -642,13 +660,6 @@ export function workflow<
           }
           if (running) return;
           const { decision } = combinator;
-          // A branch the decision reads from suspends on replay when the
-          // clock reads earlier than on the first run. The combinator
-          // suspends with it, as a single delay would.
-          if (decision && readsFrom(decision, states).some((state) => state.status === "suspended")) {
-            settle(() => ({ status: "suspended", response: earliestWake(states) }));
-            return;
-          }
           if (
             decision &&
             (decision.decision !== "cancelled" ||
@@ -770,7 +781,7 @@ class WorkflowThrew {
 }
 
 type DriveOutcome =
-  /** `afterDelay`: the branch passed an elapsed delay in this delivery and reached no recorded step after it. */
+  /** `afterDelay`: the branch passed a delay in this delivery and reached no recorded step after it. */
   | { status: "returned"; value: unknown; afterDelay?: boolean }
   | { status: "suspended"; response: StepResponse }
   | { status: "stopped" };
@@ -810,19 +821,6 @@ function decide(
       : undefined;
   }
   return finished.length === states.length ? { decision: "settled" } : undefined;
-}
-
-/** The branch states that the combinator's value or error is read from under `decision`. */
-function readsFrom(decision: BranchesDecision, states: readonly BranchState[]): readonly BranchState[] {
-  switch (decision.decision) {
-    case "rejected":
-    case "won":
-      return [states[decision.index]!];
-    case "cancelled":
-      return [];
-    default:
-      return states;
-  }
 }
 
 /**
@@ -892,7 +890,7 @@ export const createWorkflow = workflow;
 /**
  * Whether a cancellation is delivered at this step: it has no record, an
  * unfinished record (a store, join or effect wait, or a retry backoff), or a
- * delay that has not elapsed.
+ * delay that has neither elapsed nor been passed.
  */
 function isUnfinishedStep(
   cached: { meta: { done: boolean } } | null,
@@ -900,7 +898,7 @@ function isUnfinishedStep(
   now: number
 ) {
   if (!cached || !cached.meta.done) return true;
-  return recorded instanceof StepDelay && recorded.wakeAt > now;
+  return recorded instanceof StepDelay && !(recorded instanceof StepDelayPassed) && recorded.wakeAt > now;
 }
 
 /**

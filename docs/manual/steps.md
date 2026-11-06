@@ -128,6 +128,8 @@ A thrown value that is not an error, such as a string or a plain object, is reth
 
 Once it is due, the dispatcher delivers the execution again. All steps before the delay replay from cache, and execution continues from the next step.
 
+The delivery that passes the delay records it as passed, as the step's next attempt, before the workflow continues. Later deliveries pass the delay without reading the clock, so a clock that reads earlier on a later delivery does not suspend the workflow at a delay it already passed.
+
 ```ts
 yield* step.delay(30_000); // pause for 30 seconds
 ```
