@@ -325,10 +325,13 @@ export function workflow<
         // A stopped branch still starts the branches of a combinator it
         // reached, so that replay, which starts them, runs the same code.
         if (branch.stopped && !isCombinator) return { status: "stopped" };
-        // A delivery can come before a retry is due, for example when another
-        // branch's waiter wakes the execution. The step is not run early.
+        // Inside a combinator, another branch's waiter can wake the execution
+        // before a retry is due. The step is not run early. Outside one, only a
+        // redelivery after a crash comes early, and the step runs then, as
+        // RFC 005 requires.
         if (
           !thrown &&
+          branch.parent !== undefined &&
           cached?.meta.done === false &&
           recorded instanceof StepRetrying &&
           recorded.wakeAt > clock()
@@ -479,7 +482,10 @@ export function workflow<
                 // Each earlier attempt of an effect step that ended
                 // uncertain wrote one unfinished record.
                 attempt: stepAttempt,
-                due: recorded instanceof StepEffectWait ? recorded.wakeAt : undefined,
+                due:
+                  branch.parent !== undefined && recorded instanceof StepEffectWait
+                    ? recorded.wakeAt
+                    : undefined,
                 clock,
                 assertLease: () => stopIfAborted(signal),
                 logger,

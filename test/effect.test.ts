@@ -863,37 +863,6 @@ describe("definite failures", () => {
 });
 
 describe("attempt limit", () => {
-  test("a delivery before retryIn has passed does not look the effect up or use an attempt", async () => {
-    const { deliver, log, caught, provider, real, readStep, advance } = setup({ maxAttempts: 2 });
-    provider.perform.mockImplementationOnce(async () => {
-      log.push("perform");
-      throw new Error("socket hang up");
-    });
-
-    await expect(deliver()).resolves.toEqual({ status: "suspended", wakeAt: 61_000 });
-
-    advance(1_000);
-    log.length = 0;
-    await expect(deliver()).resolves.toEqual({ status: "suspended", wakeAt: 61_000 });
-    expect(log).toEqual(["begin"]);
-    expect(caught).toEqual([]);
-    expect(await readStep("charge")).toMatchObject({ type: "effect-wait", wakeAt: 61_000, done: false });
-
-    // An outcome settled by another execution is used before retryIn.
-    await real.settle({
-      operation: "charge-v1",
-      effectId: EFFECT_ID,
-      status: "settled",
-      result: { chargeId: "ch-9", amount: 4999 },
-    });
-    log.length = 0;
-    await expect(deliver()).resolves.toEqual({
-      status: "completed",
-      result: { chargeId: "ch-9", amount: 4999 },
-    });
-    expect(log.slice(0, 2)).toEqual(["begin", "write:charge:done"]);
-  });
-
   test("an outcome still unknown after maxAttempts throws EFFECT_OUTCOME_UNKNOWN and leaves the effect pending", async () => {
     const { deliver, log, caught, provider, runtime, readStep, advance } = setup({
       maxAttempts: 2,

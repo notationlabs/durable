@@ -528,6 +528,27 @@ const router = {
       payments.when("paid", (state) => state.paid || state.refunded === false),
     ]);
   }),
+  "effect-beside-when": workflow(async function* (step) {
+    const payments = step.store(PaymentStore);
+    return yield* step.all("check", [
+      step.effect("charge", {
+        effectId: "charge:order-42",
+        operation: "charge-v1",
+        input: { amount: 4999 },
+        retryIn: DAY,
+        maxAttempts: 2,
+        lookup: async () => {
+          ran.push("lookup");
+          return { status: "unknown" };
+        },
+        perform: async () => {
+          ran.push("perform");
+          throw new Error("socket hang up");
+        },
+      }),
+      payments.when("paid", (state) => state.paid || state.refunded === false),
+    ]);
+  }),
   "nested-loser-key-reused": workflow(async function* (step) {
     yield* step.race("first", [
       step.all("inner", [step.run("K", () => work("K", "loser")), step.delay("d", DAY)]),
@@ -947,6 +968,29 @@ describe.each(runtimes)("concurrent steps on $name", ({ create }) => {
       expect(await deliver()).toEqual({ status: "completed", result: ["ok", undefined] });
       expect(ran).toEqual(["flaky", "flaky"]);
     });
+    test("a sibling's wake before retryIn does not look the effect up or use an attempt", async () => {
+      await admit("effect-beside-when");
+      expect(await deliver()).toEqual({ status: "suspended", wakeAt: START + DAY });
+
+      for (const refunded of [true, undefined]) {
+        advance(1_000);
+        await runtime.stores.updateStore({
+          definition: PaymentStore,
+          id: ORDER,
+          updater(draft) {
+            draft.refunded = refunded;
+          },
+        });
+        expect(await deliver()).toEqual({ status: "suspended", wakeAt: START + DAY });
+      }
+      expect(ran).toEqual(["perform"]);
+      expect(await readStep("charge")).toMatchObject({ type: "effect-wait", attempt: 0 });
+
+      advance(DAY);
+      expect(await deliver()).toMatchObject({ status: "failed" });
+      expect(ran).toEqual(["perform", "lookup"]);
+    });
+
     test("a sibling's wake during retry backoff does not run the step early", async () => {
       await admit("retry-beside-when");
       expect(await deliver()).toEqual({ status: "suspended", wakeAt: START + MINUTE });

@@ -172,26 +172,27 @@ test("a worker that fails after watch commits, before the unfinished step record
   });
 });
 
-test("after a delivery crashes at the pause, the recorded wakeAt decides when the retry runs", async () => {
-  const { runtime, provider, admit, tick, advance, now, exitBeforeNextReply, deliveries } = setup();
+test("after a delivery crashes at the pause, a later delivery's wakeAt decides when the retry runs", async () => {
+  const { runtime, provider, lookups, admit, tick, advance, now, exitBeforeNextReply, deliveries } =
+    setup();
   provider.perform.mockRejectedValueOnce(new Error("timeout"));
   await admit();
 
   exitBeforeNextReply();
   expect(await tick()).toBe(1);
-  const recordedWakeAt = now() + RETRY_IN;
+  const abandonedWakeAt = now() + RETRY_IN;
 
-  // The lease expires, then the redelivery delay passes. The redelivery
-  // suspends until the recorded wakeAt without looking the effect up.
+  // The lease expires, then the redelivery delay passes.
   advance(DEFAULT_LEASE_DURATION + redeliveryDelay(1));
+  lookups.push({ status: "unknown" });
   expect(await tick()).toBe(1);
-  expect(provider.lookup).not.toHaveBeenCalled();
+  const wakeAt = now() + RETRY_IN;
   expect(await runtime.executions.get("order-42")).toMatchObject({ status: "suspended" });
 
-  advance(recordedWakeAt - now() - 1);
+  advance(abandonedWakeAt - now());
   expect(await tick()).toBe(0);
 
-  advance(1);
+  advance(wakeAt - now());
   expect(await tick()).toBe(1);
   expect(deliveries).toHaveLength(3);
   expect((await runtime.executions.get("order-42"))?.outcome).toEqual({
@@ -217,10 +218,6 @@ test("a worker that fails after the unfinished step record, before replying, lea
   });
 
   advance(DEFAULT_LEASE_DURATION + redeliveryDelay(1));
-  expect(await tick()).toBe(1);
-  expect(await runtime.executions.get("order-42")).toMatchObject({ status: "suspended" });
-
-  advance(RETRY_IN);
   expect(await tick()).toBe(1);
   expect((await runtime.executions.get("order-42"))?.outcome).toEqual({
     status: "completed",
