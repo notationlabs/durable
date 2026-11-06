@@ -35,7 +35,6 @@ class ExecutionRow {
   workflow_version!: number | null;
   divergence_code!: string | null;
   divergence_step_key!: string | null;
-  divergence_workflow_version!: number | null;
   divergence_detected_at!: number | null;
 }
 
@@ -107,7 +106,6 @@ export class ExecutionsDao {
       "workflow_version INTEGER",
       "divergence_code TEXT",
       "divergence_step_key TEXT",
-      "divergence_workflow_version INTEGER",
       "divergence_detected_at INTEGER",
     ]);
   }
@@ -264,8 +262,7 @@ export class ExecutionsDao {
            parent_detached, cancellation_reason, cancellation_source,
            cancellation_forced, cancellation_requested_at,
            cancellation_delivered_at, workflow_version, divergence_code,
-           divergence_step_key, divergence_workflow_version,
-           divergence_detected_at
+           divergence_step_key, divergence_detected_at
          ) VALUES (
            $executionId, $workflowId, $params, $context, $status, $outcome,
            $admittedAt, $updatedAt, $dueAt, $claimedDueAt, $leaseToken,
@@ -274,8 +271,7 @@ export class ExecutionsDao {
            $parentDetached, $cancellationReason, $cancellationSource,
            $cancellationForced, $cancellationRequestedAt,
            $cancellationDeliveredAt, $workflowVersion, $divergenceCode,
-           $divergenceStepKey, $divergenceWorkflowVersion,
-           $divergenceDetectedAt
+           $divergenceStepKey, $divergenceDetectedAt
          )
          ON CONFLICT(execution_id) DO NOTHING`
       )
@@ -315,7 +311,6 @@ export class ExecutionsDao {
            workflow_version = $workflowVersion,
            divergence_code = $divergenceCode,
            divergence_step_key = $divergenceStepKey,
-           divergence_workflow_version = $divergenceWorkflowVersion,
            divergence_detected_at = $divergenceDetectedAt
          WHERE execution_id = $executionId`
       )
@@ -363,7 +358,6 @@ function toState(row: ExecutionRow): ExecutionState {
         ? {
             code: row.divergence_code as ExecutionDivergenceState["code"],
             stepKey: row.divergence_step_key,
-            workflowVersion: Number(row.divergence_workflow_version ?? 1),
             detectedAt: Number(row.divergence_detected_at ?? 0),
           }
         : null,
@@ -396,7 +390,6 @@ function toBindings(state: ExecutionState) {
     $workflowVersion: state.workflowVersion,
     $divergenceCode: state.divergence?.code ?? null,
     $divergenceStepKey: state.divergence?.stepKey ?? null,
-    $divergenceWorkflowVersion: state.divergence?.workflowVersion ?? null,
     $divergenceDetectedAt: state.divergence?.detectedAt ?? null,
   };
 }

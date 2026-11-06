@@ -94,7 +94,6 @@ export type ExecutionState = {
 export type ExecutionDivergenceState = {
   code: ExecutionDivergenceCode;
   stepKey: string | null;
-  workflowVersion: number;
   detectedAt: number;
 };
 
@@ -343,7 +342,6 @@ export function toExecutionDivergence(state: ExecutionDivergenceState): Executio
   return {
     code: state.code,
     ...(state.stepKey !== null ? { stepKey: state.stepKey } : {}),
-    workflowVersion: state.workflowVersion,
     detectedAt: state.detectedAt,
   };
 }
@@ -516,7 +514,6 @@ export function acknowledgeExecution(
         divergence: {
           code: outcome.code,
           stepKey: outcome.stepKey ?? null,
-          workflowVersion: workflowVersion ?? 1,
           detectedAt: now,
         },
         updatedAt: now,

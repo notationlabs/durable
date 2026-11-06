@@ -137,7 +137,7 @@ test("a database created before replay stability reads its rows with no version,
     ).toEqual({ status: "diverged" });
     expect(await peer.executions.get("order-42")).toMatchObject({
       workflowVersion: 2,
-      divergence: { code: "NONDETERMINISTIC_REPLAY", stepKey: "ship", workflowVersion: 2 },
+      divergence: { code: "NONDETERMINISTIC_REPLAY", stepKey: "ship" },
     });
     expect((await peer.heap.listStepKeys({ executionId: "order-42" })).sort()).toEqual([
       "charge",

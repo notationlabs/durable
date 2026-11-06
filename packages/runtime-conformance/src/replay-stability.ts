@@ -443,7 +443,6 @@ export function registerReplayStabilityClientConformance({
         expect(record!.divergence).toEqual({
           code: "NONDETERMINISTIC_REPLAY",
           stepKey: "charge-v3",
-          workflowVersion: 2,
           detectedAt: clock.now,
         });
 
@@ -459,7 +458,7 @@ export function registerReplayStabilityClientConformance({
           .toBeNull();
       });
 
-      it("keeps an admitted execution admitted, and defaults the divergence's version to 1", async ({
+      it("keeps an admitted execution admitted", async ({
         runtime,
         clock,
       }) => {
@@ -475,7 +474,6 @@ export function registerReplayStabilityClientConformance({
         expect(record).not.toHaveProperty("workflowVersion");
         expect(record!.divergence).toEqual({
           code: "STEP_SCHEMA_CHANGED",
-          workflowVersion: 1,
           detectedAt: clock.now,
         });
       });
@@ -492,7 +490,7 @@ export function registerReplayStabilityClientConformance({
         });
         expect(await runtime.executions.get("order-42")).toMatchObject({
           workflowVersion: 3,
-          divergence: { workflowVersion: 3 },
+          divergence: { code: "NONDETERMINISTIC_REPLAY" },
         });
       });
 
@@ -624,7 +622,6 @@ export function registerReplayStabilityClientConformance({
         expect(await divergenceOf(runtime, "order-42")).toEqual({
           code: "NONDETERMINISTIC_REPLAY",
           stepKey: "charge-v4",
-          workflowVersion: 1,
           detectedAt: clock.now,
         });
         expect(await claim(runtime)).toEqual([]);

@@ -49,7 +49,6 @@ async function diverge(runtime: Runtime, executionId: string) {
 const divergence = {
   code: "NONDETERMINISTIC_REPLAY",
   stepKey: "charge-v3",
-  workflowVersion: 2,
   detectedAt: expect.any(Number),
 };
 

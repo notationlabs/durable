@@ -413,7 +413,6 @@ describe.each(runtimes)("replay stability on $name", ({ create }) => {
         divergence: {
           code: "NONDETERMINISTIC_REPLAY",
           stepKey: "charge-v3",
-          workflowVersion: 1,
           detectedAt: START + DAY,
         },
       });

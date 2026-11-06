@@ -61,7 +61,6 @@ test("a keyless step.run at a different call site on the next delivery diverges 
 
   expect(await divergence(runtime, executionId)).toMatchObject({
     code: "NONDETERMINISTIC_REPLAY",
-    workflowVersion: 1,
   });
   expect(mock1).toBeCalledTimes(1);
   expect(mock2).not.toBeCalled();

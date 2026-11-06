@@ -56,8 +56,6 @@ export type ExecutionDivergence = {
   code: ExecutionDivergenceCode;
   /** The step that would have run, when there was one. */
   stepKey?: string;
-  /** The workflow version recorded on the execution. */
-  workflowVersion: number;
   detectedAt: number;
 };
 
