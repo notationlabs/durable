@@ -109,7 +109,7 @@ The next delivery of order 42 goes as follows:
 2. `charge-v3` has no record, so the driver checks the history before running it.
 3. The record for `charge` has not been consumed, so the delivery diverges. `charge-v3` does not run.
 
-Code that is edited to return or throw before a recorded step diverges in the same way. The check before `completed` or `failed` finds the unconsumed record, so the edit cannot end the execution. When the new code throws, for example a `TypeError` from a bug, the runner's warning names that error, and the divergence error carries it as `cause`. The error is not recorded anywhere else.
+Code that is edited to return or throw before a recorded step diverges in the same way. The check before `completed` or `failed` finds the unconsumed record, so the edit cannot end the execution. When the new code throws, for example a `TypeError` from a bug, the divergence's `message` names that error, and the runner's warning carries it as the divergence error's `cause`.
 
 A new step inserted before a recorded step also diverges. If the developer adds `step.run("send-receipt", ...)` between `charge` and `courier`, order 42 reaches `send-receipt` with `courier` unconsumed. A new step after the last recorded step is safe, because by then every record has been consumed. [Patches](#patches) make the first kind of edit safe.
 
@@ -132,6 +132,7 @@ For order 42, the record now holds:
   divergence: {
     code: "NONDETERMINISTIC_REPLAY",
     stepKey: "charge-v3", // the step that would have run, when there was one
+    message: 'Step "charge-v3" would run, but replay did not reach recorded step "charge"',
     detectedAt: 1793750400000,
   },
 }
@@ -142,6 +143,10 @@ For order 42, the record now holds:
 | `NONDETERMINISTIC_REPLAY` | A recorded step was not requested, a recorded key was requested as another kind of step, or a settled `step.all` or `step.race` no longer reaches its recorded decision |
 | `STEP_SCHEMA_CHANGED`     | A `step.run` schema rejects on replay a value it accepted on the first run |
 | `STEP_KEY_REQUIRED`       | A keyless step has no record, and the runtime was created with [`requireStepKeys`](#requirestepkeys) |
+
+`message` says what replay found, such as the recorded step it did not reach, or the error workflow code threw before reaching it. It is stored on the record, so an operator can read it from `list` without the delivery's logs.
+
+The step kind strings, such as `run` and `store.when`, are stored with each record. A timed and an untimed `when` share the kind `store.when`, so adding a deadline to a `when` that is still waiting replays without divergence. Switching a `when` that has finished between the two forms is not detected: replay returns the recorded value in the shape of the form that recorded it.
 
 A [graceful cancellation](./cancellation.md) of a diverged execution is recorded but not delivered, because no delivery runs while the divergence is set.
 

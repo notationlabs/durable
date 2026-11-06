@@ -86,6 +86,7 @@ test("resolves with a diverged outcome", { timeout: 2_000 }, async () => {
     status: "diverged",
     code: "NONDETERMINISTIC_REPLAY",
     stepKey: "charge-v3",
+    message: 'Step "charge-v3" would run, but replay did not reach recorded step "charge"',
   });
 });
 

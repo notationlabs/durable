@@ -11,7 +11,8 @@ import {
 } from "@yieldstar/core";
 import { MemoryRuntime } from "@yieldstar/test-runtime";
 import { SqliteRuntime } from "@yieldstar/sqlite-runtime";
-import { WorkflowReplayError, workflow } from "yieldstar";
+import { testSchema } from "@yieldstar/test-utils";
+import { WorkflowReplayError, defineStore, workflow } from "yieldstar";
 
 const isBun = "Bun" in globalThis;
 const { createSqliteDb } = isBun
@@ -193,6 +194,53 @@ describe.each(runtimes)("replay stability on $name", ({ create }) => {
     ran = [];
   }
 
+  describe("step kinds", () => {
+    // The kind strings are stored with each record, and replay compares
+    // them. Renaming one parks every execution that recorded the old string.
+    test("each step records its kind under the same string as before", async () => {
+      const Approval = defineStore("approval", testSchema<{ decision?: string }>(), {
+        initial: () => ({ decision: "approved" }),
+      });
+      deploy({
+        [WORKFLOW]: workflow(async function* (step) {
+          const approval = step.store(Approval, { id: ORDER });
+          yield* step.run("run", work("run", 1));
+          yield* step.poll("poll", { retryInterval: 1, maxAttempts: 1 }, () => true);
+          yield* step.patched("patch");
+          yield* step.all("all", [step.run("in-all", work("in-all", 1))]);
+          yield* step.race("race", [step.run("in-race", work("in-race", 1))]);
+          yield* approval.get("store-get");
+          yield* approval.select("store-select", (state) => state.decision);
+          yield* approval.update("store-update", () => {});
+          yield* approval.when("store-when", (state) => state.decision);
+          yield* approval.when("store-when-timed", (state) => state.decision, { deadline: START + DAY });
+          yield* step.delay("delay", MINUTE);
+        }),
+      });
+      await admit();
+      expect(await deliver()).toMatchObject({ status: "suspended" });
+      const kinds: Record<string, string | undefined> = {};
+      for (const key of await stepKeys()) {
+        kinds[key] = (await runtime.heap.readStep({ executionId: ORDER, stepKey: key }))?.meta.kind;
+      }
+      expect(kinds).toEqual({
+        run: "run",
+        poll: "poll",
+        "$$patch$$:patch": "patched",
+        all: "all",
+        "in-all": "run",
+        race: "race",
+        "in-race": "run",
+        "store-get": "store.get",
+        "store-select": "store.select",
+        "store-update": "store.update",
+        "store-when": "store.when",
+        "store-when-timed": "store.when",
+        delay: "delay",
+      });
+    });
+  });
+
   describe("keyless steps", () => {
     test("a keyless step that is first recorded logs a deprecation warning and runs", async () => {
       deploy({
@@ -223,7 +271,12 @@ describe.each(runtimes)("replay stability on $name", ({ create }) => {
         requiringStepKeys(runtime)
       );
       await admit();
-      expect(await deliver()).toEqual({ status: "diverged", code: "STEP_KEY_REQUIRED", stepKey: expect.any(String) });
+      expect(await deliver()).toEqual({
+        status: "diverged",
+        code: "STEP_KEY_REQUIRED",
+        stepKey: expect.any(String),
+        message: expect.stringMatching(/^A step without a key has no record/),
+      });
       expect(ran).toEqual(["reserve-stock"]);
       expect(observed).toEqual([]);
       expect(await stepKeys()).toEqual(["reserve-stock"]);
@@ -426,10 +479,14 @@ describe.each(runtimes)("replay stability on $name", ({ create }) => {
         }),
       });
       advance(DAY);
+      const message = expect.stringMatching(
+        /^Step "charge-v3" would run, but replay did not reach recorded step "(charge|courier)"$/
+      );
       expect(await deliver()).toEqual({
         status: "diverged",
         code: "NONDETERMINISTIC_REPLAY",
         stepKey: "charge-v3",
+        message,
       });
       expect(ran).toEqual([]);
       expect(await stepKeys()).toEqual(["charge", "courier", "reserve-stock"]);
@@ -439,6 +496,7 @@ describe.each(runtimes)("replay stability on $name", ({ create }) => {
         divergence: {
           code: "NONDETERMINISTIC_REPLAY",
           stepKey: "charge-v3",
+          message,
           detectedAt: START + DAY,
         },
       });
@@ -578,7 +636,7 @@ describe.each(runtimes)("replay stability on $name", ({ create }) => {
       expect((await record()).divergence).toBeDefined();
     });
 
-    test("an error thrown before replay reaches the history parks the execution and is named in the divergence", async () => {
+    test("an error thrown before replay reaches the history parks the execution and is named in the divergence record", async () => {
       await suspendOnV1();
       deploy({
         [WORKFLOW]: workflow(async function* (step) {
@@ -587,13 +645,13 @@ describe.each(runtimes)("replay stability on $name", ({ create }) => {
         }),
       });
       advance(DAY);
-      expect(await deliver()).toEqual({ status: "diverged", code: "NONDETERMINISTIC_REPLAY" });
-      const [warning] = warnings;
-      const err = (warning!.obj as { err: Error }).err;
-      expect(err.message).toMatch(
+      const message = expect.stringMatching(
         /^Replay did not reach recorded step "(charge|courier)", because the workflow threw: TypeError: order.items is undefined$/
       );
-      expect(err.cause).toBeInstanceOf(TypeError);
+      expect(await deliver()).toEqual({ status: "diverged", code: "NONDETERMINISTIC_REPLAY", message });
+      expect((await record()).divergence).toMatchObject({ message });
+      const [warning] = warnings;
+      expect((warning!.obj as { err: Error }).err.cause).toBeInstanceOf(TypeError);
     });
 
     test("fixed code and clearDivergence make the execution due at once, and it continues", async () => {

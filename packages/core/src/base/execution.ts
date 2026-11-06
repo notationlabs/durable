@@ -66,6 +66,11 @@ export type ExecutionDivergence = {
   code: ExecutionDivergenceCode;
   /** The step that would have run, when there was one. */
   stepKey?: string;
+  /**
+   * What replay found, such as the recorded step it did not reach, or the
+   * error workflow code threw before reaching it.
+   */
+  message: string;
   detectedAt: number;
 };
 
@@ -172,7 +177,7 @@ export type WorkflowRunOutcome =
   | { status: "suspended"; wakeAt?: number }
   | { status: "failed"; error: Error }
   | { status: "cancelled" }
-  | { status: "diverged"; code: ExecutionDivergenceCode; stepKey?: string };
+  | { status: "diverged"; code: ExecutionDivergenceCode; stepKey?: string; message: string };
 
 export type ExecutionAdmissionRequest = {
   executionId?: string;

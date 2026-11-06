@@ -132,12 +132,21 @@ test("a database created before replay stability reads its rows with no version,
     expect(
       await runtime.executions.acknowledge({
         lease,
-        outcome: { status: "diverged", code: "NONDETERMINISTIC_REPLAY", stepKey: "ship" },
+        outcome: {
+          status: "diverged",
+          code: "NONDETERMINISTIC_REPLAY",
+          stepKey: "ship",
+          message: 'Step "ship" would run, but replay did not reach recorded step "charge"',
+        },
       })
     ).toEqual({ status: "diverged" });
     expect(await peer.executions.get("order-42")).toMatchObject({
       workflowVersion: 2,
-      divergence: { code: "NONDETERMINISTIC_REPLAY", stepKey: "ship" },
+      divergence: {
+        code: "NONDETERMINISTIC_REPLAY",
+        stepKey: "ship",
+        message: 'Step "ship" would run, but replay did not reach recorded step "charge"',
+      },
     });
     expect(((await peer.heap.readHistory({ executionId: "order-42" })).stepKeys).sort()).toEqual([
       "charge",

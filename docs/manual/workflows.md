@@ -124,7 +124,7 @@ An execution started by another workflow with [`step.start`](./steps.md#stepstar
 
 `cancellation` holds the request that [`cancel`](./cancellation.md) recorded, with its `reason`, `source`, `forced`, `requestedAt` and, once the workflow has received it, `deliveredAt`. It stays on the record whatever the outcome.
 
-`workflowVersion` is the version that `event.workflowVersion` exposes. It is set once and never changes. `divergence` holds the `code`, the `stepKey` that would have run and the `detectedAt` time of a divergent replay. While it is set, no wake delivers the execution. `clearDivergence` or a terminal outcome removes it. See [Replay Stability](./replay-stability.md).
+`workflowVersion` is the version that `event.workflowVersion` exposes. It is set once and never changes. `divergence` holds the `code`, the `stepKey` that would have run, a `message` that says what replay found, and the `detectedAt` time of a divergent replay. While it is set, no wake delivers the execution. `clearDivergence` or a terminal outcome removes it. See [Replay Stability](./replay-stability.md).
 
 **Execution IDs are unique for the lifetime of the runtime.** A trigger may supply its own `executionId`, and the runtime reserves it unchanged; otherwise the runtime chooses one. Reusing an ID that was ever admitted, including one whose execution failed, is rejected with `EXECUTION_ID_CONFLICT`. An [idempotent trigger](./sdk-local.md#idempotent-trigger) that repeats the same request returns the existing execution instead, and admits nothing. This matters because the ID is how a replay finds its own recorded steps, so a reused ID would replay another execution's results.
 

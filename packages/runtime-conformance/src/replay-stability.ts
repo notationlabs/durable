@@ -152,6 +152,7 @@ export function registerReplayStabilityClientConformance({
       await acknowledge(runtime, holder, {
         status: "diverged",
         code: "NONDETERMINISTIC_REPLAY",
+        message: "Replay diverged",
         stepKey,
       })
     ).toEqual({ status: "diverged" });
@@ -416,6 +417,7 @@ export function registerReplayStabilityClientConformance({
           await acknowledge(runtime, holder, {
             status: "diverged",
             code: "NONDETERMINISTIC_REPLAY",
+            message: "Replay diverged",
             stepKey: "charge-v3",
           })
         ).toEqual({ status: "diverged" });
@@ -431,6 +433,7 @@ export function registerReplayStabilityClientConformance({
         expect(record!.divergence).toEqual({
           code: "NONDETERMINISTIC_REPLAY",
           stepKey: "charge-v3",
+          message: "Replay diverged",
           detectedAt: clock.now,
         });
 
@@ -455,6 +458,7 @@ export function registerReplayStabilityClientConformance({
           await acknowledge(runtime, await claimOne(runtime, "order-42"), {
             status: "diverged",
             code: "STEP_SCHEMA_CHANGED",
+            message: "Replay diverged",
           })
         ).toEqual({ status: "diverged" });
         const record = await runtime.executions.get("order-42");
@@ -462,6 +466,7 @@ export function registerReplayStabilityClientConformance({
         expect(record).not.toHaveProperty("workflowVersion");
         expect(record!.divergence).toEqual({
           code: "STEP_SCHEMA_CHANGED",
+          message: "Replay diverged",
           detectedAt: clock.now,
         });
       });
@@ -478,6 +483,7 @@ export function registerReplayStabilityClientConformance({
         await acknowledge(runtime, holder, {
           status: "diverged",
           code: "NONDETERMINISTIC_REPLAY",
+          message: "Replay diverged",
           stepKey: "charge-v3",
         });
         expect(await claim(runtime)).toEqual([]);
@@ -509,6 +515,7 @@ export function registerReplayStabilityClientConformance({
         await acknowledge(runtime, holder, {
           status: "diverged",
           code: "NONDETERMINISTIC_REPLAY",
+          message: "Replay diverged",
         });
         expect(await runtime.executions.get("order-42")).toMatchObject({
           unacknowledgedDeliveryCount: 1,
@@ -523,6 +530,7 @@ export function registerReplayStabilityClientConformance({
           await acknowledge(runtime, holder, {
             status: "diverged",
             code: "NONDETERMINISTIC_REPLAY",
+            message: "Replay diverged",
           })
         ).toEqual({ status: "lost" });
         expect(await runtime.executions.get("order-42")).not.toHaveProperty("divergence");
@@ -589,11 +597,13 @@ export function registerReplayStabilityClientConformance({
         await acknowledge(runtime, await claimOne(runtime, "order-42"), {
           status: "diverged",
           code: "NONDETERMINISTIC_REPLAY",
+          message: "Replay diverged",
           stepKey: "charge-v4",
         });
         expect(await divergenceOf(runtime, "order-42")).toEqual({
           code: "NONDETERMINISTIC_REPLAY",
           stepKey: "charge-v4",
+          message: "Replay diverged",
           detectedAt: clock.now,
         });
         expect(await claim(runtime)).toEqual([]);

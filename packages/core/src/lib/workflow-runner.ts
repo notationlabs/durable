@@ -82,6 +82,7 @@ export class WorkflowRunner<
           status: "diverged",
           code: err.code,
           ...(err.stepKey !== undefined ? { stepKey: err.stepKey } : {}),
+          message: err.message,
         };
       }
       if (cancellation && err instanceof WorkflowCancelledError) {

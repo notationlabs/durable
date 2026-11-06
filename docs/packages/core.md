@@ -57,12 +57,12 @@ type WorkflowRunOutcome =
   | { status: "suspended"; wakeAt?: number } // wakeAt: when a delay, retry or timed wait's deadline elapses
   | { status: "failed"; error: Error }
   | { status: "cancelled" } // the delivery carried a cancellation and workflow code threw WorkflowCancelledError
-  | { status: "diverged"; code: ExecutionDivergenceCode; stepKey?: string }; // replay no longer matches the history
+  | { status: "diverged"; code: ExecutionDivergenceCode; stepKey?: string; message: string }; // replay no longer matches the history
 ```
 
 `event` is a `DeliveryEvent`: a `WorkflowEvent` without `workflowVersion`. The driver reads the recorded version with the step keys from `HeapClient.readHistory`, and adds `workflowVersion` to the event before it runs workflow code: the recorded version when there is one, otherwise 1 when the execution has step records, and otherwise the version the workflow declares (1 when it declares none). Every step write and `recordCancellation` pass it to the heap, and the first one records it.
 
-The driver raises `ReplayDivergenceError` when replay no longer matches the recorded history (see [Divergence](../manual/replay-stability.md#divergence)). It is not thrown into workflow code. The runner logs a warning with the error as `err`, and resolves `diverged` with the error's `code` and `stepKey`. When workflow code threw before replay reached its history, the error's message names the thrown error and its `cause` is that error. After a divergence, no step starts, but a step already in flight in another branch is still recorded. `ReplayDivergenceError.is(err)` recognises one even when several copies of `@yieldstar/core` are loaded.
+The driver raises `ReplayDivergenceError` when replay no longer matches the recorded history (see [Divergence](../manual/replay-stability.md#divergence)). It is not thrown into workflow code. The runner logs a warning with the error as `err`, and resolves `diverged` with the error's `code`, `stepKey` and `message`, which the acknowledgement stores on the record. When workflow code threw before replay reached its history, the error's message names the thrown error and its `cause` is that error. After a divergence, no step starts, but a step already in flight in another branch is still recorded. `ReplayDivergenceError.is(err)` recognises one even when several copies of `@yieldstar/core` are loaded.
 
 An event whose `workflowId` has no registered workflow resolves as `failed`. A store wait resolves as `suspended` without `wakeAt`, because a store commit wakes it. A timed `when` resolves as `suspended` with `wakeAt` set to its recorded deadline, after it has recorded the deadline with the unfinished step and registered its waiter. A `step.effect` whose outcome is uncertain resolves as `suspended` with `wakeAt` set to now plus its `retryIn`, after it has watched the effect and recorded the unfinished step. On attempt number `maxAttempts`, it records a `WorkflowEffectError` with code `EFFECT_OUTCOME_UNKNOWN` instead.
 
@@ -112,6 +112,7 @@ interface ExecutionRecord {
 type ExecutionDivergence = {
   code: "NONDETERMINISTIC_REPLAY" | "STEP_SCHEMA_CHANGED" | "STEP_KEY_REQUIRED"; // ExecutionDivergenceCode
   stepKey?: string; // the step that would have run, when there was one
+  message: string; // what replay found, e.g. the recorded step it did not reach
   detectedAt: number;
 };
 

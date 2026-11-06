@@ -40,6 +40,7 @@ async function diverge(runtime: Runtime, executionId: string) {
     outcome: {
       status: "diverged",
       code: "NONDETERMINISTIC_REPLAY",
+      message: "Replay diverged",
       stepKey: "charge-v3",
     },
   });
@@ -48,6 +49,7 @@ async function diverge(runtime: Runtime, executionId: string) {
 const divergence = {
   code: "NONDETERMINISTIC_REPLAY",
   stepKey: "charge-v3",
+  message: "Replay diverged",
   detectedAt: expect.any(Number),
 };
 

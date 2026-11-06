@@ -5,6 +5,7 @@ process.on("message", () => {
       status: "diverged",
       code: "NONDETERMINISTIC_REPLAY",
       stepKey: "charge-v3",
+      message: 'Step "charge-v3" would run, but replay did not reach recorded step "charge"',
     },
   });
 });

@@ -8,7 +8,10 @@ export class StepKey extends StepResponse {
   key: string;
   /**
    * The kind of step, such as `run` or `delay`. It is stored with the step's
-   * records, and replay that requests the key as another kind diverges.
+   * records, and replay that requests the key as another kind diverges, so
+   * the strings are part of the durable format: renaming one parks every
+   * execution that recorded the old string. `test/replay-stability.test.ts`
+   * pins them.
    */
   kind: string;
   /** Whether the key was derived from the call site because the step has none. */
