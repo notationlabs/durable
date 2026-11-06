@@ -39,7 +39,7 @@ const runtime = new SqliteRuntime(createSqliteDb({ path: "./.db/local.sqlite" })
 | Option              | Type           | Default      | Description                                                              |
 | ------------------- | -------------- | ------------ | ------------------------------------------------------------------------ |
 | `clock`             | `() => number` | `Date.now`   | Time source for every client operation and for delay and retry wake times |
-| `requireStepKeys`   | `boolean`      | `false`      | Rejects a keyless step that has no record with `WorkflowReplayError` (`STEP_KEY_REQUIRED`). See [`requireStepKeys`](../manual/replay-stability.md#requirestepkeys) |
+| `requireStepKeys`   | `boolean`      | `false`      | Parks an execution at a keyless step that has no record, with divergence code `STEP_KEY_REQUIRED`. See [`requireStepKeys`](../manual/replay-stability.md#requirestepkeys) |
 
 The runtime exposes five clients that share the database:
 

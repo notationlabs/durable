@@ -38,7 +38,7 @@ const processOrder = workflow({ version: 2 }, async function* (step, event) {
 });
 ```
 
-The execution's first delivery records the declared version, and every later delivery exposes the recorded version as `event.workflowVersion`, whatever version the current code declares. A workflow that declares no version is version 1. Use the version to keep executions that started under older code on the steps they recorded. See [Workflow versions](./replay-stability.md#workflow-versions).
+The execution's first step write records the declared version, and every later delivery exposes the recorded version as `event.workflowVersion`, whatever version the current code declares. A workflow that declares no version is version 1. Use the version to keep executions that started under older code on the steps they recorded. See [Workflow versions](./replay-stability.md#workflow-versions).
 
 ## Type parameters
 

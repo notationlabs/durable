@@ -242,7 +242,7 @@ See: `test/polling.test.ts`.
 
 ### Step Keys and Loops
 
-Give every step a key. Replay finds a step's record by its key. A step without a key takes its key from its call site (file, line and column), so editing the file above it changes the key. Keyless steps are deprecated: the first record of one logs a warning, and the runtime option `requireStepKeys` rejects them with `WorkflowReplayError` (`STEP_KEY_REQUIRED`).
+Give every step a key. Replay finds a step's record by its key. A step without a key takes its key from its call site (file, line and column), so editing the file above it changes the key. Keyless steps are deprecated: the first record of one logs a warning, and the runtime option `requireStepKeys` parks an execution at one that has no record, with divergence code `STEP_KEY_REQUIRED`.
 
 In loops, include the iteration in the key so each iteration is distinct.
 

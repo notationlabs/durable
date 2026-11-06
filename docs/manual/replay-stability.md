@@ -60,11 +60,13 @@ The SQLite and memory runtimes take a `requireStepKeys` option:
 const runtime = new SqliteRuntime(db, { requireStepKeys: true });
 ```
 
-With `requireStepKeys: true`, a keyless step that has no record does not run. The driver records `WorkflowReplayError` with code `STEP_KEY_REQUIRED` as the step's error and throws it into workflow code. Workflow code can catch it like any other step error, and replay throws it again from the record.
+With `requireStepKeys: true`, a keyless step that has no record does not run. The delivery diverges with code `STEP_KEY_REQUIRED`, and the execution is parked as for any [divergence](#what-a-divergence-does). Nothing is recorded for the step, and workflow code does not see an error.
 
-Adding an explicit key at that call site fixes new executions. An execution that caught the error and recorded later steps has the error recorded under the call-site key. On the new code, the keyed step has no record and would run before the later records, so the execution diverges. Gate the keyed step on `step.patched` and keep the keyless call in the other branch while such executions can still be delivered.
+To fix it, give the step an explicit key, deploy, and call `clearDivergence`. The next delivery runs the step under its new key.
 
 A keyless step that already has a record under its call-site key replays as usual. This is important because it means that turning the option on does not break executions that are in flight: their keyless steps that have already run keep their records.
+
+`WorkflowRunner` reads the option from the runtime it was constructed with. Under the [worker invoker](../packages/worker-invoker.md), that is the runtime constructed in the worker, so set the option there. Setting it only on the dispatcher's runtime has no effect.
 
 The option is off by default. It will default to on in the next major version.
 
@@ -107,7 +109,7 @@ The next delivery of order 42 goes as follows:
 2. `charge-v3` has no record, so the driver checks the history before running it.
 3. The record for `charge` has not been consumed, so the delivery diverges. `charge-v3` does not run.
 
-Code that is edited to return or throw before a recorded step diverges in the same way. The check before `completed` or `failed` finds the unconsumed record, so the edit cannot end the execution.
+Code that is edited to return or throw before a recorded step diverges in the same way. The check before `completed` or `failed` finds the unconsumed record, so the edit cannot end the execution. When the new code throws, for example a `TypeError` from a bug, the runner's warning names that error, and the divergence error carries it as `cause`. The error is not recorded anywhere else.
 
 A new step inserted before a recorded step also diverges. If the developer adds `step.run("send-receipt", ...)` between `charge` and `courier`, order 42 reaches `send-receipt` with `courier` unconsumed. A new step after the last recorded step is safe, because by then every record has been consumed. [Patches](#patches) make the first kind of edit safe.
 
@@ -116,8 +118,8 @@ A new step inserted before a recorded step also diverges. If the developer adds 
 Divergence is not a workflow error. The driver ends the delivery itself, and does not throw into workflow code:
 
 - **Workflow code cannot catch it.** A `try` around the diverging step does not reach its `catch` or `finally` block.
-- **Nothing more is written.** The step that would have run does not run, and the delivery makes no further step write.
-- **No outcome is recorded.** The runner logs a warning and resolves with `{ status: "diverged", code, stepKey }`. The acknowledgement records a `divergence` on the execution record instead of an outcome, and the status stays as it was, such as `suspended`.
+- **No new work starts.** The step that would have run does not run, and no other branch starts a step. A step already in flight in another `step.all` or `step.race` branch is still recorded, so it does not run again after the divergence is cleared.
+- **No outcome is recorded.** The runner logs a warning with the divergence error as `err`, and resolves with `{ status: "diverged", code, stepKey }`. The acknowledgement records a `divergence` on the execution record instead of an outcome, and the status stays as it was, such as `suspended`.
 - **The execution is parked.** While `divergence` is set, no wake delivers the execution. Wakes from delays, store commits and joins stay pending, so the execution does not run again in a loop.
 - **It is not a failed delivery.** The acknowledgement does not add to `unacknowledgedDeliveryCount`.
 
@@ -130,7 +132,6 @@ For order 42, the record now holds:
   divergence: {
     code: "NONDETERMINISTIC_REPLAY",
     stepKey: "charge-v3", // the step that would have run, when there was one
-    workflowVersion: 1, // the version recorded on the execution
     detectedAt: 1793750400000,
   },
 }
@@ -140,6 +141,7 @@ For order 42, the record now holds:
 | ------------------------- | ------------------------------------------------------------------ |
 | `NONDETERMINISTIC_REPLAY` | A recorded step was not requested, a recorded key was requested as another kind of step, or a settled `step.all` or `step.race` no longer reaches its recorded decision |
 | `STEP_SCHEMA_CHANGED`     | A `step.run` schema rejects on replay a value it accepted on the first run |
+| `STEP_KEY_REQUIRED`       | A keyless step has no record, and the runtime was created with [`requireStepKeys`](#requirestepkeys) |
 
 A [graceful cancellation](./cancellation.md) of a diverged execution is recorded but not delivered, because no delivery runs while the divergence is set.
 
@@ -189,7 +191,7 @@ Two checks still cover combinators:
 
 ## Workflow versions
 
-A workflow can declare a version. The first delivery of each execution records it, and every later delivery exposes the recorded version as `event.workflowVersion`, whatever version the current code declares:
+A workflow can declare a version. The first step write of each execution records it, and every later delivery exposes the recorded version as `event.workflowVersion`, whatever version the current code declares:
 
 ```ts
 export const placeOrder = workflow({ version: 3 }, async function* (step, event) {
@@ -209,7 +211,7 @@ Order 42 started under version 2, so it keeps the `charge` step and replays with
 
 - A version is a non-negative integer. `workflow` throws a `TypeError` for any other value.
 - A workflow that declares no version is version 1.
-- The version is recorded by the delivery's first step record or cancellation record. A workflow that fails before any step records no version.
+- The version is recorded by the execution's first step record or cancellation record. The driver reads it back with the step keys at the start of each delivery. A workflow that fails before any step records no version.
 - If a delivery ends before any step record, for example because the worker crashed, no history exists yet. The next delivery is again a first delivery and records the version deployed by then. A version deployed between admission and the first delivery is therefore the one the execution records.
 - Execution views carry `workflowVersion` once it is recorded.
 
@@ -274,10 +276,10 @@ Gate a schema change on `event.workflowVersion` or `step.patched`, so executions
 
 | Error or code | Reaches workflow code | Cause |
 | --- | --- | --- |
-| `WorkflowReplayError` `STEP_KEY_REQUIRED` | Yes, recorded as the step's error | A keyless step has no record under `requireStepKeys` |
 | `WorkflowReplayError` `PATCH_IN_COMBINATOR` | Yes, not recorded | `step.patched` was called inside a `step.all` or `step.race` branch |
 | Divergence `NONDETERMINISTIC_REPLAY` | No | The code no longer matches the history |
 | Divergence `STEP_SCHEMA_CHANGED` | No | A schema rejects on replay a value it accepted on the first run |
+| Divergence `STEP_KEY_REQUIRED` | No | A keyless step has no record under `requireStepKeys` |
 
 `WorkflowReplayError` has `code` and `stepKey`, and is registered by default, so replay revives it as the same class.
 

@@ -83,11 +83,11 @@ const w = workflow<Params, Result>(async function* (step, event, logger) {
 });
 
 const v3 = workflow({ version: 3 }, async function* (step, event) {
-  event.workflowVersion; // the version recorded by the execution's first delivery
+  event.workflowVersion; // the version recorded by the execution's first step write
 });
 ```
 
-`version` is a non-negative integer, and defaults to 1. `workflow` throws a `TypeError` for any other value, or when the workflow function is missing. The returned generator's `workflowVersion` property holds the declared version. The first fenced write of an execution's first delivery records the version, and every later delivery exposes the recorded version as `event.workflowVersion`. See [Workflow versions](../manual/replay-stability.md#workflow-versions).
+`version` is a non-negative integer, and defaults to 1. `workflow` throws a `TypeError` for any other value, or when the workflow function is missing. The first fenced write of an execution records the version, and every later delivery exposes the recorded version as `event.workflowVersion`. See [Workflow versions](../manual/replay-stability.md#workflow-versions).
 
 | Type parameter | Constraint                    | Description                                  |
 | -------------- | ----------------------------- | -------------------------------------------- |
@@ -163,9 +163,9 @@ Thrown by `step.race` when every branch fails, and by an empty race. `code` is `
 
 ## `WorkflowReplayError`
 
-Thrown to workflow code when a step cannot be recorded safely for replay. `err.code` is `"STEP_KEY_REQUIRED"` (a keyless step has no record and the runtime was created with `requireStepKeys: true`) or `"PATCH_IN_COMBINATOR"` (`step.patched` was called inside a `step.all` or `step.race` branch), and `err.stepKey` names the step. `STEP_KEY_REQUIRED` is recorded as the step's error, and replay throws the same class and code. `PATCH_IN_COMBINATOR` is not recorded, and replay throws it again from the same call. It is registered by default. See [Replay Stability](../manual/replay-stability.md).
+Thrown to workflow code when `step.patched` is called inside a `step.all` or `step.race` branch. `err.code` is `"PATCH_IN_COMBINATOR"`, and `err.stepKey` names the patch marker. Nothing is recorded, and replay throws it again from the same call. It is registered by default. See [Replay Stability](../manual/replay-stability.md).
 
-A divergence is not a `WorkflowReplayError`. It never reaches workflow code; see [Divergence](../manual/replay-stability.md#divergence).
+A divergence is not a `WorkflowReplayError`. It never reaches workflow code, and that includes `STEP_KEY_REQUIRED`, which is a divergence code; see [Divergence](../manual/replay-stability.md#divergence).
 
 ## `WorkflowEffectError`
 
@@ -239,7 +239,7 @@ yield* step.race("key", branches);
 const applies = yield* step.patched("patch-id"); // boolean
 ```
 
-A keyless `step.run`, `step.delay` or `step.poll`, and a store's keyless `get()` and `when(selector)`, take their key from a hash of their call site. They are deprecated: the driver logs a warning when one has no record and runs, and a runtime created with `requireStepKeys: true` throws `WorkflowReplayError` (`STEP_KEY_REQUIRED`) instead of running it. See [Step keys](../manual/replay-stability.md#step-keys).
+A keyless `step.run`, `step.delay` or `step.poll`, and a store's keyless `get()` and `when(selector)`, take their key from a hash of their call site. They are deprecated: the driver logs a warning when one has no record and runs, and a runtime created with `requireStepKeys: true` parks the execution with divergence code `STEP_KEY_REQUIRED` instead of running it. See [Step keys](../manual/replay-stability.md#step-keys).
 
 `step.patched(id)` returns `true` when a marker for `id` is recorded, `false` without recording anything when the execution's history has steps that replay has not requested yet, and otherwise records a marker under the key `$$patch$$:<id>` and returns `true`. A second call with the same ID in the same delivery returns the same answer. Inside a `step.all` or `step.race` branch it throws `WorkflowReplayError` (`PATCH_IN_COMBINATOR`) and records nothing. An ID that is not a string throws a `TypeError`, and an empty ID throws an `Error`. See [Patches](../manual/replay-stability.md#patches).
 
