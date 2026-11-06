@@ -1,5 +1,5 @@
 import type { SqliteDriver } from "../sqlite-driver";
-import { runTransaction } from "../sqlite-transaction";
+import { addMissingColumns } from "../sqlite-transaction";
 
 class StepReponseRow {
   execution_id!: string;
@@ -31,24 +31,12 @@ export class StepResponsesDao {
       CREATE INDEX IF NOT EXISTS idx_execution_step_attempt 
       ON step_responses(execution_id, step_key, step_attempt DESC);
     `);
-    this.setupStepKind();
+    // Rows from before `step_kind` have no kind, so a delivery does not
+    // compare their kind on replay.
+    addMissingColumns(this.db, "step_responses", ["step_kind TEXT"]);
   }
 
-  /**
-   * Adds `step_kind`, under the write lock and only once. Rows from before it
-   * have no kind, so a delivery does not compare their kind on replay.
-   */
-  private setupStepKind() {
-    const hasColumn = () =>
-      this.db
-        .query<{ name: string }>(`PRAGMA table_info(step_responses)`)
-        .all()
-        .some((column) => column.name === "step_kind");
-    if (hasColumn()) return;
-    runTransaction(this.db, () => {
-      if (!hasColumn()) this.db.run(`ALTER TABLE step_responses ADD COLUMN step_kind TEXT`);
-    });
-  }
+
 
   listStepKeys(executionId: string) {
     return this.db

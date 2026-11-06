@@ -6,7 +6,7 @@ import type {
 } from "@yieldstar/core";
 import { nextClaimAt } from "@yieldstar/core";
 import type { SqliteDriver, SqliteParameters } from "../sqlite-driver";
-import { runTransaction } from "../sqlite-transaction";
+import { addMissingColumns } from "../sqlite-transaction";
 
 class ExecutionRow {
   execution_id!: string;
@@ -102,7 +102,7 @@ export class ExecutionsDao {
    * execution is parked, or it delivers that execution again.
    */
   private setupReplayStability() {
-    this.addMissingColumns([
+    addMissingColumns(this.db, "executions", [
       "workflow_version INTEGER",
       "divergence_code TEXT",
       "divergence_step_key TEXT",
@@ -111,33 +111,11 @@ export class ExecutionsDao {
   }
 
   /**
-   * Adds the columns that are missing, under the write lock so processes
-   * opening the file together add each one once.
-   */
-  private addMissingColumns(columns: readonly string[]) {
-    const missing = () => {
-      const existing = new Set(
-        this.db
-          .query<{ name: string }>(`PRAGMA table_info(executions)`)
-          .all()
-          .map((column) => column.name)
-      );
-      return columns.filter((column) => !existing.has(column.split(" ")[0]));
-    };
-    if (missing().length === 0) return;
-    runTransaction(this.db, () => {
-      for (const column of missing()) {
-        this.db.run(`ALTER TABLE executions ADD COLUMN ${column}`);
-      }
-    });
-  }
-
-  /**
    * Adds the cancellation columns and child index if missing. Every process
    * sharing the file must support cancellation before anything calls `cancel`.
    */
   private setupCancellation() {
-    this.addMissingColumns([
+    addMissingColumns(this.db, "executions", [
       "parent_detached INTEGER NOT NULL DEFAULT 0",
       "cancellation_reason TEXT",
       "cancellation_source TEXT",
