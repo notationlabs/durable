@@ -12,6 +12,7 @@ export {
   WorkflowCancelledError,
   WorkflowEffectError,
   WorkflowJoinError,
+  WorkflowRaceError,
   WorkflowStartError,
   WorkflowValueError,
   registerErrorClass,
@@ -19,6 +20,14 @@ export {
 export { createWorkflow, workflow } from "./exports/workflow";
 export type { DurableWorkflowFn, WorkflowFn } from "./exports/workflow";
 export { defineStore } from "./internal/step-runner";
+export type {
+  AllOptions,
+  Branch,
+  BranchResults,
+  RaceResult,
+  SettledResult,
+  SettledResults,
+} from "./internal/branches";
 export type {
   DurableStepFn,
   EffectDescriptor,

@@ -19,6 +19,7 @@ export const manual: DocCategory = {
       links: [
         { label: "Defining Workflows", slug: "manual/workflows" },
         { label: "Steps", slug: "manual/steps" },
+        { label: "Concurrent Steps", slug: "manual/concurrent-steps" },
         { label: "Retries", slug: "manual/retries" },
         { label: "Cancellation", slug: "manual/cancellation" },
       ],

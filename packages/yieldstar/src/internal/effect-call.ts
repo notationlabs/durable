@@ -60,6 +60,9 @@ export class StepEffectCall extends StepResponse {
   }
 }
 
+/** Returned when a pending effect's next attempt is not yet due. */
+export const EFFECT_NOT_DUE = Symbol("effect-not-due");
+
 /**
  * Runs an effect step's protocol against the runtime's `EffectClient`. Every
  * failure that must not be recorded rejects with an `InfrastructureError`
@@ -72,13 +75,18 @@ export async function executeEffectCall(
     executionId: string;
     /** The number of earlier attempts of this step that ended uncertain. */
     attempt: number;
+    /**
+     * When the step's next attempt is due, if an earlier attempt ended
+     * uncertain. Before then, a pending effect is not looked up or performed.
+     */
+    due: number | undefined;
     clock: () => number;
     /** Checked before every callback, so a lost lease makes no external call. */
     assertLease: () => void;
     logger: Logger;
   }
-): Promise<EffectCallOutcome> {
-  const { effects, executionId, attempt, clock, assertLease, logger } = context;
+): Promise<EffectCallOutcome | typeof EFFECT_NOT_DUE> {
+  const { effects, executionId, attempt, due, clock, assertLease, logger } = context;
   const { stepKey, effectId, operation, input, retryIn, maxAttempts } = request;
 
   const fail = (code: EffectDeliveryErrorCode, message: string, cause?: unknown) =>
@@ -181,6 +189,7 @@ export async function executeEffectCall(
       next = "perform";
       break;
     case "pending":
+      if (due !== undefined && clock() < due) return EFFECT_NOT_DUE;
       // An earlier attempt may have started the operation, or finished it.
       next = "lookup";
       break;

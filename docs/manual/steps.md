@@ -118,7 +118,7 @@ if (err instanceof CourierError) {
 
 Revival sets the prototype and fields without calling the constructor, so a constructor with required arguments is fine. Registration is per process: a worker process must register the class too, or it revives the error as a plain `Error` with the same `name`, `message`, `code`, `cause` and fields.
 
-These classes are registered by default: `RetryableError`, `WorkflowStartError`, `WorkflowJoinError`, `WorkflowCancelledError`, `WorkflowValueError`, `WorkflowEffectError`, `EffectDeliveryError`, `EffectClientInvariantError`, `StoreValidationError`, `TypeError`, `RangeError`, `SyntaxError`, `ReferenceError`, `EvalError`, `URIError` and `AggregateError`.
+These classes are registered by default: `RetryableError`, `WorkflowStartError`, `WorkflowJoinError`, `WorkflowCancelledError`, `WorkflowRaceError`, `WorkflowValueError`, `WorkflowEffectError`, `EffectDeliveryError`, `EffectClientInvariantError`, `StoreValidationError`, `TypeError`, `RangeError`, `SyntaxError`, `ReferenceError`, `EvalError`, `URIError` and `AggregateError`.
 
 A thrown value that is not an error, such as a string or a plain object, is rethrown as it was thrown. A thrown value that is not durable, such as a class instance, is recorded and rethrown as `Error(String(value))`.
 
@@ -127,6 +127,8 @@ A thrown value that is not an error, such as a string or a plain object, is reth
 `step.delay` pauses the workflow for a given number of milliseconds. When a workflow reaches a delay, the runtime records the unfinished step and the delivery ends as `suspended` with `wakeAt` set to the time the delay elapses. The execution record becomes due at that time.
 
 Once it is due, the dispatcher delivers the execution again. All steps before the delay replay from cache, and execution continues from the next step.
+
+The delivery that passes the delay records it as passed, as the step's next attempt, before the workflow continues. Later deliveries pass the delay without reading the clock, so a clock that reads earlier on a later delivery does not suspend the workflow at a delay it already passed.
 
 ```ts
 yield* step.delay(30_000); // pause for 30 seconds
@@ -146,6 +148,17 @@ yield* step.poll({ retryInterval: 1000, maxAttempts: 10 }, async () => {
 ```
 
 If the predicate returns `false` on every attempt, the step throws after `maxAttempts`. If the predicate throws a non-retryable error, execution stops immediately.
+
+## `step.all` and `step.race`
+
+`step.all` and `step.race` run several branches of steps concurrently within one delivery and record their outcome under their own key. `step.all` returns every branch's result in order; `step.race` returns the index and value of the first branch to succeed. See [Concurrent Steps](./concurrent-steps.md).
+
+```ts
+const [stock, quote] = yield* step.all("check-order", [
+  step.run("check-stock", () => warehouse.inStock(sku)),
+  step.run("quote-shipping", () => courier.quote(address)),
+]);
+```
 
 ## `step.start`
 
@@ -347,7 +360,7 @@ type EffectLookup<T> =
 | `lookup` returns `unknown`, or a callback rejects | Suspends the execution until `retryIn` has passed, then begins again      |
 | The attempt ends uncertain and is attempt number `maxAttempts` | Records and throws a `WorkflowEffectError` with code `EFFECT_OUTCOME_UNKNOWN` |
 
-A rejected `lookup` or `perform` counts as `unknown`, because the step cannot tell whether the operation happened. The step suspends, as `step.delay` does, and the delivery ends as `suspended` with `wakeAt` set to now plus `retryIn`. On the next delivery the step begins again and looks up the effect. If another execution settles or fails the effect while this one waits, the runtime wakes this one straight away, and it reads the stored outcome.
+A rejected `lookup` or `perform` counts as `unknown`, because the step cannot tell whether the operation happened. The step suspends, as `step.delay` does, and the delivery ends as `suspended` with `wakeAt` set to now plus `retryIn`. On the next delivery the step begins again and looks up the effect. If another execution settles or fails the effect while this one waits, the runtime wakes this one straight away, and it reads the stored outcome. Inside a [`step.all` or `step.race`](./concurrent-steps.md) branch, another branch's waiter can also wake the execution before `retryIn` has passed. That delivery reads the stored outcome too. If the effect is still pending, the step suspends again until the same time. It does not call `lookup` or `perform`, and it does not use an attempt.
 
 Once settled or failed, an effect never changes. The outcome is stored in the effect record before the step is recorded, so a crash between the two returns the stored outcome on the next delivery without calling the external system. Every execution that begins the same effect receives that outcome.
 

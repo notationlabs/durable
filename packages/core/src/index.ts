@@ -101,6 +101,7 @@ export {
 export type { ErrorClass, WorkflowValueErrorCode } from "./base/errors";
 export {
   WORKFLOW_RESULT_STEP_KEY,
+  WorkflowRaceError,
   WorkflowValueError,
   registerErrorClass,
 } from "./base/errors";

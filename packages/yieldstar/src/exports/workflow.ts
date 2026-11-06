@@ -12,6 +12,8 @@ import { isIterable } from "../internal/utils";
 import {
   StepCancelled,
   StepUnfinished,
+  StepDelayPassed,
+  StepRetrying,
   UnfinishedCacheCheck,
   decodeStepRecord,
   encodeStepRecord,
@@ -24,7 +26,17 @@ import {
   type RuntimeClients,
   infrastructure,
 } from "../internal/runtime-call";
-import { StepEffectCall, executeEffectCall } from "../internal/effect-call";
+import { EFFECT_NOT_DUE, StepEffectCall, executeEffectCall } from "../internal/effect-call";
+import {
+  BranchesStepKey,
+  CancellationBarrier,
+  Combinator,
+  DrivenBranch,
+  STOPPED,
+  StepBranches,
+  StepBranchesDecision,
+  type BranchesDecision,
+} from "../internal/branches";
 import {
   StepResponse,
   StepKey,
@@ -41,9 +53,11 @@ import {
   LeaseLostError,
   StepConflictError,
   WorkflowCancelledError,
+  WorkflowRaceError,
   isLeaseLost,
   WORKFLOW_RESULT_STEP_KEY,
   type ExecutionCancellation,
+  type HeapRecord,
 } from "@yieldstar/core";
 
 export type WorkflowFn<
@@ -103,6 +117,8 @@ export function workflow<
       executions: executionClient,
       joins: joinClient,
     };
+    // Shared by every branch, so a key repeated across branches is rejected.
+    const stepKeys = new Set<string>();
 
     /** Writes one attempt of a step. A lost lease or a conflicting record ends the delivery. */
     async function writeStep(params: {
@@ -110,6 +126,7 @@ export function workflow<
       stepAttempt: number;
       done: boolean;
       stepResponseJson: string;
+      deleteWaitersOf?: readonly string[];
     }) {
       stopIfAborted(signal);
       const written = await infrastructure(() =>
@@ -131,200 +148,371 @@ export function workflow<
     }
 
     /**
-     * Records the cancellation at `stepKey` and returns the error to throw into
-     * workflow code. A lost lease or a conflicting record ends the delivery.
+     * Records the cancellation at every parked step, and at each unsettled
+     * combinator above one, in one write. Returns the error to throw into
+     * workflow code at every parked step. A lost lease or a conflicting record ends
+     * the delivery.
      */
     async function deliverCancellation(
       request: ExecutionCancellation,
-      stepKey: string,
-      stepAttempt: number
+      parked: readonly { branch: DrivenBranch; stepKey: string; stepAttempt: number }[]
     ) {
-      const record = encodeStepRecord(
-        new StepCancelled(
-          new WorkflowCancelledError({ reason: request.reason, source: request.source })
-        ),
-        stepKey
+      const err = new WorkflowCancelledError({ reason: request.reason, source: request.source });
+      const thrown = encodeStepRecord(new StepCancelled(err), parked[0]!.stepKey).json;
+      const combinators: Combinator[] = [];
+      for (const { branch } of parked) {
+        for (let combinator = branch.parent; combinator; combinator = combinator.owner.parent) {
+          if (!combinator.decision && !combinators.includes(combinator)) {
+            combinators.push(combinator);
+          }
+        }
+      }
+      const cancelled = encodeStepRecord(
+        new StepBranchesDecision({ decision: "cancelled", err }),
+        ""
       );
+      const steps = [
+        ...parked.map(({ stepKey, stepAttempt }) => ({
+          stepKey,
+          stepAttempt,
+          stepResponseJson: thrown,
+        })),
+        ...combinators.map(({ stepKey, stepAttempt }) => ({
+          stepKey,
+          stepAttempt,
+          stepResponseJson: cancelled.json,
+        })),
+      ];
+      // Set before the write, so no combinator settles another way meanwhile.
+      // A failed write ends the delivery.
+      for (const combinator of combinators) {
+        combinator.decision = (cancelled.response as StepBranchesDecision).decision;
+      }
       stopIfAborted(signal);
       const written = await infrastructure(() =>
-        heapClient.recordCancellation({
-          lease,
-          steps: [{ stepKey, stepAttempt, stepResponseJson: record.json }],
-        })
+        heapClient.recordCancellation({ lease, steps })
       );
       if (isLeaseLost(written)) {
         throw new InfrastructureError(new LeaseLostError(executionId));
       }
-      const [stored] = written;
-      if (stored?.stepResponseJson !== record.json || stored.meta.done !== true) {
-        throw new InfrastructureError(new StepConflictError(executionId, stepKey));
-      }
-      return (record.response as StepCancelled).err;
+      steps.forEach((step, i) => {
+        const stored = written[i];
+        if (stored?.stepResponseJson !== step.stepResponseJson || stored.meta.done !== true) {
+          throw new InfrastructureError(new StepConflictError(executionId, step.stepKey));
+        }
+      });
+      return (decodeStepRecord(thrown) as StepCancelled).err;
     }
 
     // A request is delivered once. Replay of a delivered request reads the
     // recorded throw instead of the request.
-    let pendingCancellation =
-      cancellation && cancellation.deliveredAt === undefined ? cancellation : undefined;
+    const barrier = new CancellationBarrier(
+      cancellation && cancellation.deliveredAt === undefined ? cancellation : undefined,
+      deliverCancellation
+    );
 
-    let iteratorResult: IteratorResult<any> | null = null;
-    let nextIteratorResult: IteratorResult<any> | null = null;
-    // A step that produced a result resumes with its decoded record, which
-    // is what it returns to workflow code.
-    let resumeWith: StepResult | undefined;
-    const stepKeys = new Set<string>();
-
-    while (true) {
-      let stepAttempt = 0;
-      let stepKey: string;
-
-      // Throwing a step error into the workflow already advanced it.
-      if (nextIteratorResult) {
-        iteratorResult = nextIteratorResult;
-        nextIteratorResult = null;
-      } else {
+    /**
+     * Advances one generator, the workflow's or a branch's, until it returns,
+     * suspends or stops. An error that workflow code throws rejects
+     * with a `WorkflowThrew`. Any other rejection ends the delivery.
+     */
+    async function drive(
+      iterator: AsyncGenerator<any, any, any>,
+      branch: DrivenBranch
+    ): Promise<DriveOutcome> {
+      const next = async (value?: unknown) => {
         stopIfAborted(signal);
-        iteratorResult = await workflowIterator.next(resumeWith);
-      }
-      resumeWith = undefined;
+        try {
+          return await iterator.next(value);
+        } catch (err) {
+          throw new WorkflowThrew(err);
+        }
+      };
+      const throwInto = async (err: unknown) => {
+        stopIfAborted(signal);
+        try {
+          return await iterator.throw(err);
+        } catch (thrown) {
+          throw new WorkflowThrew(thrown);
+        }
+      };
 
-      if (iteratorResult.done) {
-        stepKey = WORKFLOW_RESULT_STEP_KEY;
-      } else if (!(iteratorResult.value instanceof StepKey)) {
-        throw new Error("Step runners must yield a StepKey object");
-      } else {
-        stepKey = iteratorResult.value.key;
+      let iteratorResult: IteratorResult<any>;
+      let nextIteratorResult: IteratorResult<any> | null = null;
+      // A step that produced a result resumes with its decoded record, which
+      // is what it returns to workflow code.
+      let resumeWith: StepResult | undefined;
+      let afterDelay = false;
+
+      while (true) {
+        let stepAttempt = 0;
+
+        // Throwing a step error into the workflow already advanced it.
+        if (nextIteratorResult) {
+          iteratorResult = nextIteratorResult;
+          nextIteratorResult = null;
+        } else {
+          branch.at = undefined;
+          iteratorResult = await next(resumeWith);
+        }
+        resumeWith = undefined;
+
+        if (iteratorResult.done) {
+          return { status: "returned", value: iteratorResult.value, afterDelay };
+        }
+        if (!(iteratorResult.value instanceof StepKey)) {
+          throw new Error("Step runners must yield a StepKey object");
+        }
+        // A stopped branch reaches no key after its combinator decided, so
+        // the keys recorded with the decision are all the keys it reached.
+        if (branch.stopped) return { status: "stopped" };
+        const stepKey = iteratorResult.value.key;
+        const isCombinator = iteratorResult.value instanceof BranchesStepKey;
+        // On replay, a branch that a recorded decision stopped stops where
+        // the first run stopped it: at a key it did not reach, or after
+        // reaching a key it was waiting at.
+        if (!branch.allows(stepKey)) return { status: "stopped" };
         if (stepKeys.has(stepKey)) {
           throw new Error("Each step in a loop must have a unique cache key.");
         }
-        stepKeys.add(stepKey)
-      }
+        stepKeys.add(stepKey);
+        branch.reach(stepKey);
+        if (!isCombinator && branch.holds(stepKey)) return { status: "stopped" };
+        // The first run resumed the branch past this step before the decision.
+        const passed = !isCombinator && branch.limited;
 
-      let cached = await infrastructure(() =>
-        heapClient.readStep({
-          executionId,
-          stepKey,
-        })
-      );
+        let cached = await infrastructure(() =>
+          heapClient.readStep({
+            executionId,
+            stepKey,
+          })
+        );
 
-      if (cached?.meta) {
-        stepAttempt = cached.meta.attempt + 1;
-      }
+        if (cached?.meta) {
+          stepAttempt = cached.meta.attempt + 1;
+        }
 
-      const recorded =
-        cached && !iteratorResult.done ? decodeStepRecord(cached.stepResponseJson) : null;
+        const recorded = cached ? decodeStepRecord(cached.stepResponseJson) : null;
+        // A recorded step after a delay means the delay was passed in an
+        // earlier delivery.
+        if (cached) afterDelay = false;
+        if (
+          passed &&
+          (!cached?.meta.done || (recorded instanceof StepDelay && !(recorded instanceof StepDelayPassed)))
+        ) {
+          throw new Error(`Step "${stepKey}" no longer reaches its recorded outcome on replay`);
+        }
 
-      if (!iteratorResult.done) {
         let thrown: { err: unknown } | undefined;
         if (cached?.meta.done && recorded instanceof StepCancelled) {
           thrown = { err: recorded.err };
-        } else if (
-          pendingCancellation &&
-          isUnfinishedStep(cached, recorded, clock())
+        } else if (!isCombinator && isUnfinishedStep(cached, recorded, clock())) {
+          // A combinator is not a cancellation point. A store or join wait
+          // checks its condition before it counts as caught up, so a wait
+          // satisfied before this delivery wins against a delay that elapsed.
+          const checksFirst =
+            !barrier.pending && (recorded instanceof StepStoreWait || recorded instanceof StepJoinWait);
+          if (!checksFirst) branch.markLive();
+          if (branch.stopped) return { status: "stopped" };
+          if (barrier.pending) {
+            // A delay is recorded done when it starts, so its cancellation
+            // is written as the step's next attempt, which replay reads.
+            const err = await barrier.park(branch, stepKey, stepAttempt);
+            if (err === STOPPED) return { status: "stopped" };
+            thrown = { err };
+          }
+        }
+        // A stopped branch still starts the branches of a combinator it
+        // reached, so that replay, which starts them, runs the same code.
+        if (branch.stopped && !isCombinator) return { status: "stopped" };
+        // Inside a combinator, another branch's waiter can wake the execution
+        // before a retry is due. The step is not run early. Outside one, only a
+        // redelivery after a crash comes early, and the step runs then, as
+        // RFC 005 requires.
+        if (
+          !thrown &&
+          branch.parent !== undefined &&
+          cached?.meta.done === false &&
+          recorded instanceof StepRetrying &&
+          recorded.wakeAt > clock()
         ) {
-          // A delay is recorded done when it starts, so its cancellation is
-          // written as the step's next attempt, which replay reads.
-          thrown = {
-            err: await deliverCancellation(pendingCancellation, stepKey, stepAttempt),
-          };
-          pendingCancellation = undefined;
+          return { status: "suspended", response: new StepDelay(recorded.wakeAt) };
         }
         if (thrown) {
           // The step is suspended at its StepKey, so the throw reaches
           // workflow code without running the step.
-          stopIfAborted(signal);
-          nextIteratorResult = await workflowIterator.throw(thrown.err);
+          branch.at = undefined;
+          afterDelay = false;
+          nextIteratorResult = await throwInto(thrown.err);
           continue;
         }
-      }
 
-      // A step with an unfinished record runs again. A step that yields an
-      // UnfinishedCacheCheck receives the record.
-      let unfinished: typeof cached = null;
-      if (cached?.meta.done === false) {
-        unfinished = cached;
-        cached = null;
-      }
+        // A step with an unfinished record runs again. A step that yields an
+        // UnfinishedCacheCheck receives the record.
+        let unfinished: typeof cached = null;
+        if (cached?.meta.done === false) {
+          unfinished = cached;
+          cached = null;
+        }
 
-      if (!iteratorResult.done) {
-        iteratorResult = await workflowIterator.next();
-      }
+        iteratorResult = await next();
+        const cacheCheck = iteratorResult.value;
+        if (iteratorResult.done || !(cacheCheck instanceof StepCacheCheck)) {
+          throw new Error("Step runners must yield a CacheCheck object");
+        }
 
-      let stepResponse: StepResponse;
+        const live = !cached && !isCombinator;
+        if (live) {
+          await branch.acquireSlot();
+          if (branch.stopped) {
+            branch.releaseSlot();
+            return { status: "stopped" };
+          }
+        }
+        let action: StepAction;
+        try {
+          action = await settleStep({
+            branch,
+            next,
+            stepKey,
+            stepAttempt,
+            cached,
+            recorded,
+            cachedResponse: cached
+              ? recorded
+              : unfinished && cacheCheck instanceof UnfinishedCacheCheck
+                ? new StepUnfinished(recorded!)
+                : null,
+          });
+        } finally {
+          if (live) branch.releaseSlot();
+        }
+
+        // A stopped branch's step that was in flight is recorded, but the
+        // branch's generator is not resumed.
+        if (branch.stopped || branch.holds(stepKey)) return { status: "stopped" };
+        if ("throw" in action) {
+          branch.at = undefined;
+          afterDelay = false;
+          nextIteratorResult = await throwInto(action.throw);
+          continue;
+        }
+        if ("resume" in action) {
+          resumeWith = action.resume;
+          if (action.delay) afterDelay = true;
+          continue;
+        }
+        return action;
+      }
+    }
+
+    /**
+     * Runs one step past its cache check: makes its runtime calls, records
+     * its response, and says how its generator continues.
+     */
+    async function settleStep(params: {
+      branch: DrivenBranch;
+      next: (value?: unknown) => Promise<IteratorResult<any>>;
+      stepKey: string;
+      stepAttempt: number;
+      cached: HeapRecord | null;
+      recorded: StepResponse | null;
+      cachedResponse: StepResponse | null;
+    }): Promise<StepAction> {
+      const { branch, next, stepKey, cached, recorded } = params;
+      let { stepAttempt } = params;
       let suspendedOnStore = false;
 
-      if (iteratorResult.done) {
-        stepResponse = new WorkflowResult(iteratorResult.value);
-      } else {
+      // Resuming the step runs the step function unless it is cached.
+      let iteratorResult = await next(params.cachedResponse);
+      let stepResponse = iteratorResult.value;
+
+      // A step that needs a runtime client yields a request, and the call is
+      // made here, outside workflow code. An infrastructure error rejects the
+      // delivery without resuming the step. A stopped branch makes no new
+      // call, and a call in flight finishes before a combinator records its
+      // decision (see DecisionLock).
+      while (
+        stepResponse instanceof StepRuntimeCall ||
+        stepResponse instanceof StepEffectCall ||
+        stepResponse instanceof StepStoreWaitRequest
+      ) {
+        stopIfAborted(signal);
+        if (branch.stopped) return { status: "stopped" };
+        if (stepResponse instanceof StepStoreWaitRequest) {
+          const { waiter } = stepResponse;
+          // 1. Record the unfinished step. A timed wait's deadline must be
+          //    durable before the waiter can wake a redelivery.
+          const record = encodeStepRecord(stepResponse, stepKey);
+          await writeStep({
+            stepKey,
+            stepAttempt,
+            done: false,
+            stepResponseJson: record.json,
+          });
+          // 2. Register the waiter.
+          const registered = await branch.shared(async () =>
+            branch.stopped
+              ? STOPPED
+              : executeRuntimeCall(
+                  new StepRuntimeCall(({ stores }) => stores.registerWaiter(waiter)),
+                  clients
+                )
+          );
+          if (registered === STOPPED) return { status: "stopped" };
+          // 3. Suspend.
+          if (registered.ok) {
+            stepResponse = record.response;
+            suspendedOnStore = true;
+            break;
+          }
+          // The failure is recorded as the next attempt.
+          stepAttempt++;
+          iteratorResult = await next(registered);
+          stepResponse = iteratorResult.value;
+          continue;
+        }
+        const call = stepResponse;
+        const callResult = await branch.shared(async () => {
+          if (branch.stopped) return STOPPED;
+          return call instanceof StepEffectCall
+            ? executeEffectCall(call.request, {
+                effects: effectClient,
+                executionId,
+                // Each earlier attempt of an effect step that ended
+                // uncertain wrote one unfinished record.
+                attempt: stepAttempt,
+                due:
+                  branch.parent !== undefined && recorded instanceof StepEffectWait
+                    ? recorded.wakeAt
+                    : undefined,
+                clock,
+                assertLease: () => stopIfAborted(signal),
+                logger,
+              })
+            : executeRuntimeCall(call, clients);
+        });
+        if (callResult === STOPPED) return { status: "stopped" };
+        // The effect is still pending and its next attempt is not yet due.
+        // The step suspends again without recording an attempt.
+        if (callResult === EFFECT_NOT_DUE) {
+          return { status: "suspended", response: recorded! };
+        }
+        iteratorResult = await next(callResult);
         stepResponse = iteratorResult.value;
       }
 
-      if (stepResponse instanceof StepCacheCheck) {
-        const cachedResponse = cached
-          ? recorded
-          : unfinished && stepResponse instanceof UnfinishedCacheCheck
-            ? new StepUnfinished(recorded!)
-            : null;
-        // Resuming the step runs the step function unless it is cached.
-        stopIfAborted(signal);
-        iteratorResult = await workflowIterator.next(cachedResponse);
-        stepResponse = iteratorResult.value;
-
-        // A step that needs a runtime client yields a request. Make the call
-        // here, outside workflow code, and resume the step with its result.
-        // An infrastructure error rejects the delivery without resuming it.
-        while (
-          stepResponse instanceof StepRuntimeCall ||
-          stepResponse instanceof StepEffectCall ||
-          stepResponse instanceof StepStoreWaitRequest
-        ) {
-          stopIfAborted(signal);
-          if (stepResponse instanceof StepStoreWaitRequest) {
-            const { waiter } = stepResponse;
-            // 1. Record the unfinished step. A timed wait's deadline must be
-            //    durable before the waiter can wake a redelivery.
-            const record = encodeStepRecord(stepResponse, stepKey);
-            await writeStep({
-              stepKey,
-              stepAttempt,
-              done: false,
-              stepResponseJson: record.json,
-            });
-            // 2. Register the waiter.
-            const registered = await executeRuntimeCall(
-              new StepRuntimeCall(({ stores }) => stores.registerWaiter(waiter)),
-              clients
-            );
-            // 3. Suspend.
-            if (registered.ok) {
-              stepResponse = record.response;
-              suspendedOnStore = true;
-              break;
-            }
-            // The failure is recorded as the next attempt.
-            stepAttempt++;
-            iteratorResult = await workflowIterator.next(registered);
-            stepResponse = iteratorResult.value;
-            continue;
-          }
-          const callResult =
-            stepResponse instanceof StepEffectCall
-              ? await executeEffectCall(stepResponse.request, {
-                  effects: effectClient,
-                  executionId,
-                  // Each earlier attempt of an effect step that ended
-                  // uncertain wrote one unfinished record.
-                  attempt: stepAttempt,
-                  clock,
-                  assertLease: () => stopIfAborted(signal),
-                  logger,
-                })
-              : await executeRuntimeCall(stepResponse, clients);
-          iteratorResult = await workflowIterator.next(callResult);
-          stepResponse = iteratorResult.value;
+      if (stepResponse instanceof StepBranches) {
+        if (cached && !(recorded instanceof StepBranchesDecision)) {
+          throw new Error(`Step "${stepKey}" has a record that is not a combinator decision`);
         }
-      } else if (!(stepResponse instanceof WorkflowResult)) {
-        throw new Error("Step runners must yield a CacheCheck object");
+        return runBranches(
+          stepResponse,
+          branch,
+          stepKey,
+          stepAttempt,
+          cached ? (recorded as StepBranchesDecision) : undefined
+        );
       }
 
       // TODO: the iterable check should come before the StepKey check.
@@ -341,20 +529,30 @@ export function workflow<
         stepResponse = new StepInvalid();
       }
 
+      // A delay that elapsed is recorded as passed before the workflow
+      // resumes past it, so replay does not read the clock for it again.
+      const passesNow =
+        stepResponse instanceof StepDelay &&
+        !(recorded instanceof StepDelayPassed) &&
+        stepResponse.wakeAt <= clock();
+      if (passesNow && !cached) stepResponse = new StepDelayPassed(stepResponse.wakeAt);
+      if (
+        !cached &&
+        stepResponse instanceof StepError &&
+        // 1-indexed vs 0-indexed
+        stepResponse.maxAttempts > stepAttempt + 1
+      ) {
+        stepResponse = new StepRetrying(stepResponse, clock() + stepResponse.retryInterval);
+      }
+
       let stepResponseJson: string | undefined;
-      // The workflow result is encoded on every delivery, so that an invalid
-      // result fails the same way whether or not it is already recorded.
-      if (!cached || stepResponse instanceof WorkflowResult) {
+      if (!cached) {
         const record = encodeStepRecord(stepResponse, stepKey);
         stepResponseJson = record.json;
         stepResponse = record.response;
       }
 
-      const needsRetry =
-        !cached?.meta.done &&
-        stepResponse instanceof StepError &&
-        // 1-indexed vs 0-indexed
-        stepResponse.maxAttempts > stepAttempt + 1;
+      const needsRetry = !cached && stepResponse instanceof StepRetrying;
       // A watched effect stays unfinished, so the next delivery begins it
       // again; its waiter is deleted when the step's result is recorded.
       const needsWake =
@@ -372,47 +570,343 @@ export function workflow<
         });
       }
 
-      if (stepResponse instanceof WorkflowResult) {
-        return stepResponse;
-      }
-
-      // Only an invalid workflow result is recorded as a step error under
-      // the workflow result's key. The workflow has finished, so it fails.
-      if (iteratorResult.done && stepResponse instanceof StepError) {
-        throw stepResponse.err;
-      }
-
       if (stepResponse instanceof StepInvalid) {
-        break;
+        throw new Error(
+          "Workflow yielded an invalid step. Steps must be yielded with yield* from a step runner."
+        );
       }
-
       if (stepResponse instanceof StepError) {
-        if (needsRetry) {
-          yield new StepDelay(clock() + stepResponse.retryInterval);
-        } else {
-          stopIfAborted(signal);
-          nextIteratorResult = await workflowIterator.throw(stepResponse.err);
-          continue;
+        if (stepResponse instanceof StepRetrying) {
+          return { status: "suspended", response: new StepDelay(stepResponse.wakeAt) };
         }
+        return { throw: stepResponse.err };
       }
-
       if (stepResponse instanceof StepDelay) {
-        if (stepResponse.wakeAt <= clock()) {
-          continue;
+        if (recorded instanceof StepDelayPassed) return { resume: undefined };
+        if (passesNow) {
+          if (cached) {
+            if (branch.stopped) return { status: "stopped" };
+            await writeStep({
+              stepKey,
+              stepAttempt,
+              done: true,
+              stepResponseJson: encodeStepRecord(new StepDelayPassed(stepResponse.wakeAt), stepKey).json,
+            });
+          }
+          return { resume: undefined, delay: true };
         }
       }
-
       if (stepResponse instanceof StepResult) {
-        resumeWith = stepResponse;
-      } else {
-        yield stepResponse;
+        return { resume: stepResponse };
       }
+      return { status: "suspended", response: stepResponse };
     }
 
-    throw new Error(
-      "Workflow yielded an invalid step. Steps must be yielded with yield* from a step runner."
-    );
+    /**
+     * Drives the branches of `step.all` or `step.race` concurrently, records
+     * the decision under `stepKey` once the combinator settles, and resolves
+     * once no branch is running. A `recorded` decision is applied to the
+     * branches' replay instead; under `rejected` or `won`, the other branches
+     * stop where the record says. Rejects with an error that ends the
+     * delivery.
+     */
+    function runBranches(
+      request: StepBranches,
+      owner: DrivenBranch,
+      stepKey: string,
+      stepAttempt: number,
+      recorded: StepBranchesDecision | undefined
+    ): Promise<StepAction> {
+      const { combinator: kind, mode, concurrency, branches } = request.request;
+      const combinator = new Combinator(owner, stepKey, stepAttempt, concurrency);
+      combinator.decision = recorded?.decision;
+      combinator.recorded = recorded !== undefined;
+      owner.inner = combinator;
+      const children = branches.map((_, i) => new DrivenBranch(combinator, i));
+      combinator.branches.push(...children);
+      combinator.keys.push(...branches.map(() => []));
+      if (recorded) {
+        const { decision } = recorded;
+        if (
+          (decision.decision === "rejected" || decision.decision === "won") &&
+          decision.index >= branches.length
+        ) {
+          throw new Error(`Step "${stepKey}" no longer reaches its recorded outcome on replay`);
+        }
+        combinator.replayKeys = new Set(recorded.keys);
+        combinator.replayHeld = new Set(recorded.held);
+      }
+      const states: BranchState[] = children.map(() => ({ status: "running" }));
+      // Indexes of branches that returned or threw, in the order they did.
+      const finished: number[] = [];
+      let writing = false;
+      let done = false;
+
+      return new Promise<StepAction>((resolve, reject) => {
+        const settle = (fn: () => StepAction) => {
+          done = true;
+          barrier.enter();
+          try {
+            resolve(fn());
+          } catch (err) {
+            reject(err);
+          }
+        };
+
+        const evaluate = () => {
+          if (done || writing) return;
+          const running = states.some((state) => state.status === "running");
+          const fatal = combinator.fatal;
+          if (fatal) {
+            if (!running) {
+              settle(() => {
+                throw fatal.err;
+              });
+            }
+            return;
+          }
+          // The combinator decides only once every branch has caught up with
+          // its records, so the decision deletes the waiters of every step a
+          // branch will reach. While a cancellation is pending, it waits for
+          // every branch: the delivery may land in one still running.
+          if (
+            !combinator.decision &&
+            !owner.stopped &&
+            !owner.limited &&
+            !combinator.replaying &&
+            !(barrier.pending && running)
+          ) {
+            const decision = decide(kind, mode, states, finished);
+            if (decision) {
+              recordDecision(decision);
+              return;
+            }
+          }
+          if (running) return;
+          const { decision } = combinator;
+          if (
+            decision &&
+            (decision.decision !== "cancelled" ||
+              states.every((state) => state.status === "returned" || state.status === "threw"))
+          ) {
+            settle(() => applyDecision(stepKey, decision, states));
+            return;
+          }
+          if (owner.stopped || owner.limited) {
+            settle(() => ({ status: "stopped" }));
+            return;
+          }
+          settle(() => ({ status: "suspended", response: earliestWake(states) }));
+        };
+
+        const recordDecision = (decision: BranchesDecision) => {
+          // Set first, so no branch starts new work from here on.
+          combinator.decision = decision;
+          writing = true;
+          barrier.enter();
+          // Only these decisions stop branches. Under the others every branch
+          // has finished, so its waiters are already deleted. A key that is
+          // not held has a done record, which deleted its waiters, so only
+          // held keys can still have waiters.
+          const stops = decision.decision === "rejected" || decision.decision === "won";
+          const keys = stops ? combinator.keysOutside(decision.index) : [];
+          const held = stops ? combinator.heldOutside(decision.index) : [];
+          combinator.lock
+            .exclusive(() =>
+              writeStep({
+                stepKey,
+                stepAttempt,
+                done: true,
+                stepResponseJson: encodeStepRecord(
+                  new StepBranchesDecision(decision, keys, held),
+                  stepKey
+                ).json,
+                ...(held.length > 0 ? { deleteWaitersOf: held } : {}),
+              })
+            )
+            .catch((err) => {
+              combinator.fatal ??= { err };
+              barrier.releaseStopped();
+            })
+            .finally(() => {
+              writing = false;
+              evaluate();
+              barrier.leave();
+            });
+        };
+
+        combinator.evaluate = evaluate;
+        barrier.enter(children.length);
+        children.forEach((child) => {
+          const i = child.index;
+          // The state is set in the same task as markDone, so no evaluation
+          // sees a branch that has an outcome but is still replaying.
+          const finish = (state: BranchState) => {
+            states[i] = state;
+            if (state.status === "returned" || state.status === "threw") finished.push(i);
+            child.markDone();
+            barrier.leave();
+          };
+          drive(branches[i]!, child).then(finish, (err) => {
+            if (err instanceof WorkflowThrew && !InfrastructureError.is(err.err)) {
+              finish({ status: "threw", err: err.err });
+              return;
+            }
+            states[i] = { status: "stopped" };
+            combinator.fatal ??= { err: err instanceof WorkflowThrew ? err.err : err };
+            barrier.releaseStopped();
+            finish({ status: "stopped" });
+          });
+        });
+        evaluate();
+        // The owner does not count as running while it waits for its branches.
+        barrier.leave();
+      });
+    }
+
+    async function recordWorkflowResult(value: unknown) {
+      const stepKey = WORKFLOW_RESULT_STEP_KEY;
+      const cached = await infrastructure(() =>
+        heapClient.readStep({ executionId, stepKey })
+      );
+      // The workflow result is encoded on every delivery, so that an invalid
+      // result fails the same way whether or not it is already recorded.
+      const record = encodeStepRecord(new WorkflowResult(value), stepKey);
+      if (!cached) {
+        await writeStep({ stepKey, stepAttempt: 0, done: true, stepResponseJson: record.json });
+      }
+      // Only an invalid workflow result is recorded as a step error under
+      // the workflow result's key. The workflow has finished, so it fails.
+      if (record.response instanceof StepError) throw record.response.err;
+      return record.response as WorkflowResult<Result>;
+    }
+
+    let outcome: DriveOutcome;
+    try {
+      outcome = await drive(workflowIterator, new DrivenBranch());
+    } catch (err) {
+      throw err instanceof WorkflowThrew ? err.err : err;
+    }
+    switch (outcome.status) {
+      case "returned":
+        return await recordWorkflowResult(outcome.value);
+      case "suspended":
+        yield outcome.response;
+        throw new Error("A suspended delivery cannot be resumed");
+      case "stopped":
+        throw new Error("The workflow stopped without an outcome");
+    }
   };
+}
+
+/** An error that workflow code threw, as opposed to one the driver raised. */
+class WorkflowThrew {
+  constructor(readonly err: unknown) {}
+}
+
+type DriveOutcome =
+  /** `afterDelay`: the branch passed a delay in this delivery and reached no recorded step after it. */
+  | { status: "returned"; value: unknown; afterDelay?: boolean }
+  | { status: "suspended"; response: StepResponse }
+  | { status: "stopped" };
+
+type StepAction =
+  | { resume: StepResult | undefined; delay?: true }
+  | { throw: unknown }
+  | Exclude<DriveOutcome, { status: "returned" }>;
+
+type BranchState =
+  | { status: "running" }
+  | { status: "threw"; err: unknown }
+  | DriveOutcome;
+
+/** The combinator's decision once `finished` (in order) have returned or thrown, if it has one. */
+function decide(
+  kind: "all" | "race",
+  mode: "fail-fast" | "settle",
+  states: readonly BranchState[],
+  finished: readonly number[]
+): BranchesDecision | undefined {
+  if (kind === "race") {
+    // A branch that passed an elapsed delay in this delivery loses to one
+    // that returned without, as a timed `when` or `join` checks its
+    // condition before its deadline.
+    const returned = finished.filter((i) => states[i]!.status === "returned");
+    const winner =
+      returned.find((i) => !(states[i] as { afterDelay?: boolean }).afterDelay) ?? returned[0];
+    if (winner !== undefined) return { decision: "won", index: winner };
+    return states.every((state) => state.status === "threw") ? { decision: "failed" } : undefined;
+  }
+  if (mode === "fail-fast") {
+    const failed = finished.find((i) => states[i]!.status === "threw");
+    if (failed !== undefined) return { decision: "rejected", index: failed };
+    return states.every((state) => state.status === "returned")
+      ? { decision: "fulfilled" }
+      : undefined;
+  }
+  return finished.length === states.length ? { decision: "settled" } : undefined;
+}
+
+/**
+ * The combinator's value or error under `decision`, read from what its
+ * branches returned or threw. Throws if the branches no longer reach the
+ * recorded outcome, as when workflow code changed.
+ */
+function applyDecision(
+  stepKey: string,
+  decision: BranchesDecision,
+  states: readonly BranchState[]
+): StepAction {
+  const diverged = () =>
+    new Error(`Step "${stepKey}" no longer reaches its recorded outcome on replay`);
+  const value = (i: number) => {
+    const state = states[i];
+    if (state?.status !== "returned") throw diverged();
+    return state.value;
+  };
+  const error = (i: number) => {
+    const state = states[i];
+    if (state?.status !== "threw") throw diverged();
+    return state.err;
+  };
+  switch (decision.decision) {
+    case "fulfilled":
+      return { resume: new StepResult(states.map((_, i) => value(i))) };
+    case "rejected":
+      return { throw: error(decision.index) };
+    case "settled":
+      return {
+        resume: new StepResult(
+          states.map((state, i) =>
+            state.status === "returned"
+              ? { status: "fulfilled", value: state.value }
+              : { status: "rejected", error: error(i) }
+          )
+        ),
+      };
+    case "won":
+      return {
+        resume: new StepResult({ index: decision.index, value: value(decision.index) }),
+      };
+    case "failed":
+      return { throw: new WorkflowRaceError(stepKey, states.map((_, i) => error(i))) };
+    case "cancelled":
+      return { throw: decision.err };
+  }
+}
+
+/**
+ * The suspension of a combinator whose branches suspended. The runner reads
+ * only `wakeAt`, so this is a delay at the earliest wake time, or the first
+ * suspension if none has a wake time.
+ */
+function earliestWake(states: readonly BranchState[]): StepResponse {
+  const suspended = states.flatMap((state) =>
+    state.status === "suspended" ? [state.response as StepResponse & { wakeAt?: number }] : []
+  );
+  if (suspended.length === 0) throw new Error("A combinator suspended without a suspended branch");
+  const wakeTimes = suspended.flatMap(({ wakeAt }) => (wakeAt === undefined ? [] : [wakeAt]));
+  return wakeTimes.length > 0 ? new StepDelay(Math.min(...wakeTimes)) : suspended[0]!;
 }
 
 export const createWorkflow = workflow;
@@ -420,7 +914,7 @@ export const createWorkflow = workflow;
 /**
  * Whether a cancellation is delivered at this step: it has no record, an
  * unfinished record (a store, join or effect wait, or a retry backoff), or a
- * delay that has not elapsed.
+ * delay that has neither elapsed nor been passed.
  */
 function isUnfinishedStep(
   cached: { meta: { done: boolean } } | null,
@@ -428,7 +922,7 @@ function isUnfinishedStep(
   now: number
 ) {
   if (!cached || !cached.meta.done) return true;
-  return recorded instanceof StepDelay && recorded.wakeAt > now;
+  return recorded instanceof StepDelay && !(recorded instanceof StepDelayPassed) && recorded.wakeAt > now;
 }
 
 /**

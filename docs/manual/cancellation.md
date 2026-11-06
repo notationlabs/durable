@@ -100,6 +100,37 @@ After the throw, workflow code can run more durable steps. They are ordinary ste
 
 A child that a cleanup step starts receives no cancellation request.
 
+## Inside `step.all` and `step.race`
+
+When the first unfinished step is inside a [combinator](./concurrent-steps.md), the delivery lands in every unfinished branch at once. Suppose `order-42` waits for payment and for a manager's approval in one `step.all`:
+
+```ts
+yield* step.all("payment-and-approval", [
+  (async function* () {
+    try {
+      yield* payments.when("paid", (state) => state.paid);
+    } catch (err) {
+      yield* step.run("void-invoice", () => billing.void(orderId));
+      throw err;
+    }
+  })(),
+  approvals.when("approved", (state) => state.approved),
+]);
+```
+
+The driver replays each branch to its first unfinished step: `paid` in the first branch and `approved` in the second. One fenced write then:
+
+1. records a cancellation at `paid` and at `approved`;
+2. deletes the waiters of both steps;
+3. records the decision `cancelled` under `payment-and-approval`, and under any other combinator around those steps that has not settled; and
+4. sets `cancellation.deliveredAt`.
+
+Each branch then receives `WorkflowCancelledError`, and its own `catch` and `finally` blocks run. They may run durable steps, such as `void-invoice`. When every branch has finished, `step.all` throws `WorkflowCancelledError`, even if a branch caught the error and returned a value.
+
+A pending request takes precedence over a combinator that has not recorded a decision. While a branch is parked at an unfinished step, the combinator does not decide, even if another branch has already returned or failed. A `step.race` whose `when` branch returns while its delay branch is parked records `cancelled`, not `won`, and both branches run their cleanup. A `fail-fast` `step.all` with a branch that already failed throws `WorkflowCancelledError`, not that branch's error.
+
+A combinator that settled before the request arrived is not interrupted. Replay returns its recorded outcome, and the cancellation lands at the next unfinished step after it. Branches that the combinator abandoned do not receive it.
+
 ## Outcomes
 
 The execution's outcome depends on how the workflow ends:

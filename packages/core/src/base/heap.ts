@@ -15,7 +15,8 @@ export abstract class HeapClient {
    * Records one attempt of a step, fenced by `lease`. The token check and the
    * write are atomic: if the lease is not current, nothing changes and the
    * write returns `lost`. A `done` record also deletes the step's store,
-   * effect and join waiters in the same write.
+   * effect and join waiters in the same write, and so do the steps named in
+   * `deleteWaitersOf`.
    *
    * Records are keyed by execution, step key and attempt, and never change
    * once written. Rewriting an existing record succeeds without changing it,
@@ -28,6 +29,12 @@ export abstract class HeapClient {
     stepAttempt: number;
     done: boolean;
     stepResponseJson: string;
+    /**
+     * Other steps whose waiters a `done` record deletes in the same write,
+     * such as the steps of branches that a `step.race` abandons. Ignored when
+     * the record is not done or already exists.
+     */
+    deleteWaitersOf?: readonly string[];
   }): Promise<HeapRecord | LeaseLost>;
 
   /**

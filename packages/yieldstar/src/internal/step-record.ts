@@ -15,6 +15,30 @@ import {
   durableValueCodec,
   encodeThrownValue,
 } from "@yieldstar/core";
+import { StepBranchesDecision, type BranchesDecision } from "./branches";
+
+/**
+ * A delay that a delivery passed. The driver records it as the delay's next
+ * attempt before it resumes the workflow past the delay, so replay resumes
+ * past it whatever the clock reads.
+ */
+export class StepDelayPassed extends StepDelay {}
+
+/**
+ * A step error that the step retries. `wakeAt` is when the retry is due, so
+ * a delivery before then suspends the step again without running it.
+ */
+export class StepRetrying extends StepError {
+  readonly wakeAt: number;
+  constructor(error: StepError, wakeAt: number) {
+    super(error.err, {
+      maxAttempts: error.maxAttempts,
+      retryInterval: error.retryInterval,
+      backoffStrategy: error.backOffStrategy,
+    });
+    this.wakeAt = wakeAt;
+  }
+}
 
 /** A `StepCacheCheck` that resumes with the step's unfinished record as a `StepUnfinished`, not null. */
 export class UnfinishedCacheCheck extends StepCacheCheck {}
@@ -88,11 +112,18 @@ function encodeResponse(response: StepResponse, stepKey: string): string {
       `,"err":${encodeThrownValue(response.err)}` +
       `,"maxAttempts":${JSON.stringify(response.maxAttempts)}` +
       `,"retryInterval":${JSON.stringify(response.retryInterval)}` +
-      `,"type":"step-error"}`
+      `,"type":"step-error"` +
+      (response instanceof StepRetrying ? `,"wakeAt":${JSON.stringify(response.wakeAt)}}` : "}")
     );
   }
   if (response instanceof StepCancelled) {
     return `{"err":${encodeThrownValue(response.err)},"type":"step-cancelled"}`;
+  }
+  if (response instanceof StepBranchesDecision) {
+    return encodeDecision(response.decision, response.keys, response.held);
+  }
+  if (response instanceof StepDelayPassed) {
+    return `{"passed":true,"type":"step-delay","wakeAt":${JSON.stringify(response.wakeAt)}}`;
   }
   if (response instanceof StepDelay) {
     return `{"type":"step-delay","wakeAt":${JSON.stringify(response.wakeAt)}}`;
@@ -110,6 +141,60 @@ function encodeResponse(response: StepResponse, stepKey: string): string {
   throw new Error(`Cannot record a ${response.type} step response`);
 }
 
+function encodeDecision(
+  decision: BranchesDecision,
+  keys: readonly string[],
+  held: readonly string[]
+): string {
+  const type = `"type":"branches-decision"`;
+  switch (decision.decision) {
+    case "rejected":
+    case "won":
+      return (
+        `{"decision":"${decision.decision}","index":${JSON.stringify(decision.index)}` +
+        `,"held":${JSON.stringify(held)},"keys":${JSON.stringify(keys)},${type}}`
+      );
+    case "cancelled":
+      return `{"decision":"cancelled","err":${encodeThrownValue(decision.err)},${type}}`;
+    default:
+      return `{"decision":"${decision.decision}",${type}}`;
+  }
+}
+
+function decodeDecision(record: Record<string, unknown>): StepBranchesDecision {
+  switch (record.decision) {
+    case "fulfilled":
+    case "settled":
+    case "failed":
+      return new StepBranchesDecision({ decision: record.decision });
+    case "rejected":
+    case "won": {
+      const { index, keys, held } = record;
+      if (!Number.isInteger(index) || (index as number) < 0) {
+        throw new Error(
+          `Invalid step record: a ${record.decision} decision has an invalid index ${JSON.stringify(index)}`
+        );
+      }
+      const isKeys = (value: unknown): value is string[] =>
+        Array.isArray(value) && value.every((key) => typeof key === "string");
+      if (!isKeys(keys) || !isKeys(held)) {
+        throw new Error(`Invalid step record: a ${record.decision} decision has no keys`);
+      }
+      return new StepBranchesDecision(
+        { decision: record.decision, index: index as number },
+        keys,
+        held
+      );
+    }
+    case "cancelled":
+      return new StepBranchesDecision({
+        decision: "cancelled",
+        err: decodeParsedValue(record.err, "err"),
+      });
+  }
+  throw new Error(`Invalid step record: unknown combinator decision ${JSON.stringify(record.decision)}`);
+}
+
 export function decodeStepRecord(json: string): StepResponse {
   const record = JSON.parse(json);
   try {
@@ -123,16 +208,22 @@ export function decodeStepRecord(json: string): StepResponse {
         );
       case "workflow-result":
         return new WorkflowResult(decodeParsedValue(record.result, "result"));
-      case "step-error":
-        return new StepError(decodeParsedValue(record.err, "err"), {
+      case "step-error": {
+        const error = new StepError(decodeParsedValue(record.err, "err"), {
           maxAttempts: record.maxAttempts,
           retryInterval: record.retryInterval,
           backoffStrategy: record.backOffStrategy,
         });
+        return typeof record.wakeAt === "number" ? new StepRetrying(error, record.wakeAt) : error;
+      }
       case "step-cancelled":
         return new StepCancelled(decodeParsedValue(record.err, "err"));
+      case "branches-decision":
+        return decodeDecision(record);
       case "step-delay":
-        return new StepDelay(record.wakeAt);
+        return record.passed === true
+          ? new StepDelayPassed(record.wakeAt)
+          : new StepDelay(record.wakeAt);
       case "effect-wait":
         return new StepEffectWait(record.wakeAt);
       case "store-wait":
