@@ -174,6 +174,8 @@ type ObservationRequest =
     };
 ```
 
+`clear-divergence` resumes a parked execution, so it is a write like `cancel`, and has its own member. A policy that allows the read operations by name does not allow it.
+
 Each function resolves with `{ allow: true }` or `{ allow: false, status: 401 | 403 }`.
 
 - The functions run in array order, before the route reads any record. The first denial wins, and the later functions do not run.

@@ -56,12 +56,15 @@ export type ObservedExecution = {
  * observation middleware.
  */
 export type ObservationRequest =
-  | ({ operation: "poll" | "wait" | "events" | "clear-divergence" } & ObservedExecution)
+  | ({ operation: "poll" | "wait" | "events" } & ObservedExecution)
   | {
       operation: "list";
       filter: { workflowId?: string; status?: ExecutionStatus; diverged?: boolean };
     }
-  | ({ operation: "cancel"; force: boolean } & ObservedExecution);
+  | ({ operation: "cancel"; force: boolean } & ObservedExecution)
+  // A write, like cancel, so a policy that groups the read operations
+  // does not cover it.
+  | ({ operation: "clear-divergence" } & ObservedExecution);
 
 /**
  * Allows or denies an observation, cancel or clear-divergence request. It
