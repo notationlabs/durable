@@ -72,13 +72,18 @@ export async function executeEffectCall(
     executionId: string;
     /** The number of earlier attempts of this step that ended uncertain. */
     attempt: number;
+    /**
+     * When the step's next attempt is due, if an earlier attempt ended
+     * uncertain. Before then, a pending effect is not looked up or performed.
+     */
+    due: number | undefined;
     clock: () => number;
     /** Checked before every callback, so a lost lease makes no external call. */
     assertLease: () => void;
     logger: Logger;
   }
-): Promise<EffectCallOutcome> {
-  const { effects, executionId, attempt, clock, assertLease, logger } = context;
+): Promise<EffectCallOutcome | { status: "early" }> {
+  const { effects, executionId, attempt, due, clock, assertLease, logger } = context;
   const { stepKey, effectId, operation, input, retryIn, maxAttempts } = request;
 
   const fail = (code: EffectDeliveryErrorCode, message: string, cause?: unknown) =>
@@ -181,6 +186,7 @@ export async function executeEffectCall(
       next = "perform";
       break;
     case "pending":
+      if (due !== undefined && clock() < due) return { status: "early" };
       // An earlier attempt may have started the operation, or finished it.
       next = "lookup";
       break;

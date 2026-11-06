@@ -142,9 +142,11 @@ Suppose the payment and the deadline both land in the same delivery. If timing p
 
 A combinator without a recorded decision decides only once every branch has caught up with its records. A branch has caught up when it has returned, failed or suspended, or has reached a step that needs new work. A store or join wait first checks its condition, so it has caught up only after that check. A branch that replays its records quickly therefore cannot win against a branch that is still replaying.
 
-A wait that is satisfied when the delivery checks it wins against a delay that elapsed. If the payment lands at minute one but the delivery it wakes runs after minute thirty, `when` still wins. A race picks a branch that passed an elapsed delay in the same delivery only if no other branch returned. This includes a branch that runs a step after the delay, such as `step.run("on-timeout", ...)`, even when that step finishes before the wait's check. A timed `store.when` and `step.join` work the same way: they check their condition before their deadline.
+A race picks a branch that passed an elapsed delay in the same delivery only if no other branch returned. So a store or join wait that is the last step of its branch, and is satisfied when the delivery checks it, wins against a delay that elapsed. If the payment lands at minute one but the delivery it wakes runs after minute thirty, `when` still wins. This holds even when the delay's branch runs a step after the delay, such as `step.run("on-timeout", ...)`, and that step finishes before the wait's check. A timed `store.when` and `step.join` work the same way: they check their condition before their deadline.
 
-When the payment and the deadline are both due in one delivery, the `on-timeout` step therefore runs, and the race still returns the payment. Do not put side effects after a delay inside a race branch. Put them after the race, under a check of `first.index`, as `release-stock` is in the example.
+The rule covers only a branch that returns at its wait. If the wait's branch runs another step after the wait, such as `step.run("handle-payment", ...)`, the delay's branch can return first and win. An effect wait does not check its outcome first, so a settled `step.effect` can also lose to a delay that elapsed.
+
+When the payment and the deadline are both due in one delivery, a step after either branch's wait or delay can therefore run, while the race returns the other branch. Do not put side effects after a wait or a delay inside a race branch. Put them after the race, under a check of `first.index`, as `release-stock` is in the example.
 
 ## Abandoned branches
 

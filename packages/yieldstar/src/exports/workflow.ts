@@ -13,6 +13,7 @@ import {
   StepCancelled,
   StepUnfinished,
   StepDelayPassed,
+  StepRetrying,
   UnfinishedCacheCheck,
   decodeStepRecord,
   encodeStepRecord,
@@ -324,6 +325,16 @@ export function workflow<
         // A stopped branch still starts the branches of a combinator it
         // reached, so that replay, which starts them, runs the same code.
         if (branch.stopped && !isCombinator) return { status: "stopped" };
+        // A delivery can come before a retry is due, for example when another
+        // branch's waiter wakes the execution. The step is not run early.
+        if (
+          !thrown &&
+          cached?.meta.done === false &&
+          recorded instanceof StepRetrying &&
+          recorded.wakeAt > clock()
+        ) {
+          return { status: "suspended", response: new StepDelay(recorded.wakeAt) };
+        }
         if (thrown) {
           // The step is suspended at its StepKey, so the throw reaches
           // workflow code without running the step.
@@ -468,6 +479,7 @@ export function workflow<
                 // Each earlier attempt of an effect step that ended
                 // uncertain wrote one unfinished record.
                 attempt: stepAttempt,
+                due: recorded instanceof StepEffectWait ? recorded.wakeAt : undefined,
                 clock,
                 assertLease: () => stopIfAborted(signal),
                 logger,
@@ -475,6 +487,11 @@ export function workflow<
             : executeRuntimeCall(call, clients);
         });
         if (callResult === STOPPED) return { status: "stopped" };
+        // The effect is still pending and its next attempt is not yet due.
+        // The step suspends again without recording an attempt.
+        if ("status" in callResult && callResult.status === "early") {
+          return { status: "suspended", response: recorded! };
+        }
         iteratorResult = await next(callResult);
         stepResponse = iteratorResult.value;
       }
@@ -526,6 +543,14 @@ export function workflow<
         stepResponse instanceof StepError &&
         // 1-indexed vs 0-indexed
         stepResponse.maxAttempts > stepAttempt + 1;
+      if (needsRetry && !cached) {
+        const record = encodeStepRecord(
+          new StepRetrying(stepResponse as StepError, clock() + (stepResponse as StepError).retryInterval),
+          stepKey
+        );
+        stepResponseJson = record.json;
+        stepResponse = record.response;
+      }
       // A watched effect stays unfinished, so the next delivery begins it
       // again; its waiter is deleted when the step's result is recorded.
       const needsWake =
@@ -549,11 +574,8 @@ export function workflow<
         );
       }
       if (stepResponse instanceof StepError) {
-        if (needsRetry) {
-          return {
-            status: "suspended",
-            response: new StepDelay(clock() + stepResponse.retryInterval),
-          };
+        if (stepResponse instanceof StepRetrying) {
+          return { status: "suspended", response: new StepDelay(stepResponse.wakeAt) };
         }
         return { throw: stepResponse.err };
       }

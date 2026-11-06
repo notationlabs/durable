@@ -518,6 +518,16 @@ const router = {
       step.delay("later", 10 * MINUTE),
     ]);
   }),
+  "retry-beside-when": workflow(async function* (step) {
+    const payments = step.store(PaymentStore);
+    return yield* step.all("check", [
+      step.run("flaky", async () => {
+        ran.push("flaky");
+        throw new RetryableError("try again", { maxAttempts: 3, retryInterval: MINUTE });
+      }),
+      payments.when("paid", (state) => state.paid || state.refunded === false),
+    ]);
+  }),
   "nested-loser-key-reused": workflow(async function* (step) {
     yield* step.race("first", [
       step.all("inner", [step.run("K", () => work("K", "loser")), step.delay("d", DAY)]),
@@ -935,6 +945,29 @@ describe.each(runtimes)("concurrent steps on $name", ({ create }) => {
       expect(await deliver()).toEqual({ status: "suspended", wakeAt: START + 10 * MINUTE });
       advance(9 * MINUTE);
       expect(await deliver()).toEqual({ status: "completed", result: ["ok", undefined] });
+      expect(ran).toEqual(["flaky", "flaky"]);
+    });
+    test("a sibling's wake during retry backoff does not run the step early", async () => {
+      await admit("retry-beside-when");
+      expect(await deliver()).toEqual({ status: "suspended", wakeAt: START + MINUTE });
+      expect(await readStep("flaky")).toMatchObject({ wakeAt: START + MINUTE, done: false });
+
+      for (const refunded of [true, undefined]) {
+        advance(1_000);
+        await runtime.stores.updateStore({
+          definition: PaymentStore,
+          id: ORDER,
+          updater(draft) {
+            draft.refunded = refunded;
+          },
+        });
+        expect(await deliver()).toEqual({ status: "suspended", wakeAt: START + MINUTE });
+      }
+      expect(ran).toEqual(["flaky"]);
+      expect(await readStep("flaky")).toMatchObject({ attempt: 0 });
+
+      advance(MINUTE);
+      expect(await deliver()).toEqual({ status: "suspended", wakeAt: START + 2_000 + 2 * MINUTE });
       expect(ran).toEqual(["flaky", "flaky"]);
     });
   });

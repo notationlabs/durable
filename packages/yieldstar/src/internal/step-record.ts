@@ -24,6 +24,22 @@ import { StepBranchesDecision, type BranchesDecision } from "./branches";
  */
 export class StepDelayPassed extends StepDelay {}
 
+/**
+ * A step error that the step retries. `wakeAt` is when the retry is due, so
+ * a delivery before then suspends the step again without running it.
+ */
+export class StepRetrying extends StepError {
+  readonly wakeAt: number;
+  constructor(error: StepError, wakeAt: number) {
+    super(error.err, {
+      maxAttempts: error.maxAttempts,
+      retryInterval: error.retryInterval,
+      backoffStrategy: error.backOffStrategy,
+    });
+    this.wakeAt = wakeAt;
+  }
+}
+
 /** A `StepCacheCheck` that resumes with the step's unfinished record as a `StepUnfinished`, not null. */
 export class UnfinishedCacheCheck extends StepCacheCheck {}
 
@@ -96,7 +112,8 @@ function encodeResponse(response: StepResponse, stepKey: string): string {
       `,"err":${encodeThrownValue(response.err)}` +
       `,"maxAttempts":${JSON.stringify(response.maxAttempts)}` +
       `,"retryInterval":${JSON.stringify(response.retryInterval)}` +
-      `,"type":"step-error"}`
+      `,"type":"step-error"` +
+      (response instanceof StepRetrying ? `,"wakeAt":${JSON.stringify(response.wakeAt)}}` : "}")
     );
   }
   if (response instanceof StepCancelled) {
@@ -191,12 +208,14 @@ export function decodeStepRecord(json: string): StepResponse {
         );
       case "workflow-result":
         return new WorkflowResult(decodeParsedValue(record.result, "result"));
-      case "step-error":
-        return new StepError(decodeParsedValue(record.err, "err"), {
+      case "step-error": {
+        const error = new StepError(decodeParsedValue(record.err, "err"), {
           maxAttempts: record.maxAttempts,
           retryInterval: record.retryInterval,
           backoffStrategy: record.backOffStrategy,
         });
+        return typeof record.wakeAt === "number" ? new StepRetrying(error, record.wakeAt) : error;
+      }
       case "step-cancelled":
         return new StepCancelled(decodeParsedValue(record.err, "err"));
       case "branches-decision":
