@@ -664,7 +664,9 @@ export function workflow<
           writing = true;
           barrier.enter();
           // Only these decisions stop branches. Under the others every branch
-          // has finished, so its waiters are already deleted.
+          // has finished, so its waiters are already deleted. A key that is
+          // not held has a done record, which deleted its waiters, so only
+          // held keys can still have waiters.
           const stops = decision.decision === "rejected" || decision.decision === "won";
           const keys = stops ? combinator.keysOutside(decision.index) : [];
           const held = stops ? combinator.heldOutside(decision.index) : [];
@@ -678,7 +680,7 @@ export function workflow<
                   new StepBranchesDecision(decision, keys, held),
                   stepKey
                 ).json,
-                ...(keys.length > 0 ? { deleteWaitersOf: keys } : {}),
+                ...(held.length > 0 ? { deleteWaitersOf: held } : {}),
               })
             )
             .catch((err) => {

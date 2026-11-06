@@ -101,7 +101,7 @@ const results = yield* step.all("check-order", branches, { mode: "settle" });
 
 ### Concurrency
 
-`concurrency` limits how many branches have a step in flight at once. A suspended branch does not hold a slot.
+`concurrency` limits how many branches have a step in flight at once. A suspended branch does not hold a slot. The limit applies to each step, not to a whole branch: a branch releases its slot between two steps, so with `concurrency: 5` over 100 branches of two steps each, most first steps run before any second step. To hold a resource for the length of a branch, such as "process at most five orders at a time", use a separate mechanism.
 
 ```ts
 yield* step.all("notify", recipients.map((r) => step.run(`notify:${r}`, () => send(r))), {
@@ -128,7 +128,7 @@ if (first.index === 1) {
 }
 ```
 
-`step.race` is decided as soon as one branch returns. It returns once every losing branch has stopped, which waits for a losing `step.run` function that is already running (see [Abandoned branches](#abandoned-branches)). The result is `{ index, value }`: the winner's position in the array and its value. TypeScript narrows `value` by `index`, so `first.value` is the `when` result when `first.index === 0`.
+`step.race` is decided once one branch has returned and every branch has caught up with its records (see [Ties](#ties)). It returns once every losing branch has stopped, which waits for a losing `step.run` function that is already running (see [Abandoned branches](#abandoned-branches)). The result is `{ index, value }`: the winner's position in the array and its value. TypeScript narrows `value` by `index`, so `first.value` is the `when` result when `first.index === 0`.
 
 A branch that fails does not end the race. If every branch fails, `step.race` throws `WorkflowRaceError` with code `ALL_BRANCHES_FAILED` and each branch's error in `errors`, in branch order. An empty race throws `WorkflowRaceError` with no errors. `errors` is kept when the error ends the execution `failed`.
 
@@ -150,8 +150,10 @@ A losing race branch, and an unfinished branch of a `fail-fast` `step.all` after
 
 - **Stopped at once.** The branch starts no new step, and its generator is not resumed after the decision, so its `catch` and `finally` blocks do not run.
 - **Replayed up to the decision.** The decision record lists every step key the abandoned branches reached before the decision, and the keys among them at which a branch was waiting: its step was in flight, it was suspended there, or the step had finished but the branch was not yet resumed. On replay, an abandoned branch is resumed through its recorded steps. It stops at a key it was waiting at, or at a key it did not reach. Its workflow code therefore runs up to the same point on every delivery, whatever the clock reads and whatever was recorded after the decision.
-- **Waiters deleted.** The write that records the decision deletes the store, effect and join waiters of every step the abandoned branches reached. A payment at minute thirty-one does not wake `place-order`. The losing delay's wake time is not requested again.
+- **Waiters deleted.** The write that records the decision deletes the store, effect and join waiters of every step at which an abandoned branch was waiting. The other steps they reached are finished, and their records already deleted their waiters. A payment at minute thirty-one does not wake `place-order`. The losing delay's wake time is not requested again.
 - **In-flight functions finish.** A `step.run` function that is already running is not interrupted. Its result is recorded but not used, and the combinator returns only after it is recorded. The delivery therefore acknowledges only after every write from an abandoned branch. The decision write also waits for every runtime call already in flight in the combinator's branches, including a `step.effect` call, so a slow effect call delays the decision. Runtime calls in branches outside the combinator do not delay it. The branch is not resumed with the function's value or error, on the first run or on replay.
+
+  A race is therefore not a timeout for a `step.run`. In `step.race("call", [step.run("call-api", slowApi), step.delay("timeout", 5_000)])`, the delay suspends, but the delivery ends only when `call-api` has finished, and `call-api` then wins unless it throws. A delay can win only against a branch that suspends, such as one at a store, join or effect wait, or in a retry backoff.
 - **Nested combinators record nothing.** A `step.all` or `step.race` inside an abandoned branch records no decision. The keys its branches reached, and the keys they were waiting at, are listed with the outer decision. On replay, its branches stop where they stopped on the first run.
 - **Between steps.** The driver checks for abandonment between steps. Workflow code that an abandoned branch runs between two steps is not interrupted, but the step it reaches next is not started, and its key is not reserved. If the branch has reached a `step.all` or `step.race`, its branches still start, so their code runs up to their first step, on the first run and on replay.
 

@@ -143,7 +143,11 @@ function decodeDecision(record: Record<string, unknown>): StepBranchesDecision {
     case "rejected":
     case "won": {
       const { index, keys, held } = record;
-      if (!Number.isInteger(index) || (index as number) < 0) break;
+      if (!Number.isInteger(index) || (index as number) < 0) {
+        throw new Error(
+          `Invalid step record: a ${record.decision} decision has an invalid index ${JSON.stringify(index)}`
+        );
+      }
       const isKeys = (value: unknown): value is string[] =>
         Array.isArray(value) && value.every((key) => typeof key === "string");
       if (!isKeys(keys) || !isKeys(held)) {

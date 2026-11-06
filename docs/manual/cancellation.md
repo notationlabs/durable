@@ -127,6 +127,8 @@ The driver replays each branch to its first unfinished step: `paid` in the first
 
 Each branch then receives `WorkflowCancelledError`, and its own `catch` and `finally` blocks run. They may run durable steps, such as `void-invoice`. When every branch has finished, `step.all` throws `WorkflowCancelledError`, even if a branch caught the error and returned a value.
 
+A pending request takes precedence over a combinator that has not recorded a decision. While a branch is parked at an unfinished step, the combinator does not decide, even if another branch has already returned or failed. A `step.race` whose `when` branch returns while its delay branch is parked records `cancelled`, not `won`, and both branches run their cleanup. A `fail-fast` `step.all` with a branch that already failed throws `WorkflowCancelledError`, not that branch's error.
+
 A combinator that settled before the request arrived is not interrupted. Replay returns its recorded outcome, and the cancellation lands at the next unfinished step after it. Branches that the combinator abandoned do not receive it.
 
 ## Outcomes
