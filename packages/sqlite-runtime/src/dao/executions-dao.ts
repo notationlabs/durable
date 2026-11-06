@@ -108,6 +108,12 @@ export class ExecutionsDao {
       "divergence_step_key TEXT",
       "divergence_detected_at INTEGER",
     ]);
+    // Operators list diverged executions after each deploy, and few rows
+    // have a divergence.
+    this.db.run(`
+      CREATE INDEX IF NOT EXISTS idx_executions_diverged
+      ON executions(divergence_code) WHERE divergence_code IS NOT NULL;
+    `);
   }
 
   /**
@@ -216,7 +222,10 @@ export class ExecutionsDao {
     }
     return this.db
       .query<SequencedExecutionRow>(
+        // Without table statistics, the planner scans in rowid order for
+        // the ORDER BY and LIMIT instead of using the divergence index.
         `SELECT *, rowid AS sequence FROM executions
+         ${request.diverged === true ? "INDEXED BY idx_executions_diverged" : ""}
          ${conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : ""}
          ORDER BY rowid DESC
          LIMIT $limit`
