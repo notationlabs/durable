@@ -206,7 +206,7 @@ export class MemoryExecutionClient implements ExecutionClient {
     const state = this.executions.get(executionId);
     if (!state) return executionNotFound(executionId);
     const cleared = clearExecutionDivergence(state, this.clock());
-    this.executions.set(executionId, cleared.state);
+    if (cleared.state !== state) this.executions.set(executionId, cleared.state);
     return cleared.result;
   }
 
