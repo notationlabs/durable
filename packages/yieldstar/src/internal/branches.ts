@@ -339,6 +339,19 @@ export class DrivenBranch {
     return this.limits().length > 0;
   }
 
+  /**
+   * Whether a combinator above this branch has a decision other than
+   * `cancelled` recorded before this delivery. Every branch under it
+   * finished or was stopped before the decision was recorded.
+   */
+  get settled(): boolean {
+    for (let branch: DrivenBranch = this; branch.parent; branch = branch.parent.owner) {
+      const { decision, recorded } = branch.parent;
+      if (recorded && decision !== undefined && decision.decision !== "cancelled") return true;
+    }
+    return false;
+  }
+
   private limits(): Combinator[] {
     const combinators: Combinator[] = [];
     for (let branch: DrivenBranch = this; branch.parent; branch = branch.parent.owner) {

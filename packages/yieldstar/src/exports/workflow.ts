@@ -194,6 +194,15 @@ function createWorkflowGenerator<
       return branch.stopped || divergence !== undefined;
     }
 
+    /**
+     * Whether a branch must start no new work: it is stopped, or it is under
+     * a combinator whose decision was recorded before this delivery, so its
+     * replay reaches only recorded steps.
+     */
+    function startsNoWork(branch: DrivenBranch) {
+      return stopped(branch) || branch.settled;
+    }
+
     function firstUnconsumed(): string | undefined {
       for (const stepKey of recordedSteps) {
         if (!stepKeys.has(stepKey)) return stepKey;
@@ -413,7 +422,7 @@ function createWorkflowGenerator<
               });
             }
           }
-          if (stopped(branch)) return { status: "stopped" };
+          if (startsNoWork(branch)) return { status: "stopped" };
           branch.at = undefined;
           afterDelay = false;
           nextIteratorResult = await throwInto(err);
@@ -508,7 +517,7 @@ function createWorkflowGenerator<
           const checksFirst =
             !barrier.pending && (recorded instanceof StepStoreWait || recorded instanceof StepJoinWait);
           if (!checksFirst) branch.markLive();
-          if (stopped(branch)) return { status: "stopped" };
+          if (startsNoWork(branch)) return { status: "stopped" };
           if (barrier.pending) {
             // A delay is recorded done when it starts, so its cancellation
             // is written as the step's next attempt, which replay reads.
@@ -580,7 +589,7 @@ function createWorkflowGenerator<
         const live = !cached && !isCombinator;
         if (live) {
           await branch.acquireSlot();
-          if (stopped(branch)) {
+          if (startsNoWork(branch)) {
             branch.releaseSlot();
             return { status: "stopped" };
           }
@@ -657,7 +666,7 @@ function createWorkflowGenerator<
         stepResponse instanceof StepStoreWaitRequest
       ) {
         stopIfAborted(signal);
-        if (stopped(branch)) return { status: "stopped" };
+        if (startsNoWork(branch)) return { status: "stopped" };
         if (stepResponse instanceof StepStoreWaitRequest) {
           const { waiter } = stepResponse;
           // 1. Record the unfinished step. A timed wait's deadline must be
@@ -671,7 +680,7 @@ function createWorkflowGenerator<
           });
           // 2. Register the waiter.
           const registered = await branch.shared(async () =>
-            stopped(branch)
+            startsNoWork(branch)
               ? STOPPED
               : executeRuntimeCall(
                   new StepRuntimeCall(({ stores }) => stores.registerWaiter(waiter)),
@@ -693,7 +702,7 @@ function createWorkflowGenerator<
         }
         const call = stepResponse;
         const callResult = await branch.shared(async () => {
-          if (stopped(branch)) return STOPPED;
+          if (startsNoWork(branch)) return STOPPED;
           return call instanceof StepEffectCall
             ? executeEffectCall(call.request, {
                 effects: effectClient,
