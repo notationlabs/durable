@@ -19,7 +19,10 @@ export type {
   ExecutionCancelResult,
   ExecutionCancellation,
   ExecutionClaimFilter,
+  ExecutionClearDivergenceResult,
   ExecutionClient,
+  ExecutionDivergence,
+  ExecutionDivergenceCode,
   ExecutionLease,
   ExecutionListPage,
   ExecutionListRequest,
@@ -41,6 +44,7 @@ export {
   ExecutionListRequestError,
   InfrastructureError,
   LeaseLostError,
+  ReplayDivergenceError,
   StepConflictError,
   WorkflowCancelledError,
   WorkflowStartError,
@@ -98,16 +102,18 @@ export {
   durableValueCodec,
   encodeThrownValue,
 } from "./base/durable-value";
-export type { ErrorClass, WorkflowValueErrorCode } from "./base/errors";
+export type { ErrorClass, ReplayErrorCode, WorkflowValueErrorCode } from "./base/errors";
 export {
   WORKFLOW_RESULT_STEP_KEY,
   WorkflowRaceError,
+  WorkflowReplayError,
   WorkflowValueError,
   registerErrorClass,
 } from "./base/errors";
 export type {
   CancellationRequest,
   ExecutionCancellationState,
+  ExecutionDivergenceState,
   ExecutionState,
   PreparedExecutionStart,
   StartRequestState,
@@ -120,6 +126,7 @@ export {
   acknowledgeExecution,
   cancellationForStartedChild,
   claimExecution,
+  clearExecutionDivergence,
   createExecutionState,
   createStartedExecution,
   decodeExecutionEvent,
@@ -139,12 +146,14 @@ export {
   prepareExecutionCancel,
   prepareExecutionStart,
   propagatedCancellation,
+  recordWorkflowVersion,
   redeliveryDelay,
   releaseExecutionLease,
   renewExecutionLease,
   requestExecutionCancellation,
   requestExecutionWake,
   toExecutionCancellation,
+  toExecutionDivergence,
   toExecutionRecord,
   unacknowledgedDeliveryCountAt,
 } from "./lib/execution-state";
@@ -165,6 +174,7 @@ export type {
   ActiveExecutionView,
   CancelOptions,
   CancelResult,
+  ClearDivergenceResult,
   ExecutionControl,
   ExecutionObserver,
   ExecutionView,
@@ -234,6 +244,7 @@ export {
 } from "./base/store";
 export type {
   EventParams,
+  DeliveryEvent,
   EventContext,
   ExecutionEvent,
   MiddlewareEvent,
@@ -246,6 +257,7 @@ export type { MiddlewareNext, MiddlewareFunction } from "./base/middleware";
 
 export type {
   WorkflowGenerator,
+  WorkflowGeneratorParams,
   WorkflowGeneratorReturnType,
   WorkflowRouter,
   EventOfWorkflow,

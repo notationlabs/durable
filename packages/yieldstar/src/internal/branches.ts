@@ -38,6 +38,34 @@ export type AllOptions = {
 /** The `StepKey` of a combinator, which is never a cancellation point itself. */
 export class BranchesStepKey extends StepKey {}
 
+/** The prefix of a patch marker's step key, which keeps it apart from step keys. */
+export const PATCH_STEP_KEY_PREFIX = "$$patch$$:";
+
+/**
+ * Yielded by `step.patched`. The driver resumes it with a `StepResult` that
+ * holds whether the patch applies, recording a marker when it does.
+ */
+export class PatchStepKey extends StepKey {
+  constructor(readonly patchId: string) {
+    super(`${PATCH_STEP_KEY_PREFIX}${patchId}`, { kind: "patched" });
+  }
+}
+
+/**
+ * Yielded by a `step.run` whose schema rejects, on replay, a value it
+ * accepted on the first run. The driver ends the delivery as diverged.
+ */
+export class StepSchemaChanged extends StepResponse {
+  static type = "step-schema-changed";
+  readonly type = "step-schema-changed";
+  constructor(
+    readonly stepKey: string,
+    readonly message: string
+  ) {
+    super();
+  }
+}
+
 /**
  * Yielded by `step.all` and `step.race` after their cache check. The driver
  * drives `branches` concurrently, records the decision under the combinator's
@@ -309,6 +337,19 @@ export class DrivenBranch {
   /** Whether a recorded decision above this branch stopped it. */
   get limited(): boolean {
     return this.limits().length > 0;
+  }
+
+  /**
+   * Whether a combinator above this branch has a decision other than
+   * `cancelled` recorded before this delivery. Every branch under it
+   * finished or was stopped before the decision was recorded.
+   */
+  get settled(): boolean {
+    for (let branch: DrivenBranch = this; branch.parent; branch = branch.parent.owner) {
+      const { decision, recorded } = branch.parent;
+      if (recorded && decision !== undefined && decision.decision !== "cancelled") return true;
+    }
+    return false;
   }
 
   private limits(): Combinator[] {

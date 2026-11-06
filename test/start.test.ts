@@ -78,10 +78,10 @@ function setup<W extends WorkflowRouter>(router: W) {
       if (!lease) throw new Error(`could not lease "${executionId}"`);
       leases.set(executionId, lease);
     }
-    return invoker.deliver(
-      { workflowId, executionId, params: undefined, context: new Map() },
-      { lease, signal: new AbortController().signal }
-    );
+    return await invoker.deliver(
+        { workflowId, executionId, params: undefined, context: new Map() },
+        { lease, signal: new AbortController().signal }
+      );
   }
 
   const advance = (ms: number) => {

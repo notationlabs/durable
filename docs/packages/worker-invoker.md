@@ -36,7 +36,7 @@ The worker replies with one of two messages, and the child process is killed aft
 
 | Message                         | `deliver`                                                                                      |
 | ------------------------------- | ---------------------------------------------------------------------------------------------- |
-| `{ status: "outcome", outcome }` | Resolves with the outcome. A `completed` result and a `failed` outcome's error are decoded with the durable value codec  |
+| `{ status: "outcome", outcome }` | Resolves with the outcome, including a `diverged` outcome. A `completed` result and a `failed` outcome's error are decoded with the durable value codec  |
 | `{ status: "error", error }`     | Rejects: the worker hit an infrastructure error, which is not an outcome                      |
 
 `deliver` also rejects on a spawn error, a missing handshake, or an exit before replying. The dispatcher never acknowledges a rejected delivery, and the runtime delivers it again after the redelivery delay:
@@ -62,6 +62,6 @@ const runner = new WorkflowRunner(runtime, { router, logger });
 createWorkflowWorker(runner, logger).listen();
 ```
 
-The worker listens on `process.on("message")`, converts the incoming event's context into a `ReadOnlyMap`, and passes the event, the lease and the `cancellation` to `workflowRunner.run`. The outcome, or the infrastructure error that `run` rejected with, is sent back to the parent via `process.send`. On `listen()` the worker also sends the `ready` handshake that the invoker waits for before delivering the event.
+The worker listens on `process.on("message")`, converts the incoming event's context into a `ReadOnlyMap`, and passes the event, the lease and the `cancellation` to `workflowRunner.run`. The runner reads `requireStepKeys` from the runtime the worker constructs, not from the dispatcher's. The outcome, or the infrastructure error that `run` rejected with, is sent back to the parent via `process.send`. On `listen()` the worker also sends the `ready` handshake that the invoker waits for before delivering the event.
 
 The runner makes every step write under the lease the parent sent, so a write returns `lost` once another claim has taken over. The worker also exits, with `WORKER_ORPHANED_EXIT_CODE` (75), as soon as its IPC channel closes. If the runtime process that holds the lease dies, nothing renews the lease and another runtime may claim the execution, so the worker stops at once and makes no further fenced writes.

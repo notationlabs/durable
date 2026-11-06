@@ -172,15 +172,15 @@ describe.each(runtimes)("timed store.when on $name", ({ create }) => {
   /** Runs one delivery under `lease` without acknowledging it. */
   async function run(lease: ExecutionLease) {
     const record = await runtime.executions.get(lease.executionId);
-    return runner.run(
-      {
-        workflowId: record!.workflowId,
-        executionId: lease.executionId,
-        params: record!.params,
-        context: new Map(),
-      },
-      { lease, signal: new AbortController().signal }
-    );
+    return await runner.run(
+        {
+          workflowId: record!.workflowId,
+          executionId: lease.executionId,
+          params: record!.params,
+          context: new Map(),
+        },
+        { lease, signal: new AbortController().signal }
+      );
   }
 
   /** Claims the execution if it is due, runs it and acknowledges the outcome. */

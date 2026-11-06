@@ -1,6 +1,7 @@
 import type {
   CancelOptions,
   CancelResult,
+  ClearDivergenceResult,
   EventParamsOf,
   ExecutionClient,
   ExecutionControl,
@@ -131,6 +132,17 @@ export function createLocalSdk<W extends WorkflowRouter>(
      */
     cancel(executionId: string, options?: CancelOptions): Promise<CancelResult | undefined> {
       return control.cancel(executionId, options);
+    },
+
+    /**
+     * Removes a diverged execution's `divergence` and makes it due now, so
+     * the next delivery replays it on the code deployed by then. Resolves
+     * with `not-diverged` when there is nothing to clear, and with
+     * `undefined` for an unknown ID.
+     * @throws {TypeError} for an empty ID
+     */
+    clearDivergence(executionId: string): Promise<ClearDivergenceResult | undefined> {
+      return control.clearDivergence(executionId);
     },
   };
   return sdk satisfies ExecutionObserver & ExecutionControl;

@@ -169,6 +169,21 @@ Step keys inside branches are used as written; the combinator does not prefix th
 
 The keys an abandoned branch reached before the decision stay reserved, because replay reaches them again. A step after a race that reuses such a key is therefore rejected on every delivery, not only on the first. A key the branch would reach only after the decision is not reserved, on the first run or on replay.
 
+## Changing branches
+
+Replay of a branch requests every step the branch recorded, so each recorded branch step counts as consumed, whether the combinator has settled or not. A losing branch of `payment-or-deadline` that recorded steps therefore does not make the execution diverge. See [Divergence](./replay-stability.md#divergence) for the rule.
+
+Outside a combinator, the driver checks before each new step that every recorded step has been requested. Inside a branch it does not, because branches interleave differently on each delivery. Two checks apply instead:
+
+| Combinator | Code change | Result |
+| --- | --- | --- |
+| Settled, such as `check-order` after its decision is recorded | A branch no longer reaches the recorded decision, for example a branch that returned now throws | The delivery diverges when the combinator settles. Before this release, the execution failed with an `Error` |
+| Unsettled, such as `check-order` while `quote-shipping` waits on a retry | `score-fraud` is renamed `score-fraud-v2` | The delivery diverges at the next check outside the combinator, or when it ends, because the `score-fraud` record was not requested |
+
+**Detection in an unsettled combinator happens late.** In the second row, `score-fraud-v2` has no record, so its step function runs and its result is recorded before the delivery diverges. Gate changes to the branches of a combinator that may be unsettled on [`event.workflowVersion`](./replay-stability.md#workflow-versions).
+
+`step.patched` cannot be called inside a branch. It throws `WorkflowReplayError` with code `PATCH_IN_COMBINATOR` without recording it, because whether a branch passed a point depends on how the branches interleave. Call `step.patched` before the combinator and use its result to build the branches. See [Patches inside combinators](./replay-stability.md#patches-inside-combinators).
+
 ## Cancellation
 
 When [cancellation](./cancellation.md) lands inside a combinator, every unfinished branch receives `WorkflowCancelledError` at its next unfinished step, and each branch's own `catch` and `finally` blocks run. When every branch has finished, the combinator throws `WorkflowCancelledError` and discards any branch values. See [Inside step.all and step.race](./cancellation.md#inside-stepall-and-steprace).

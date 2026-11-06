@@ -806,19 +806,19 @@ describe.each(runtimes)("concurrent steps on $name", ({ create }) => {
   /** Runs one delivery under `lease` as the dispatcher would, without acknowledging it. */
   async function run(lease: ExecutionLease, signal = new AbortController().signal) {
     const record = (await runtime.executions.get(lease.executionId))!;
-    return runner.run(
-      {
-        workflowId: record.workflowId,
-        executionId: lease.executionId,
-        params: record.params,
-        context: new Map(),
-      },
-      {
-        lease,
-        signal,
-        ...(record.cancellation ? { cancellation: record.cancellation } : {}),
-      }
-    );
+    return await runner.run(
+        {
+          workflowId: record.workflowId,
+          executionId: lease.executionId,
+          params: record.params,
+          context: new Map(),
+        },
+        {
+          lease,
+          signal,
+          ...(record.cancellation ? { cancellation: record.cancellation } : {}),
+        }
+      );
   }
 
   /** Claims the execution if it is due, runs it and acknowledges the outcome. */
@@ -1314,7 +1314,7 @@ describe.each(runtimes)("concurrent steps on $name", ({ create }) => {
       expect(ran).toEqual([]);
     });
 
-    test("a recorded index past the last branch fails as a changed outcome", async () => {
+    test("a recorded index past the last branch diverges", async () => {
       await admit("tie");
       const lease = (await claim())!;
       await runtime.heap.writeStep({
@@ -1324,8 +1324,11 @@ describe.each(runtimes)("concurrent steps on $name", ({ create }) => {
         done: true,
         stepResponseJson: '{"decision":"won","held":[],"index":5,"keys":[],"type":"branches-decision"}',
       });
-      const outcome = await run(lease);
-      expect((outcome as { error: Error }).error.message).toMatch(/no longer reaches its recorded outcome/);
+      expect(await run(lease)).toMatchObject({
+        status: "diverged",
+        code: "NONDETERMINISTIC_REPLAY",
+        stepKey: "first",
+      });
     });
 
     test("replay keeps the state a losing branch set before the decision, and stops it where the first run did", async () => {

@@ -49,20 +49,23 @@ const result = await exec.waitForResult();
 
 ## Routes
 
-`createRoutes` registers six POST endpoints:
+`createRoutes` registers seven POST endpoints:
 
 | Endpoint        | Body                                                           | Responses                                                                                                     |
 | --------------- | -------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
 | `POST /trigger` | `{ workflowId, params?, context?, executionId?, idempotent? }` | `202 { executionId, status: "accepted" }` once admission commits; `200 { executionId, status: "existing" }` for an idempotent repeat; `409` `EXECUTION_ID_CONFLICT` or `EXECUTION_REQUEST_MISMATCH`; `400` `INVALID_EXECUTION_EVENT` or `IDEMPOTENT_TRIGGER_REQUIRES_ID` |
 | `POST /poll`    | `{ executionId }`                                              | `200` with the execution's view; `404` `EXECUTION_NOT_FOUND`                                                  |
 | `POST /wait`    | `{ executionId, timeout? }`                                    | `200` with a `WaitResult`; `404` `EXECUTION_NOT_FOUND`                                                        |
-| `POST /list`    | `{ workflowId?, status?, cursor?, limit? }`                    | `200 { executions, cursor? }`                                                                                 |
+| `POST /list`    | `{ workflowId?, status?, diverged?, cursor?, limit? }`         | `200 { executions, cursor? }`                                                                                 |
 | `POST /cancel`  | `{ executionId, reason?, force? }`                             | `202 { status: "requested", execution }` while the execution is active; `200` with the terminal view when it is terminal, including after a forced cancel; `404` `EXECUTION_NOT_FOUND`; `400` `INVALID_CANCEL_REQUEST` |
+| `POST /clear-divergence` | `{ executionId }`                                     | `200 { status: "cleared" }` or `200 { status: "not-diverged" }`; `404` `EXECUTION_NOT_FOUND` |
 | `POST /events`  | `{ executionId }`                                              | Deprecated. Blocks until the record is terminal. `200` with the encoded result, `500` with the encoded recorded error, `404` `EXECUTION_NOT_FOUND` |
 
 The views, wait results and pages are the same as the [local SDK](./sdk-local.md#execution-views) returns. A failed or cancelled execution is a `200` response from `/poll` and `/wait`, with the error or the cancellation's `reason` and `source` in the view. `/events` responds `500` with an encoded `WorkflowCancelledError` for a cancelled execution.
 
 `/cancel` records the [cancellation](./cancellation.md) request and responds. It does not wait for the workflow to stop.
+
+`/clear-divergence` removes a diverged execution's `divergence` and makes it due now. See [Clearing a divergence](./replay-stability.md#clearing-a-divergence).
 
 `/wait` holds the request open for at most 8 seconds by default, below Bun's default 10-second idle timeout; the `maxWait` option of `createRoutes` changes it. `maxWait` and `pollInterval` must be a finite number greater than zero, because the HTTP SDK repeats a capped request at once and a wait re-reads the record after each `pollInterval`; `createRoutes` throws a `RangeError` otherwise. When the execution is not terminal by then, or by `timeout` if that is shorter, it responds `200` with `{ status: "timed-out", execution }`. The [HTTP SDK](./sdk-http.md) repeats the request until the execution is terminal. `/events` has no cap; use `/wait` instead. When a client disconnects, its `/wait` or `/events` request stops reading the record.
 
@@ -78,8 +81,8 @@ Error responses carry `{ code, message }`. Besides the codes in the table above,
 
 | Condition                                                    | Response                                |
 | ------------------------------------------------------------ | --------------------------------------- |
-| A `/poll`, `/wait`, `/list` or `/events` body that is not a JSON object, a missing or empty `executionId`, or a `timeout` that is negative or not a number | `400` `INVALID_OBSERVATION_REQUEST` |
-| A `/list` `workflowId` that is not a string, a `limit` that is not a positive integer, an unknown `status`, or a malformed `cursor` | `400` `INVALID_LIST_REQUEST` |
+| A `/poll`, `/wait`, `/list`, `/clear-divergence` or `/events` body that is not a JSON object, a missing or empty `executionId`, or a `timeout` that is negative or not a number | `400` `INVALID_OBSERVATION_REQUEST` |
+| A `/list` `workflowId` that is not a string, a `limit` that is not a positive integer, an unknown `status`, a `diverged` that is not a boolean, or a malformed `cursor` | `400` `INVALID_LIST_REQUEST` |
 | A `/cancel` body that is not a JSON object, a missing or empty `executionId`, a `reason` that is not a string, or a `force` that is not a boolean | `400` `INVALID_CANCEL_REQUEST` |
 | Observation middleware denies the request                    | `401` `UNAUTHORIZED` or `403` `FORBIDDEN` |
 | Middleware throws, or the runtime fails                      | `500` `INTERNAL_ERROR`                  |
@@ -97,6 +100,7 @@ createRoutes({ runtime, logger, basePath: "/api/workflows" });
 // → POST /api/workflows/wait
 // → POST /api/workflows/list
 // → POST /api/workflows/cancel
+// → POST /api/workflows/clear-divergence
 // → POST /api/workflows/events
 ```
 
@@ -121,11 +125,11 @@ Each middleware receives four arguments: `req` (the incoming `Request`), `event`
 
 Once every middleware has run, the context map is frozen and admitted with the event. Every delivery reads it back from the execution record as a read-only `Map` available through `event.context`, so context values must be durable values (see [Step values](./steps.md#step-values)).
 
-Trigger middleware does not run for the observation routes or `/cancel`.
+Trigger middleware does not run for the observation routes, `/cancel` or `/clear-divergence`.
 
 ## Observation middleware
 
-`/poll`, `/wait`, `/list` and `/events` return results and errors, which are often derived from `params`, to anyone who can call them, and `/cancel` lets anyone who can call it stop any execution. Without observation middleware, any caller that can reach the server can read and cancel every execution, and `/list` returns every execution's ID with its result or error. When `createRoutes` has trigger `middleware` but no `observationMiddleware`, it logs a warning, because a deployment that guards `/trigger` would otherwise gain open observation and cancel routes on upgrade. Pass `observationMiddleware: []` to allow every request on purpose and silence the warning. Configure observation middleware to decide who may read and cancel them:
+`/poll`, `/wait`, `/list` and `/events` return results and errors, which are often derived from `params`, to anyone who can call them, `/cancel` lets anyone who can call it stop any execution, and `/clear-divergence` lets anyone who can call it make a parked execution run again. Without observation middleware, any caller that can reach the server can read, cancel and clear every execution, and `/list` returns every execution's ID with its result or error. When `createRoutes` has trigger `middleware` but no `observationMiddleware`, it logs a warning, because a deployment that guards `/trigger` would otherwise gain open observation, cancel and clear-divergence routes on upgrade. Pass `observationMiddleware: []` to allow every request on purpose and silence the warning. Configure observation middleware to decide who may do each:
 
 ```ts
 import type { ObservationMiddlewareFunction } from "@yieldstar/http-server";
@@ -144,7 +148,7 @@ const tenantOnly: ObservationMiddlewareFunction = async (req, request, logger) =
 createRoutes({ runtime, logger, observationMiddleware: [tenantOnly] });
 ```
 
-Each function receives three arguments: `req` (the incoming `Request`), `request` (an `ObservationRequest` that describes what the caller asks to read or cancel) and `logger`. `ObservationRequest` is one of:
+Each function receives three arguments: `req` (the incoming `Request`), `request` (an `ObservationRequest` that describes what the caller asks to read, cancel or clear) and `logger`. `ObservationRequest` is one of:
 
 ```ts
 type ObservationRequest =
@@ -155,15 +159,22 @@ type ObservationRequest =
     }
   | {
       operation: "list";
-      filter: { workflowId?: string; status?: ExecutionStatus };
+      filter: { workflowId?: string; status?: ExecutionStatus; diverged?: boolean };
     }
   | {
       operation: "cancel";
       executionId: string;
       force: boolean;
       load(): Promise<ExecutionRecord | undefined>;
+    }
+  | {
+      operation: "clear-divergence";
+      executionId: string;
+      load(): Promise<ExecutionRecord | undefined>;
     };
 ```
+
+`clear-divergence` resumes a parked execution, so it is a write like `cancel`, and has its own member. A policy that allows the read operations by name does not allow it.
 
 Each function resolves with `{ allow: true }` or `{ allow: false, status: 401 | 403 }`.
 
@@ -172,6 +183,7 @@ Each function resolves with `{ allow: true }` or `{ allow: false, status: 401 | 
 - `load` reads the full execution record, including `params` and `context`, for a policy that needs them. It resolves `undefined` for an unknown ID. A policy that denies only when the record exists reveals whether it exists. The example above denies an unknown ID as well, so it reveals nothing.
 - A `list` request carries its filter and no `load`.
 - A `cancel` request carries the `executionId`, whether the request is forced, and `load`. The same functions authorize reads and cancels, so a policy that should allow reads but not cancels, or not forced cancels, must check `operation` and `force`.
+- A `clear-divergence` request carries the `executionId` and `load`. A policy that allows reads must check `operation` to deny it.
 - A function that throws responds `500` `INTERNAL_ERROR`.
 - Observation middleware does not run for `/trigger`.
 

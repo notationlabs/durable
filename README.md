@@ -25,9 +25,9 @@ Define a workflow that composes steps:
 import { workflow } from "yieldstar";
 
 export const simple = workflow(async function* (step) {
-  const n = yield* step.run(() => 1);
-  yield* step.delay(1000);
-  return yield* step.run(() => n * 2);
+  const n = yield* step.run("first", () => 1);
+  yield* step.delay("pause", 1000);
+  return yield* step.run("double", () => n * 2);
 });
 ```
 
@@ -36,7 +36,7 @@ Retries are explicit and structured:
 ```ts
 import { RetryableError } from "yieldstar";
 
-yield* step.run(async () => {
+yield* step.run("fetch-data", async () => {
   // e.g. flaky fetch
   throw new RetryableError("temporary", { maxAttempts: 4, retryInterval: 1000 });
 });

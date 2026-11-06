@@ -7,7 +7,7 @@ import { expect, test } from "vitest";
 import {
   WorkflowRunner,
   type ExecutionLease,
-  type WorkflowEvent,
+  type DeliveryEvent,
   type WorkflowRunOutcome,
 } from "@yieldstar/core";
 import { createWorkflowInvoker } from "@yieldstar/worker-invoker";
@@ -27,7 +27,7 @@ const which = (runtime: "bun" | "node") => {
   return result.status === 0 ? result.stdout.trim() : undefined;
 };
 
-const event = (overrides: Partial<WorkflowEvent> = {}): WorkflowEvent => ({
+const event = (overrides: Partial<DeliveryEvent> = {}): DeliveryEvent => ({
   workflowId: "workflow",
   executionId: "execution",
   params: undefined,
@@ -35,13 +35,13 @@ const event = (overrides: Partial<WorkflowEvent> = {}): WorkflowEvent => ({
   ...overrides,
 });
 
-const leaseFor = (event: WorkflowEvent): ExecutionLease => ({
+const leaseFor = (event: DeliveryEvent): ExecutionLease => ({
   executionId: event.executionId,
   token: 1,
   expiresAt: Date.now() + 30_000,
 });
 
-const optionsFor = (event: WorkflowEvent) => ({
+const optionsFor = (event: DeliveryEvent) => ({
   lease: leaseFor(event),
   signal: new AbortController().signal,
 });
@@ -51,7 +51,7 @@ const deliver = ({
   execPath,
   handshakeTimeout,
   ...overrides
-}: Partial<WorkflowEvent> & {
+}: Partial<DeliveryEvent> & {
   fixture: string;
   execPath?: string;
   handshakeTimeout?: number;
@@ -77,6 +77,17 @@ test("resolves with a suspended outcome and its wakeAt", { timeout: 2_000 }, asy
   await expect(
     deliver({ fixture: "suspend.mjs", executionId: "worker-suspend" })
   ).resolves.toEqual({ status: "suspended", wakeAt: 1234 });
+});
+
+test("resolves with a diverged outcome", { timeout: 2_000 }, async () => {
+  await expect(
+    deliver({ fixture: "diverged.mjs", executionId: "worker-diverged" })
+  ).resolves.toEqual({
+    status: "diverged",
+    code: "NONDETERMINISTIC_REPLAY",
+    stepKey: "charge-v3",
+    message: 'Step "charge-v3" would run, but replay did not reach recorded step "charge"',
+  });
 });
 
 test("rejects when the worker reports an infrastructure error", { timeout: 2_000 }, async () => {
@@ -145,7 +156,7 @@ test("worker and test invokers deliver the same outcomes", { timeout: 10_000 }, 
     logger,
   });
 
-  const cases: WorkflowEvent[] = [
+  const cases: DeliveryEvent[] = [
     event({
       workflowId: "completes",
       executionId: "parity-completes",

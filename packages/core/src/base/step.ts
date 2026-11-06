@@ -6,9 +6,21 @@ export class StepKey extends StepResponse {
   static type = "step-key";
   readonly type = "step-key";
   key: string;
-  constructor(key: string) {
+  /**
+   * The kind of step, such as `run` or `delay`. It is stored with the step's
+   * records, and replay that requests the key as another kind diverges, so
+   * the strings are part of the durable format: renaming one parks every
+   * execution that recorded the old string. `test/replay-stability.test.ts`
+   * pins them.
+   */
+  kind: string;
+  /** Whether the key was derived from the call site because the step has none. */
+  keyless?: boolean;
+  constructor(key: string, options: { kind: string; keyless?: boolean }) {
     super();
     this.key = key;
+    this.kind = options.kind;
+    if (options.keyless) this.keyless = true;
   }
 }
 

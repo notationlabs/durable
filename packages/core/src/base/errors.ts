@@ -54,6 +54,25 @@ export class WorkflowRaceError extends Error {
   }
 }
 
+export type ReplayErrorCode = "PATCH_IN_COMBINATOR";
+
+/**
+ * Thrown to workflow code when `step.patched` is called inside a combinator
+ * branch (`PATCH_IN_COMBINATOR`). Nothing is recorded, so replay throws it
+ * again from the same call.
+ */
+export class WorkflowReplayError extends Error {
+  readonly code: ReplayErrorCode;
+  readonly stepKey?: string;
+
+  constructor(code: ReplayErrorCode, message: string, stepKey?: string) {
+    super(message);
+    this.name = "WorkflowReplayError";
+    this.code = code;
+    if (stepKey !== undefined) this.stepKey = stepKey;
+  }
+}
+
 export type ErrorClass = abstract new (...args: any[]) => Error;
 
 const errorClasses = new Map<string, ErrorClass>();
@@ -95,6 +114,7 @@ const defaults: [string, ErrorClass][] = [
   ["WorkflowCancelledError", WorkflowCancelledError],
   ["WorkflowValueError", WorkflowValueError],
   ["WorkflowRaceError", WorkflowRaceError],
+  ["WorkflowReplayError", WorkflowReplayError],
   ["WorkflowEffectError", WorkflowEffectError],
   ["EffectClientInvariantError", EffectClientInvariantError],
   ["EffectDeliveryError", EffectDeliveryError],

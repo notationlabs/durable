@@ -19,9 +19,9 @@ import { workflow, createWorkflowRouter } from "yieldstar";
 import { SqliteRuntime, createSqliteDb } from "@yieldstar/sqlite-runtime/bun";
 
 export const greet = workflow<{ name: string }, string>(async function* (step, event) {
-  const greeting = yield* step.run(() => `Hello, ${event.params.name}`);
-  yield* step.delay(1000);
-  return yield* step.run(() => `${greeting}!`);
+  const greeting = yield* step.run("greet", () => `Hello, ${event.params.name}`);
+  yield* step.delay("pause", 1000);
+  return yield* step.run("exclaim", () => `${greeting}!`);
 });
 
 export const router = createWorkflowRouter({ greet });

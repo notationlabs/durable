@@ -3,7 +3,7 @@ import type {
   EventContext,
   ExecutionCancellation,
   ExecutionLease,
-  WorkflowEvent,
+  DeliveryEvent,
   WorkflowRunOutcome,
   WorkflowRunner,
 } from "@yieldstar/core";
@@ -37,7 +37,7 @@ export type WorkerMessage =
 export type WorkerDelivery = {
   type: "deliver";
   /** `params` and `context` as encoded by `encodeExecutionEvent`. */
-  event: Omit<WorkflowEvent, "params" | "context"> & {
+  event: Omit<DeliveryEvent, "params" | "context"> & {
     params: string;
     context: string;
   };
@@ -50,6 +50,7 @@ export type WorkerRequest = WorkerDelivery;
 export type SerializedOutcome =
   | Extract<WorkflowRunOutcome, { status: "suspended" }>
   | Extract<WorkflowRunOutcome, { status: "cancelled" }>
+  | Extract<WorkflowRunOutcome, { status: "diverged" }>
   | { status: "completed"; result: string }
   | { status: "failed"; error: string };
 
@@ -80,7 +81,7 @@ export function createWorkflowWorker(
       process.on("message", async (message: WorkerRequest) => {
         const { event, lease, cancellation } = message;
         try {
-          const workflowEvent: WorkflowEvent = {
+          const workflowEvent: DeliveryEvent = {
             ...event,
             ...decodeExecutionEvent(event),
           };
@@ -102,7 +103,13 @@ export function createWorkflowWorker(
 }
 
 function serializeOutcome(outcome: WorkflowRunOutcome): SerializedOutcome {
-  if (outcome.status === "suspended" || outcome.status === "cancelled") return outcome;
+  if (
+    outcome.status === "suspended" ||
+    outcome.status === "cancelled" ||
+    outcome.status === "diverged"
+  ) {
+    return outcome;
+  }
   if (outcome.status === "failed") {
     return { status: "failed", error: encodeThrownValue(outcome.error) };
   }

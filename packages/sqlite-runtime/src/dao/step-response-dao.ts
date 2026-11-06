@@ -1,4 +1,5 @@
 import type { SqliteDriver } from "../sqlite-driver";
+import { addMissingColumns } from "../sqlite-transaction";
 
 class StepReponseRow {
   execution_id!: string;
@@ -6,6 +7,7 @@ class StepReponseRow {
   step_attempt!: number;
   step_done!: 0 | 1;
   step_response!: string;
+  step_kind!: string | null;
 }
 
 export class StepResponsesDao {
@@ -29,6 +31,18 @@ export class StepResponsesDao {
       CREATE INDEX IF NOT EXISTS idx_execution_step_attempt 
       ON step_responses(execution_id, step_key, step_attempt DESC);
     `);
+    // Rows from before `step_kind` have no kind, so a delivery does not
+    // compare their kind on replay.
+    addMissingColumns(this.db, "step_responses", ["step_kind TEXT"]);
+  }
+
+  listStepKeys(executionId: string) {
+    return this.db
+      .query<{ step_key: string }>(
+        `SELECT DISTINCT step_key FROM step_responses WHERE execution_id = $executionId`
+      )
+      .all({ $executionId: executionId })
+      .map((row) => row.step_key);
   }
 
   getAllSteps() {
@@ -77,11 +91,12 @@ export class StepResponsesDao {
     stepKey: string,
     stepAttempt: number,
     stepDone: boolean,
-    stepResponseJson: string
+    stepResponseJson: string,
+    stepKind: string | null
   ) {
     const query = this.db.query(
-      `INSERT INTO step_responses (execution_id, step_key, step_attempt, step_done, step_response) 
-        VALUES ($executionId, $stepKey, $stepAttempt, $stepDone, $stepResponse)`
+      `INSERT INTO step_responses (execution_id, step_key, step_attempt, step_done, step_response, step_kind)
+        VALUES ($executionId, $stepKey, $stepAttempt, $stepDone, $stepResponse, $stepKind)`
     );
 
     query.run({
@@ -90,6 +105,7 @@ export class StepResponsesDao {
       $stepAttempt: stepAttempt,
       $stepDone: stepDone,
       $stepResponse: stepResponseJson,
+      $stepKind: stepKind,
     });
   }
 }

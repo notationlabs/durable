@@ -15,7 +15,7 @@ import {
   type DispatcherOptions,
   type ExecutionLease,
   type Runtime,
-  type WorkflowEvent,
+  type DeliveryEvent,
   type WorkflowInvoker,
   type WorkflowRunOutcome,
 } from "@yieldstar/core";
@@ -58,7 +58,7 @@ function dispatcherFor(
 
 /** An invoker whose deliveries run `handle`, and that tracks what is running. */
 function stubInvoker(
-  handle: (event: WorkflowEvent, options: DeliveryOptions) => Promise<WorkflowRunOutcome>
+  handle: (event: DeliveryEvent, options: DeliveryOptions) => Promise<WorkflowRunOutcome>
 ) {
   const active = new Set<string>();
   const stats = { delivered: [] as string[], maxActive: 0, overlaps: [] as string[] };

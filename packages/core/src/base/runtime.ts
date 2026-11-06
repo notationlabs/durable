@@ -7,6 +7,14 @@ import type { StoreClient } from "./store";
 export interface RuntimeOptions {
   /** Every client of the runtime reads time from this clock. Defaults to `Date.now`. */
   clock?: () => number;
+  /**
+   * Parks an execution whose replay reaches a keyless step that has no
+   * record, with divergence code `STEP_KEY_REQUIRED`. A keyless step that
+   * already has a record still replays. The runner reads it from the runtime
+   * it was constructed with, which under the worker invoker is the worker's.
+   * Off by default; it will default to on in the next major version.
+   */
+  requireStepKeys?: boolean;
 }
 
 /**
@@ -25,6 +33,8 @@ export interface RuntimeOptions {
 export abstract class Runtime {
   /** The clock every client, and every step's wake time, reads. */
   abstract readonly clock: () => number;
+  /** As in `RuntimeOptions.requireStepKeys`. */
+  readonly requireStepKeys: boolean = false;
   abstract readonly executions: ExecutionClient;
   abstract readonly effects: EffectClient;
   abstract readonly heap: HeapClient;

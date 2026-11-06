@@ -1,7 +1,9 @@
 import {
   isLeaseCurrent,
   markCancellationDelivered,
+  recordWorkflowVersion,
   type ExecutionLease,
+  type ExecutionState,
   type HeapClient,
   type HeapRecord,
   type LeaseLost,
@@ -52,13 +54,13 @@ export class SqliteHeapClient implements HeapClient {
       return null;
     }
 
-    return {
-      stepResponseJson: result.step_response,
-      meta: {
-        attempt: result.step_attempt,
-        done: Boolean(result.step_done),
-      },
-    };
+    return toHeapRecord(result);
+  }
+
+  async readHistory(params: { executionId: string }) {
+    const stepKeys = this.stepResponsesDao.listStepKeys(params.executionId);
+    const workflowVersion = this.executionsDao.getWorkflowVersion(params.executionId);
+    return workflowVersion !== undefined ? { stepKeys, workflowVersion } : { stepKeys };
   }
 
   /**
@@ -71,6 +73,8 @@ export class SqliteHeapClient implements HeapClient {
     stepAttempt: number;
     done: boolean;
     stepResponseJson: string;
+    stepKind?: string;
+    workflowVersion?: number;
     deleteWaitersOf?: readonly string[];
   }): Promise<HeapRecord | LeaseLost> {
     const { lease, stepKey, stepAttempt, done, stepResponseJson } = params;
@@ -86,8 +90,10 @@ export class SqliteHeapClient implements HeapClient {
         stepKey,
         stepAttempt,
         done,
-        stepResponseJson
+        stepResponseJson,
+        params.stepKind
       );
+      this.recordWorkflowVersion(state, params.workflowVersion);
       // A waiter is deleted with the write that records its step's result.
       // Unfinished attempts (e.g. a store wait, a suspended effect or a join)
       // keep the waiter they registered.
@@ -108,7 +114,13 @@ export class SqliteHeapClient implements HeapClient {
    */
   async recordCancellation(params: {
     lease: ExecutionLease;
-    steps: readonly { stepKey: string; stepAttempt: number; stepResponseJson: string }[];
+    steps: readonly {
+      stepKey: string;
+      stepAttempt: number;
+      stepResponseJson: string;
+      stepKind?: string;
+    }[];
+    workflowVersion?: number;
   }): Promise<(HeapRecord | null)[] | LeaseLost> {
     const { lease, steps } = params;
     const { executionId } = lease;
@@ -126,24 +138,34 @@ export class SqliteHeapClient implements HeapClient {
           (record.stepResponseJson !== steps[i].stepResponseJson || !record.meta.done)
       );
       if (conflicting) return stored;
-      const records = steps.map(({ stepKey, stepAttempt, stepResponseJson }) => {
-        const { record } = this.insert(executionId, stepKey, stepAttempt, true, stepResponseJson);
+      const records = steps.map(({ stepKey, stepAttempt, stepResponseJson, stepKind }) => {
+        const { record } = this.insert(
+          executionId,
+          stepKey,
+          stepAttempt,
+          true,
+          stepResponseJson,
+          stepKind
+        );
         this.deleteStepWaiters(executionId, stepKey);
         return record;
       });
       // Throws, and so rolls back, when no request is recorded.
-      this.executionsDao.updateState(markCancellationDelivered(state, this.clock()));
+      this.executionsDao.updateState(
+        recordWorkflowVersion(markCancellationDelivered(state, this.clock()), params.workflowVersion)
+      );
       return records;
     });
   }
 
   private read(executionId: string, stepKey: string, stepAttempt: number): HeapRecord | null {
     const existing = this.stepResponsesDao.getStepResponse(executionId, stepKey, stepAttempt);
-    if (!existing) return null;
-    return {
-      stepResponseJson: existing.step_response,
-      meta: { attempt: existing.step_attempt, done: Boolean(existing.step_done) },
-    };
+    return existing ? toHeapRecord(existing) : null;
+  }
+
+  private recordWorkflowVersion(state: ExecutionState, workflowVersion: number | undefined) {
+    const next = recordWorkflowVersion(state, workflowVersion);
+    if (next !== state) this.executionsDao.updateState(next);
   }
 
   /** A record never changes once written: an existing one is returned as stored. */
@@ -152,7 +174,8 @@ export class SqliteHeapClient implements HeapClient {
     stepKey: string,
     stepAttempt: number,
     done: boolean,
-    stepResponseJson: string
+    stepResponseJson: string,
+    stepKind: string | undefined
   ): { record: HeapRecord; inserted: boolean } {
     const existing = this.read(executionId, stepKey, stepAttempt);
     if (existing) return { record: existing, inserted: false };
@@ -161,9 +184,16 @@ export class SqliteHeapClient implements HeapClient {
       stepKey,
       stepAttempt,
       done,
-      stepResponseJson
+      stepResponseJson,
+      stepKind ?? null
     );
-    return { record: { stepResponseJson, meta: { attempt: stepAttempt, done } }, inserted: true };
+    return {
+      record: {
+        stepResponseJson,
+        meta: { attempt: stepAttempt, done, ...(stepKind !== undefined ? { kind: stepKind } : {}) },
+      },
+      inserted: true,
+    };
   }
 
   private deleteStepWaiters(executionId: string, stepKey: string) {
@@ -171,4 +201,20 @@ export class SqliteHeapClient implements HeapClient {
     this.effectWaitersDao.deleteStepWaiters(executionId, stepKey);
     this.joinWaitersDao.deleteStepWaiters(executionId, stepKey);
   }
+}
+
+function toHeapRecord(row: {
+  step_response: string;
+  step_attempt: number;
+  step_done: 0 | 1;
+  step_kind: string | null;
+}): HeapRecord {
+  return {
+    stepResponseJson: row.step_response,
+    meta: {
+      attempt: row.step_attempt,
+      done: Boolean(row.step_done),
+      ...(row.step_kind !== null ? { kind: row.step_kind } : {}),
+    },
+  };
 }

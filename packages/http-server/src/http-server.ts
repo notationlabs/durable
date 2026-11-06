@@ -41,35 +41,35 @@ export type ObservationErrorCode =
   | "FORBIDDEN"
   | "INTERNAL_ERROR";
 
-/** What an observation route or `/cancel` passes to observation middleware. */
-export type ObservationRequest =
-  | {
-      operation: "poll" | "wait" | "events";
-      executionId: string;
-      /**
-       * Reads the record. It resolves `undefined` for an unknown ID, so a
-       * policy that calls it can reveal whether the execution exists.
-       */
-      load(): Promise<ExecutionRecord | undefined>;
-    }
-  | {
-      operation: "list";
-      filter: { workflowId?: string; status?: ExecutionStatus };
-    }
-  | {
-      operation: "cancel";
-      executionId: string;
-      force: boolean;
-      /**
-       * Reads the record. It resolves `undefined` for an unknown ID, so a
-       * policy that calls it can reveal whether the execution exists.
-       */
-      load(): Promise<ExecutionRecord | undefined>;
-    };
+/** The execution a request names, as observation middleware receives it. */
+export type ObservedExecution = {
+  executionId: string;
+  /**
+   * Reads the record. It resolves `undefined` for an unknown ID, so a
+   * policy that calls it can reveal whether the execution exists.
+   */
+  load(): Promise<ExecutionRecord | undefined>;
+};
 
 /**
- * Allows or denies an observation or cancel request. It runs before the
- * route reads any record. A denial responds `401` or `403`, never `404`.
+ * What an observation route, `/cancel` or `/clear-divergence` passes to
+ * observation middleware.
+ */
+export type ObservationRequest =
+  | ({ operation: "poll" | "wait" | "events" } & ObservedExecution)
+  | {
+      operation: "list";
+      filter: { workflowId?: string; status?: ExecutionStatus; diverged?: boolean };
+    }
+  | ({ operation: "cancel"; force: boolean } & ObservedExecution)
+  // A write, like cancel, so a policy that groups the read operations
+  // does not cover it.
+  | ({ operation: "clear-divergence" } & ObservedExecution);
+
+/**
+ * Allows or denies an observation, cancel or clear-divergence request. It
+ * runs before the route reads any record. A denial responds `401` or `403`,
+ * never `404`.
  */
 export type ObservationMiddlewareFunction = (
   req: Request,
@@ -270,15 +270,18 @@ export const createWaitHandler = (params: ObservationParams): RouteHandler =>
     }
   );
 
-/** `{ workflowId?, status?, cursor?, limit? }`: `200` with a page. */
+/** `{ workflowId?, status?, diverged?, cursor?, limit? }`: `200` with a page. */
 export const createListHandler = (params: ObservationParams): RouteHandler =>
   observationRoute(
     params,
     (body) => {
       const request = body as ExecutionListRequest;
       try {
-        const { workflowId, status } = prepareExecutionListRequest(request);
-        return { request: { operation: "list", filter: { workflowId, status } }, value: request };
+        const { workflowId, status, diverged } = prepareExecutionListRequest(request);
+        return {
+          request: { operation: "list", filter: { workflowId, status, diverged } },
+          value: request,
+        };
       } catch (err) {
         if (!(err instanceof ExecutionListRequestError)) throw err;
         return errorResponse(400, "INVALID_LIST_REQUEST", err.message);
@@ -351,6 +354,34 @@ export const createCancelHandler = (params: ObservationParams): RouteHandler =>
       return durableResponse(result, result.status === "requested" ? 202 : 200);
     },
     "INVALID_CANCEL_REQUEST"
+  );
+
+/**
+ * `{ executionId }`: removes the execution's divergence and makes it due
+ * now. Responds `200` with `{ status: "cleared" }` or `{ status:
+ * "not-diverged" }`, `404` for an unknown ID, and `400`
+ * `INVALID_OBSERVATION_REQUEST` for a missing `executionId`.
+ */
+export const createClearDivergenceHandler = (params: ObservationParams): RouteHandler =>
+  observationRoute(
+    params,
+    (body) => {
+      const { executionId } = body;
+      if (typeof executionId !== "string" || executionId === "") {
+        return invalidObservationRequest("executionId must be a non-empty string");
+      }
+      const request: ObservationRequest = {
+        operation: "clear-divergence",
+        executionId,
+        load: () => params.executions.get(executionId),
+      };
+      return { request, value: executionId };
+    },
+    async (_req, executionId) => {
+      const result = await params.control.clearDivergence(executionId);
+      if (!result) return executionNotFound(executionId);
+      return durableResponse(result, 200);
+    }
   );
 
 function errorResponse(
@@ -431,8 +462,9 @@ export function createRoutes(params: {
   /** Runs before admission on `/trigger`. It does not apply to other routes. */
   middleware?: MiddlewareFunction[];
   /**
-   * Runs, in array order, before `/poll`, `/wait`, `/list`, `/events` and
-   * `/cancel` read any record. The first denial ends the request.
+   * Runs, in array order, before `/poll`, `/wait`, `/list`, `/events`,
+   * `/cancel` and `/clear-divergence` read any record. The first denial ends
+   * the request.
    */
   observationMiddleware?: ObservationMiddlewareFunction[];
   /**
@@ -455,7 +487,7 @@ export function createRoutes(params: {
   // upgrade, including /list, which returns every execution's outcome.
   if (middleware.length > 0 && params.observationMiddleware === undefined) {
     logger.warn(
-      "createRoutes has trigger middleware but no observationMiddleware, so /poll, /wait, /list, /events and /cancel accept every request. Pass observationMiddleware, or [] to allow every request on purpose."
+      "createRoutes has trigger middleware but no observationMiddleware, so /poll, /wait, /list, /events, /cancel and /clear-divergence accept every request. Pass observationMiddleware, or [] to allow every request on purpose."
     );
   }
   const { executions } = runtime;
@@ -483,5 +515,6 @@ export function createRoutes(params: {
     [`${basePath}/list`]: { POST: createListHandler(observation) },
     [`${basePath}/events`]: { POST: createEventsHandler(observation) },
     [`${basePath}/cancel`]: { POST: createCancelHandler(observation) },
+    [`${basePath}/clear-divergence`]: { POST: createClearDivergenceHandler(observation) },
   };
 }

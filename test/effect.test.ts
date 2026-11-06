@@ -132,15 +132,15 @@ function setup(overrides: Partial<Descriptor> = {}) {
         duration: DEFAULT_LEASE_DURATION,
       });
     }
-    return invoker.deliver(
-      {
-        workflowId: "charge-order",
-        executionId: "order-42",
-        params: undefined,
-        context: new Map(),
-      },
-      { lease: lease!, signal }
-    );
+    return await invoker.deliver(
+        {
+          workflowId: "charge-order",
+          executionId: "order-42",
+          params: undefined,
+          context: new Map(),
+        },
+        { lease: lease!, signal }
+      );
   }
 
   const readStep = async (stepKey: string) => {
@@ -1011,7 +1011,7 @@ describe("serialization", () => {
 
     await deliver();
     const record = await runtime.heap.readStep({ executionId: "order-42", stepKey: "charge" });
-    expect(record?.meta).toEqual({ attempt: 0, done: false });
+    expect(record?.meta).toEqual({ attempt: 0, done: false, kind: "effect" });
     expect(await readStep("charge")).toEqual({ type: "effect-wait", wakeAt: 61_000, done: false });
 
     advance(60_000);
@@ -1019,7 +1019,7 @@ describe("serialization", () => {
     await deliver();
     expect(log.slice(0, 2)).toEqual(["begin", "lookup"]);
     const finished = await runtime.heap.readStep({ executionId: "order-42", stepKey: "charge" });
-    expect(finished?.meta).toEqual({ attempt: 1, done: true });
+    expect(finished?.meta).toEqual({ attempt: 1, done: true, kind: "effect" });
   });
 
   test("an effect's error code survives serialization", async () => {

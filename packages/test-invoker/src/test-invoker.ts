@@ -1,7 +1,7 @@
 import type { Logger } from "pino";
 import type {
   DeliveryOptions,
-  WorkflowEvent,
+  DeliveryEvent,
   WorkflowInvoker,
   WorkflowRunner,
 } from "@yieldstar/core";
@@ -16,7 +16,7 @@ export function createWorkflowInvoker(params: {
   const { logger, runner } = params;
   return {
     workflowEndEmitter,
-    async deliver(event: WorkflowEvent, options: DeliveryOptions) {
+    async deliver(event: DeliveryEvent, options: DeliveryOptions) {
       const { executionId } = event;
       logger.info({ executionId }, "Starting workflow delivery");
       return runner.run(event, { ...options, logger });

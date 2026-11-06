@@ -152,6 +152,7 @@ while (true) {
 | ------------ | ----------------- | ----------------------------------------------------------------------------- |
 | `workflowId` | `string`          | Optional. Only executions of this workflow                                    |
 | `status`     | `ExecutionStatus` | Optional. Only executions with this status                                   |
+| `diverged`   | `boolean`         | Optional. `true` returns only [diverged](./replay-stability.md#divergence) executions, and `false` only the others |
 | `cursor`     | `string`          | Optional. The `cursor` of the previous page                                   |
 | `limit`      | `number`          | Optional. Executions per page. Defaults to `50`; values above `1000` are lowered to `1000` |
 
@@ -163,7 +164,7 @@ The order is the order in which the backend admitted the executions, not `admitt
 - Every matching execution admitted before the first page appears once. Executions admitted after the first page do not appear on later pages.
 - `status` is compared with the status at the runtime clock's current time, so `running` matches executions with a live lease. An execution whose status changes while you page through a `status` filter may appear or disappear on later pages.
 
-`list` throws `ExecutionListRequestError` (`code: "INVALID_LIST_REQUEST"`) for a `workflowId` that is not a string, a `limit` that is not a positive integer, an unknown `status`, or a malformed `cursor`.
+`list` throws `ExecutionListRequestError` (`code: "INVALID_LIST_REQUEST"`) for a `workflowId` that is not a string, a `limit` that is not a positive integer, an unknown `status`, a `diverged` that is not a boolean, or a malformed `cursor`.
 
 ## `sdk.cancel`
 
@@ -200,6 +201,22 @@ type CancelResult =
 
 `cancel` throws `ExecutionCancelRequestError`, a `TypeError`, for an empty execution ID, a `reason` that is not a string, or a `force` that is not a boolean. It records nothing in that case.
 
+## `sdk.clearDivergence`
+
+Removes a diverged execution's `divergence` and makes the execution due now, so that the next delivery replays it on the code deployed by then. Deploy code that matches the execution's history first. See [Clearing a divergence](./replay-stability.md#clearing-a-divergence).
+
+```ts
+const result = await sdk.clearDivergence("order-42");
+```
+
+| Result                       | Meaning                                                         |
+| ---------------------------- | --------------------------------------------------------------- |
+| `{ status: "cleared" }`      | The divergence was removed and the execution is due now         |
+| `{ status: "not-diverged" }` | The execution has no divergence, including a terminal execution. Nothing changed |
+| `undefined`                  | No record has this ID                                           |
+
+If the deployed code still diverges, the next delivery sets `divergence` again. `clearDivergence` throws a `TypeError` for an empty execution ID.
+
 ## Execution views
 
 `poll`, `wait` and `list` return views of the execution record:
@@ -213,6 +230,8 @@ type ExecutionViewBase = {
   updatedAt: number;
   parent?: { executionId: string; stepKey: string; detached: boolean };
   cancellation?: ExecutionCancellation;
+  workflowVersion?: number;
+  divergence?: ExecutionDivergence;
 };
 
 type ActiveExecutionView = ExecutionViewBase & {
@@ -233,9 +252,9 @@ type WaitResult =
 type ExecutionViewPage = { executions: ExecutionView[]; cursor?: string };
 ```
 
-`parent` is present on executions started by [`step.start`](./steps.md#stepstart) or [`step.call`](./steps.md#stepcall), and names the caller's execution ID and step key, and whether the child was started detached. `cancellation` is present once a cancellation request is recorded (see [Requesting cancellation](./cancellation.md#requesting-cancellation)). A view leaves out `params`, `context`, lease and wake state and `unacknowledgedDeliveryCount`. Operators can read those with `runtime.executions.get`. `admittedAt` and `updatedAt` come from the clock of the process that wrote them, so use them for display only.
+`parent` is present on executions started by [`step.start`](./steps.md#stepstart) or [`step.call`](./steps.md#stepcall), and names the caller's execution ID and step key, and whether the child was started detached. `cancellation` is present once a cancellation request is recorded (see [Requesting cancellation](./cancellation.md#requesting-cancellation)). `workflowVersion` is present once a delivery has recorded the [workflow version](./replay-stability.md#workflow-versions), and `divergence` while the execution is parked after a [divergent replay](./replay-stability.md#divergence). A view leaves out `params`, `context`, lease and wake state and `unacknowledgedDeliveryCount`. Operators can read those with `runtime.executions.get`. `admittedAt` and `updatedAt` come from the clock of the process that wrote them, so use them for display only.
 
-Both the local SDK and the [HTTP SDK](./sdk-http.md) implement the `ExecutionObserver` interface (`poll`, `wait` and `list`) and the `ExecutionControl` interface (`cancel`), which `yieldstar` exports with these types. Code that only reads executions can take an `ExecutionObserver` and work with either SDK.
+Both the local SDK and the [HTTP SDK](./sdk-http.md) implement the `ExecutionObserver` interface (`poll`, `wait` and `list`) and the `ExecutionControl` interface (`cancel` and `clearDivergence`), which `yieldstar` exports with these types. Code that only reads executions can take an `ExecutionObserver` and work with either SDK.
 
 ## Trigger event shape
 

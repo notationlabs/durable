@@ -4,7 +4,7 @@ Each step wraps a discrete unit of work.
 
 When a step is yielded, the runtime persists the result, schedules any retries, or yields control back to the workflow to continue execution. 
 
-On subsequent workflow executions, the runtime replays the previously cached value so the step function does not re-execute. 
+On subsequent workflow executions, the runtime replays the previously cached value so the step function does not re-execute. Each step finds its record by its step key, the string passed as the first argument. See [Step keys](#step-keys).
 
 Note: Steps must be yielded with `yield*`; plain `yield` produces a runtime error.
 
@@ -13,7 +13,7 @@ Note: Steps must be yielded with `yield*`; plain `yield` produces a runtime erro
 `step.run` executes a function, caches its return value, and replays that cached result on subsequent workflow invocation without re-executing the function.
 
 ```ts
-const result = yield* step.run(() => {
+const result = yield* step.run("fetch-user", () => {
   return fetchUser(userId);
 });
 ```
@@ -21,7 +21,7 @@ const result = yield* step.run(() => {
 `step.run` accepts sync or async functions:
 
 ```ts
-const data = yield* step.run(async () => {
+const data = yield* step.run("fetch-data", async () => {
   const res = await fetch("https://api.example.com/data");
   return res.json();
 });
@@ -87,7 +87,7 @@ async () => ({ amount: "12.50", currency: "GBP" }),
 
 `step.run` validates the decoded value with the schema on the first run and on every replay, and returns the schema's output. The step function must still return a durable value, because the record stores the schema's input, not its output.
 
-The step record notes whether the schema accepted the value on the first run. If the schema rejects it, the raw value is still recorded, and both the first run and replay throw `WorkflowValueError` with the code `STEP_SCHEMA_INVALID`.
+The step record notes whether the schema accepted the value on the first run. If the schema rejects it, the raw value is still recorded, and both the first run and replay throw `WorkflowValueError` with the code `STEP_SCHEMA_INVALID`. A newer schema that rejects, on replay, a value the first run accepted does not throw: the delivery diverges with `STEP_SCHEMA_CHANGED` (see [Schema changes](./replay-stability.md#schema-changes)).
 
 ### Errors in step records
 
@@ -118,7 +118,7 @@ if (err instanceof CourierError) {
 
 Revival sets the prototype and fields without calling the constructor, so a constructor with required arguments is fine. Registration is per process: a worker process must register the class too, or it revives the error as a plain `Error` with the same `name`, `message`, `code`, `cause` and fields.
 
-These classes are registered by default: `RetryableError`, `WorkflowStartError`, `WorkflowJoinError`, `WorkflowCancelledError`, `WorkflowRaceError`, `WorkflowValueError`, `WorkflowEffectError`, `EffectDeliveryError`, `EffectClientInvariantError`, `StoreValidationError`, `TypeError`, `RangeError`, `SyntaxError`, `ReferenceError`, `EvalError`, `URIError` and `AggregateError`.
+These classes are registered by default: `RetryableError`, `WorkflowStartError`, `WorkflowJoinError`, `WorkflowCancelledError`, `WorkflowRaceError`, `WorkflowReplayError`, `WorkflowValueError`, `WorkflowEffectError`, `EffectDeliveryError`, `EffectClientInvariantError`, `StoreValidationError`, `TypeError`, `RangeError`, `SyntaxError`, `ReferenceError`, `EvalError`, `URIError` and `AggregateError`.
 
 A thrown value that is not an error, such as a string or a plain object, is rethrown as it was thrown. A thrown value that is not durable, such as a class instance, is recorded and rethrown as `Error(String(value))`.
 
@@ -131,7 +131,7 @@ Once it is due, the dispatcher delivers the execution again. All steps before th
 The delivery that passes the delay records it as passed, as the step's next attempt, before the workflow continues. Later deliveries pass the delay without reading the clock, so a clock that reads earlier on a later delivery does not suspend the workflow at a delay it already passed.
 
 ```ts
-yield* step.delay(30_000); // pause for 30 seconds
+yield* step.delay("cooling-off", 30_000); // pause for 30 seconds
 ```
 
 This makes long pauses (waiting for a cooling-off period, spacing out API calls, scheduling future work) durable across process restarts without blocking a thread.
@@ -141,7 +141,7 @@ This makes long pauses (waiting for a cooling-off period, spacing out API calls,
 `step.poll` repeatedly evaluates a predicate at a fixed interval until it returns `true` or exhausts its retry budget. It composes `step.run` with `RetryableError` internally, so each attempt is cached and retried on the same schedule as any other step.
 
 ```ts
-yield* step.poll({ retryInterval: 1000, maxAttempts: 10 }, async () => {
+yield* step.poll("deployment-ready", { retryInterval: 1000, maxAttempts: 10 }, async () => {
   const status = await checkDeployment(deployId);
   return status === "ready";
 });
@@ -159,6 +159,20 @@ const [stock, quote] = yield* step.all("check-order", [
   step.run("quote-shipping", () => courier.quote(address)),
 ]);
 ```
+
+## `step.patched`
+
+`step.patched(id)` returns whether this execution reached this point after the patch `id` was deployed. An execution whose history already continues past this point gets `false`, and one that reaches it at the end of its history records a marker and gets `true`. It lets you insert a step before steps that in-flight executions have already recorded:
+
+```ts
+yield* step.run("charge", () => payments.charge(orderId));
+if (yield* step.patched("send-receipt")) {
+  yield* step.run("receipt", () => mail.receipt(orderId));
+}
+yield* step.delay("courier", 2 * DAY);
+```
+
+It cannot be called inside a `step.all` or `step.race` branch. See [Patches](./replay-stability.md#patches).
 
 ## `step.start`
 
@@ -449,11 +463,17 @@ If two calls settle one effect with different outcomes, which only happens when 
 
 Effect records outlive executions. Cancelling or pruning an execution with a pending effect does not cancel the external operation, and the effect may still settle.
 
-## Cache keys
+## Step keys
 
-Yieldstar derives a cache key for each step automatically from the call site. This works for straight-line workflows, but breaks inside loops because every iteration shares the same call site and collides.
+Each step takes a key as its first argument, and the step's record is stored under that key. Replay finds the record by the key, so the key must stay the same across deploys for as long as executions that recorded it are in flight.
 
-To disambiguate, pass an explicit cache key as the first argument:
+```ts
+yield* step.run("charge", () => payments.charge(orderId));
+yield* step.delay("courier", 2 * DAY);
+yield* step.poll("deployment-ready", opts, predicate);
+```
+
+Inside a loop, put something that identifies the iteration in the key:
 
 ```ts
 for (let i = 0; i < items.length; i++) {
@@ -461,17 +481,13 @@ for (let i = 0; i < items.length; i++) {
 }
 ```
 
-All three step primitives accept an optional key:
+If two steps in the same execution use the same key, the runtime throws: `"Each step in a loop must have a unique cache key."`
 
-```ts
-yield* step.run("key", fn);
-yield* step.delay("key", ms);
-yield* step.poll("key", opts, predicate);
-```
+`step.run`, `step.delay` and `step.poll`, and a store's `get` and `when`, can still be called without a key. **Keyless steps are deprecated.** A keyless step takes its key from a hash of its file, line and column, so editing lines above it, reformatting or bundling the file changes its key. The driver logs a deprecation warning when a keyless step has no record and runs, and a runtime created with `requireStepKeys: true` parks the execution at such a step with divergence code `STEP_KEY_REQUIRED`. See [Replay Stability](./replay-stability.md#step-keys).
 
-`step.start` and `step.call` always take a key, because the key identifies the start request as well as the cached step. Keep it stable across deploys: a different key starts a different target. `step.join` and `step.effect` always take a key too; an effect itself is identified by its `effectId`.
+`step.start` and `step.call` always take a key, because the key identifies the start request as well as the cached step. Keep it stable across deploys: a different key starts a different target. `step.join`, `step.effect`, `step.all` and `step.race` always take a key too; an effect itself is identified by its `effectId`.
 
-If two steps in the same execution resolve to the same cache key, the runtime throws: `"Each step in a loop must have a unique cache key."`
+A deploy that changes a recorded step's key, or removes a recorded step, does not run the step again. The execution's next delivery diverges and the execution is parked until an operator clears it. Workflow versions and `step.patched` let you change a workflow while executions are in flight. See [Replay Stability](./replay-stability.md).
 
 ## Errors
 
@@ -487,6 +503,7 @@ Errors fall into two groups, and only the first reaches workflow code.
 | `WorkflowValueError` (a value is not durable, or failed its step's schema)    |                                                                |
 | `WorkflowEffectError` (`step.effect` was invalid or mismatched)               |                                                                |
 | `WorkflowCancelledError` (a [cancellation](./cancellation.md) was delivered at this step) |                                                    |
+| `WorkflowReplayError` (`step.patched` inside a combinator branch) | |
 
 Steps do not call runtime clients themselves. A store step yields a request, and the driver makes the call outside workflow code, then resumes the step with the result. If the call fails with an infrastructure error, the driver does not resume the step, so a `try/catch` around it never runs:
 
@@ -504,3 +521,5 @@ try {
 ```
 
 An infrastructure error is not an outcome. The delivery is not acknowledged, the execution record keeps its status, and the runtime delivers the execution again after a redelivery delay (1 second, doubling with each consecutive failed delivery, up to 5 minutes). Completed steps replay from the heap, so the retry resumes where the failed delivery stopped.
+
+A divergence is neither kind of error. When the code no longer matches the execution's recorded history, the driver ends the delivery without throwing into workflow code and parks the execution. See [Divergence](./replay-stability.md#divergence).

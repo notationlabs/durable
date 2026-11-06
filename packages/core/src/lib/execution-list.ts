@@ -22,6 +22,7 @@ const EXECUTION_STATUSES: readonly ExecutionStatus[] = [
 export type PreparedExecutionListRequest = {
   workflowId?: string;
   status?: ExecutionStatus;
+  diverged?: boolean;
   /** Only executions whose admission sequence is below this one. */
   beforeSequence?: number;
   limit: number;
@@ -49,7 +50,7 @@ export function prepareExecutionListRequest(
   if (!isPlainObject(request)) {
     throw new ExecutionListRequestError("A list request must be an object");
   }
-  const { workflowId, status, cursor, limit } = request as Record<string, unknown>;
+  const { workflowId, status, cursor, limit, diverged } = request as Record<string, unknown>;
   if (workflowId !== undefined && typeof workflowId !== "string") {
     throw new ExecutionListRequestError("workflowId must be a string");
   }
@@ -57,6 +58,9 @@ export function prepareExecutionListRequest(
     throw new ExecutionListRequestError(
       `status must be one of ${EXECUTION_STATUSES.join(", ")}`
     );
+  }
+  if (diverged !== undefined && typeof diverged !== "boolean") {
+    throw new ExecutionListRequestError("diverged must be a boolean");
   }
   if (
     limit !== undefined &&
@@ -67,6 +71,7 @@ export function prepareExecutionListRequest(
   return {
     workflowId,
     status: status as ExecutionStatus | undefined,
+    diverged,
     beforeSequence: cursor === undefined ? undefined : decodeExecutionListCursor(cursor),
     limit: Math.min(
       (limit as number | undefined) ?? DEFAULT_EXECUTION_LIST_LIMIT,
@@ -82,7 +87,8 @@ export function matchesExecutionListRequest(
 ): boolean {
   return (
     (request.workflowId === undefined || state.workflowId === request.workflowId) &&
-    (request.status === undefined || executionStatusAt(state, now) === request.status)
+    (request.status === undefined || executionStatusAt(state, now) === request.status) &&
+    (request.diverged === undefined || (state.divergence !== null) === request.diverged)
   );
 }
 

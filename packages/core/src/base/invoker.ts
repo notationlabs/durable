@@ -1,5 +1,5 @@
 import type { EventEmitter } from "node:events";
-import type { WorkflowEvent } from "./event";
+import type { DeliveryEvent } from "./event";
 import type {
   ExecutionCancellation,
   ExecutionLease,
@@ -47,7 +47,7 @@ export type WorkflowInvoker = {
    * writes may still be landing. Every other rejection is a retry reply, and
    * the dispatcher releases the lease.
    */
-  deliver(event: WorkflowEvent, options: DeliveryOptions): Promise<WorkflowRunOutcome>;
+  deliver(event: DeliveryEvent, options: DeliveryOptions): Promise<WorkflowRunOutcome>;
 };
 
 const WORKER_EXITED = Symbol.for("yieldstar.workerExited");

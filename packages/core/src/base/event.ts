@@ -54,7 +54,21 @@ export type WorkflowEvent<
   executionId: string;
   params: Params;
   context: Context;
+  /**
+   * The version recorded by the execution's first step write, whatever
+   * version the current code declares. 1 for a workflow that declares none.
+   */
+  workflowVersion: number;
 };
+
+/**
+ * The event a delivery is dispatched with. The driver adds `workflowVersion`
+ * from the heap: the recorded one, or the version the workflow declares.
+ */
+export type DeliveryEvent<
+  Params extends EventParams = EventParams,
+  Context extends ReadonlyMap<any, any> = ReadonlyMap<any, any>
+> = Omit<WorkflowEvent<Params, Context>, "workflowVersion">;
 
 /**
  * The event a trigger route passes through middleware before admission.

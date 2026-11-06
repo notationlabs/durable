@@ -1,13 +1,14 @@
 import type { Logger } from "pino";
 import type {
   WorkflowGenerator,
-  WorkflowEvent,
   EventParams,
   ExecutionLease,
   WorkflowRunOutcome,
 } from "..";
+import type { DeliveryEvent } from "../base/event";
 import {
   InfrastructureError,
+  ReplayDivergenceError,
   StepDelay,
   StepEffectWait,
   StepJoinWait,
@@ -39,9 +40,10 @@ export class WorkflowRunner<
    *
    * A workflow that throws `WorkflowCancelledError` ends `cancelled` only when
    * the delivery carried a cancellation request; otherwise it ends `failed`.
+   * A replay that diverges from the recorded history ends `diverged`.
    */
   run = async (
-    event: WorkflowEvent,
+    event: DeliveryEvent,
     options: DeliveryOptions & { logger?: Logger }
   ): Promise<WorkflowRunOutcome> => {
     const { lease, signal, cancellation, logger = this.logger } = options;
@@ -71,6 +73,18 @@ export class WorkflowRunner<
       });
     } catch (err) {
       if (InfrastructureError.is(err)) throw err;
+      if (ReplayDivergenceError.is(err)) {
+        logger.warn(
+          { executionId: event.executionId, code: err.code, stepKey: err.stepKey, err },
+          `Replay diverged from the recorded history; the execution is parked until its divergence is cleared: ${err.message}`
+        );
+        return {
+          status: "diverged",
+          code: err.code,
+          ...(err.stepKey !== undefined ? { stepKey: err.stepKey } : {}),
+          message: err.message,
+        };
+      }
       if (cancellation && err instanceof WorkflowCancelledError) {
         return { status: "cancelled" };
       }
@@ -94,7 +108,7 @@ export class WorkflowRunner<
     Context extends EventContext
   >(params: {
     workflow: WorkflowGenerator<Params, Result, Context>;
-    event: WorkflowEvent<Params, Context>;
+    event: DeliveryEvent<Params, Context>;
     lease: ExecutionLease;
     signal: AbortSignal;
     cancellation: DeliveryOptions["cancellation"];
@@ -109,6 +123,7 @@ export class WorkflowRunner<
       lease,
       signal,
       ...(cancellation ? { cancellation } : {}),
+      requireStepKeys: this.runtime.requireStepKeys,
       heapClient: this.runtime.heap,
       storeClient: this.runtime.stores,
       executionClient: this.runtime.executions,

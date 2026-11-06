@@ -1,6 +1,7 @@
 import {
   acknowledgeExecution,
   claimExecution,
+  clearExecutionDivergence,
   createExecutionState,
   createStartedExecution,
   executionNotFound,
@@ -17,6 +18,7 @@ import {
   prepareExecutionListRequest,
   prepareExecutionStart,
   propagatedCancellation,
+  recordWorkflowVersion,
   releaseExecutionLease,
   renewExecutionLease,
   requestExecutionCancellation,
@@ -30,6 +32,7 @@ import {
   type ExecutionCancelRequest,
   type ExecutionCancelResult,
   type ExecutionClaimFilter,
+  type ExecutionClearDivergenceResult,
   type ExecutionClient,
   type ExecutionLease,
   type ExecutionListPage,
@@ -199,6 +202,14 @@ export class MemoryExecutionClient implements ExecutionClient {
     return result!;
   }
 
+  async clearDivergence(executionId: string): Promise<ExecutionClearDivergenceResult> {
+    const state = this.executions.get(executionId);
+    if (!state) return executionNotFound(executionId);
+    const cleared = clearExecutionDivergence(state, this.clock());
+    if (cleared.state !== state) this.executions.set(executionId, cleared.state);
+    return cleared.result;
+  }
+
   private children(executionId: string): ExecutionState[] {
     return [...this.executions.values()].filter(
       (state) =>
@@ -217,6 +228,22 @@ export class MemoryExecutionClient implements ExecutionClient {
     const state = this.executions.get(executionId);
     if (!state) throw new Error(`Execution "${executionId}" does not exist`);
     this.executions.set(executionId, markCancellationDelivered(state, this.clock()));
+  }
+
+  /** @internal The workflow version recorded on an execution, for the heap's history read. */
+  readWorkflowVersion(executionId: string): number | undefined {
+    return this.executions.get(executionId)?.workflowVersion ?? undefined;
+  }
+
+  /**
+   * @internal Synchronously records the workflow version on an execution
+   * that has none, for the heap's fenced writes. The caller checks the lease
+   * first.
+   */
+  recordWorkflowVersion(executionId: string, workflowVersion: number | undefined) {
+    const state = this.executions.get(executionId);
+    if (!state) return;
+    this.executions.set(executionId, recordWorkflowVersion(state, workflowVersion));
   }
 
   /**

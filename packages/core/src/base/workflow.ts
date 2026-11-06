@@ -1,5 +1,5 @@
 import type { Logger } from "pino";
-import type { EventParams, WorkflowEvent, EventContext } from "./event";
+import type { DeliveryEvent, EventParams, EventContext } from "./event";
 import type { EffectClient } from "./effect";
 import type {
   ExecutionCancellation,
@@ -15,7 +15,8 @@ export type WorkflowGeneratorParams<
   Params extends EventParams,
   Context extends EventContext
 > = {
-  event: WorkflowEvent<Params, Context>;
+  /** The driver adds `workflowVersion` to it before workflow code sees it. */
+  event: DeliveryEvent<Params, Context>;
   /** Every heap step write is fenced by this lease. */
   lease: ExecutionLease;
   /**
@@ -25,6 +26,8 @@ export type WorkflowGeneratorParams<
   signal: AbortSignal;
   /** The delivery's cancellation request, from `DeliveryOptions`. */
   cancellation?: ExecutionCancellation;
+  /** Whether a keyless step without a record is rejected. */
+  requireStepKeys?: boolean;
   heapClient: HeapClient;
   storeClient: StoreClient;
   /** `step.start` admits its target through this client. */

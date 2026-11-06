@@ -22,7 +22,7 @@ export class ExecutionCancelRequestError extends TypeError {
  * cancel and the read that follows, the result is its terminal view.
  */
 export function createExecutionControl(
-  executions: Pick<ExecutionClient, "cancel" | "get">
+  executions: Pick<ExecutionClient, "cancel" | "clearDivergence" | "get">
 ): ExecutionControl {
   return {
     async cancel(executionId, options) {
@@ -38,6 +38,15 @@ export function createExecutionControl(
       const view = toExecutionView(record);
       if (isTerminalExecutionView(view)) return view;
       return { status: "requested", execution: view };
+    },
+
+    async clearDivergence(executionId) {
+      if (typeof executionId !== "string" || executionId === "") {
+        throw new TypeError("executionId must be a non-empty string");
+      }
+      const result = await executions.clearDivergence(executionId);
+      if (result.status === "rejected") return undefined;
+      return result;
     },
   };
 }
