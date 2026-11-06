@@ -140,7 +140,9 @@ Suppose the payment and the deadline both land in the same delivery. If timing p
 
 **The record decides every tie.** The driver records the first outcome under `payment-or-deadline`: `won`, with the index of the winner. Every later delivery returns that winner's value. This is the rule both combinators rely on: a replay sees what the first run saw.
 
-A combinator without a recorded decision decides only once every branch has caught up with its records. A branch has caught up when it has returned, failed or suspended, or has reached a step that needs new work. A branch that replays its records quickly therefore cannot win against a branch that is still replaying.
+A combinator without a recorded decision decides only once every branch has caught up with its records. A branch has caught up when it has returned, failed or suspended, or has reached a step that needs new work. A store or join wait first checks its condition, so it has caught up only after that check. A branch that replays its records quickly therefore cannot win against a branch that is still replaying.
+
+A wait that is satisfied when the delivery checks it wins against a delay that elapsed. If the payment lands at minute one but the delivery it wakes runs after minute thirty, `when` still wins. A race picks a branch that returned at an elapsed delay only if no other branch returned in the same delivery. A timed `store.when` and `step.join` work the same way: they check their condition before their deadline.
 
 ## Abandoned branches
 
@@ -151,7 +153,7 @@ A losing race branch, and an unfinished branch of a `fail-fast` `step.all` after
 - **Waiters deleted.** The write that records the decision deletes the store, effect and join waiters of every step the abandoned branches reached. A payment at minute thirty-one does not wake `place-order`. The losing delay's wake time is not requested again.
 - **In-flight functions finish.** A `step.run` function that is already running is not interrupted. Its result is recorded but not used, and the combinator returns only after it is recorded. The delivery therefore acknowledges only after every write from an abandoned branch. The decision write also waits for every runtime call already in flight in the combinator's branches, including a `step.effect` call, so a slow effect call delays the decision. Runtime calls in branches outside the combinator do not delay it. The branch is not resumed with the function's value or error, on the first run or on replay.
 - **Nested combinators record nothing.** A `step.all` or `step.race` inside an abandoned branch records no decision. The keys its branches reached, and the keys they were waiting at, are listed with the outer decision. On replay, its branches stop where they stopped on the first run.
-- **Between steps.** The driver checks for abandonment between steps. Workflow code that an abandoned branch runs between two steps is not interrupted, but the step it reaches next is not started, and its key is not reserved.
+- **Between steps.** The driver checks for abandonment between steps. Workflow code that an abandoned branch runs between two steps is not interrupted, but the step it reaches next is not started, and its key is not reserved. If the branch has reached a `step.all` or `step.race`, its branches still start, so their code runs up to their first step, on the first run and on replay.
 
 Cleanup that must follow a race belongs after the combinator, where the winner is known, as `release-stock` is in the example.
 

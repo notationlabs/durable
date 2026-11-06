@@ -240,6 +240,7 @@ export function workflow<
       // A step that produced a result resumes with its decoded record, which
       // is what it returns to workflow code.
       let resumeWith: StepResult | undefined;
+      let afterDelay = false;
 
       while (true) {
         let stepAttempt = 0;
@@ -255,7 +256,7 @@ export function workflow<
         resumeWith = undefined;
 
         if (iteratorResult.done) {
-          return { status: "returned", value: iteratorResult.value };
+          return { status: "returned", value: iteratorResult.value, afterDelay };
         }
         if (!(iteratorResult.value instanceof StepKey)) {
           throw new Error("Step runners must yield a StepKey object");
@@ -298,8 +299,12 @@ export function workflow<
         if (cached?.meta.done && recorded instanceof StepCancelled) {
           thrown = { err: recorded.err };
         } else if (!isCombinator && !passed && isUnfinishedStep(cached, recorded, clock())) {
-          // A combinator is not a cancellation point.
-          branch.markLive();
+          // A combinator is not a cancellation point. A store or join wait
+          // checks its condition before it counts as caught up, so a wait
+          // satisfied before this delivery wins against a delay that elapsed.
+          const checksFirst =
+            !barrier.pending && (recorded instanceof StepStoreWait || recorded instanceof StepJoinWait);
+          if (!checksFirst) branch.markLive();
           if (branch.stopped) return { status: "stopped" };
           if (barrier.pending) {
             // A delay is recorded done when it starts, so its cancellation
@@ -309,11 +314,14 @@ export function workflow<
             thrown = { err };
           }
         }
-        if (branch.stopped) return { status: "stopped" };
+        // A stopped branch still starts the branches of a combinator it
+        // reached, so that replay, which starts them, runs the same code.
+        if (branch.stopped && !isCombinator) return { status: "stopped" };
         if (thrown) {
           // The step is suspended at its StepKey, so the throw reaches
           // workflow code without running the step.
           branch.at = undefined;
+          afterDelay = false;
           nextIteratorResult = await throwInto(thrown.err);
           continue;
         }
@@ -363,6 +371,7 @@ export function workflow<
         // A stopped branch's step that was in flight is recorded, but the
         // branch's generator is not resumed.
         if (branch.stopped || branch.holds(stepKey)) return { status: "stopped" };
+        afterDelay = false;
         if ("throw" in action) {
           branch.at = undefined;
           nextIteratorResult = await throwInto(action.throw);
@@ -370,6 +379,7 @@ export function workflow<
         }
         if ("resume" in action) {
           resumeWith = action.resume;
+          afterDelay = action.delay === true;
           continue;
         }
         return action;
@@ -536,7 +546,7 @@ export function workflow<
         return { throw: stepResponse.err };
       }
       if (stepResponse instanceof StepDelay && (params.passed || stepResponse.wakeAt <= clock())) {
-        return { resume: undefined };
+        return { resume: undefined, delay: true };
       }
       if (stepResponse instanceof StepResult) {
         return { resume: stepResponse };
@@ -686,27 +696,24 @@ export function workflow<
         barrier.enter(children.length);
         children.forEach((child) => {
           const i = child.index;
-          drive(branches[i]!, child)
-            .then(
-              (outcome) => {
-                states[i] = outcome;
-              },
-              (err) => {
-                if (err instanceof WorkflowThrew && !InfrastructureError.is(err.err)) {
-                  states[i] = { status: "threw", err: err.err };
-                  return;
-                }
-                states[i] = { status: "stopped" };
-                combinator.fatal ??= { err: err instanceof WorkflowThrew ? err.err : err };
-                barrier.releaseStopped();
-              }
-            )
-            .then(() => {
-              const { status } = states[i]!;
-              if (status === "returned" || status === "threw") finished.push(i);
-              child.markDone();
-              barrier.leave();
-            });
+          // The state is set in the same task as markDone, so no evaluation
+          // sees a branch that has an outcome but is still replaying.
+          const finish = (state: BranchState) => {
+            states[i] = state;
+            if (state.status === "returned" || state.status === "threw") finished.push(i);
+            child.markDone();
+            barrier.leave();
+          };
+          drive(branches[i]!, child).then(finish, (err) => {
+            if (err instanceof WorkflowThrew && !InfrastructureError.is(err.err)) {
+              finish({ status: "threw", err: err.err });
+              return;
+            }
+            states[i] = { status: "stopped" };
+            combinator.fatal ??= { err: err instanceof WorkflowThrew ? err.err : err };
+            barrier.releaseStopped();
+            finish({ status: "stopped" });
+          });
         });
         evaluate();
         // The owner does not count as running while it waits for its branches.
@@ -755,12 +762,13 @@ class WorkflowThrew {
 }
 
 type DriveOutcome =
-  | { status: "returned"; value: unknown }
+  /** `afterDelay`: the branch's last step was a delay. */
+  | { status: "returned"; value: unknown; afterDelay?: boolean }
   | { status: "suspended"; response: StepResponse }
   | { status: "stopped" };
 
 type StepAction =
-  | { resume: StepResult | undefined }
+  | { resume: StepResult | undefined; delay?: true }
   | { throw: unknown }
   | Exclude<DriveOutcome, { status: "returned" }>;
 
@@ -777,7 +785,12 @@ function decide(
   finished: readonly number[]
 ): BranchesDecision | undefined {
   if (kind === "race") {
-    const winner = finished.find((i) => states[i]!.status === "returned");
+    // A branch that returned at an elapsed delay loses to one that returned
+    // another way in the same delivery, as a timed `when` or `join` checks
+    // its condition before its deadline.
+    const returned = finished.filter((i) => states[i]!.status === "returned");
+    const winner =
+      returned.find((i) => !(states[i] as { afterDelay?: boolean }).afterDelay) ?? returned[0];
     if (winner !== undefined) return { decision: "won", index: winner };
     return states.every((state) => state.status === "threw") ? { decision: "failed" } : undefined;
   }

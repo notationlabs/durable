@@ -350,6 +350,21 @@ const router = {
     yield* step.delay("after", MINUTE);
     return seen;
   }),
+  "loser-at-nested-combinator": workflow(async function* (step) {
+    yield* step.race("race", [
+      step.run("a", () => work("a", "a")),
+      (async function* () {
+        yield* step.run("b1", () => work("b1", "b1"));
+        yield* step.all("inner", [
+          (async function* () {
+            observed.push("inner code");
+            yield* step.run("c", () => work("c", "c"));
+          })(),
+        ]);
+      })(),
+    ]);
+    yield* step.delay("after", MINUTE);
+  }),
   "fail-then-succeed": workflow(async function* (step) {
     return yield* step.race("first", [
       step.run("a", () => fail("a")),
@@ -910,6 +925,24 @@ describe.each(runtimes)("concurrent steps on $name", ({ create }) => {
       expect(await claim()).toBeUndefined();
     });
 
+    test("when against delay: a payment made before the deadline wins in a delivery that runs after it", async () => {
+      await admit("when-or-deadline");
+      expect(await deliver()).toEqual({ status: "suspended", wakeAt: START + DAY });
+
+      advance(MINUTE);
+      await runtime.stores.updateStore({
+        definition: PaymentStore,
+        id: ORDER,
+        updater(draft) {
+          draft.paid = true;
+        },
+      });
+      advance(DAY);
+      expect(await deliver()).toEqual({ status: "suspended", wakeAt: START + MINUTE + 3 * DAY });
+      expect(observed).toEqual([{ index: 0, value: true }]);
+      expect(harness.storeWaiters()).toEqual([]);
+    });
+
     test("when against delay: the deadline passes first, so delay wins and a later store change changes nothing", async () => {
       await admit("when-or-deadline");
       expect(await deliver()).toEqual({ status: "suspended", wakeAt: START + DAY });
@@ -1172,6 +1205,33 @@ describe.each(runtimes)("concurrent steps on $name", ({ create }) => {
       expect(await deliver()).toEqual({ status: "completed", result: ["x"] });
       expect(await readStep("inner")).toBeNull();
       expect(ran.sort()).toEqual(["fast", "x", "y"]);
+    });
+
+    test("a losing branch stopped at a nested combinator's key runs the nested branches' code on the first run and on replay", async () => {
+      const a = closeGate("a");
+      const readStep_ = runtime.heap.readStep.bind(runtime.heap);
+      const innerRead = new Gate();
+      vi.spyOn(runtime.heap, "readStep").mockImplementation(async (params) => {
+        if (params.stepKey === "inner") await innerRead.pass();
+        return readStep_(params);
+      });
+      await admit("loser-at-nested-combinator");
+      const lease = (await claim())!;
+      const delivery = run(lease);
+      await innerRead.entered;
+      a.open();
+      await until(async () => (await readStep("race")) !== null);
+      expect(await readStep("race")).toMatchObject({ keys: ["b1", "inner"], held: ["inner"] });
+      innerRead.open();
+      const first = await delivery;
+      expect(first).toEqual({ status: "suspended", wakeAt: START + MINUTE });
+      await runtime.executions.acknowledge({ lease, outcome: first });
+      expect(observed).toEqual(["inner code"]);
+
+      advance(MINUTE);
+      expect(await deliver()).toEqual({ status: "completed", result: undefined });
+      expect(observed).toEqual(["inner code", "inner code"]);
+      expect(ran.sort()).toEqual(["a", "b1"]);
     });
 
     test("a losing branch's finally block does not run", async () => {
