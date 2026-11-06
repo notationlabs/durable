@@ -338,11 +338,9 @@ export const createEventsHandler = (params: ObservationParams): RouteHandler =>
   );
 
 /**
- * `{ executionId, reason?, force? }`: records a cancellation request. Responds
- * `202` with `{ status: "requested", execution }` while the execution is
- * active, `200` with its terminal view (including after a forced cancel),
- * `404` for an unknown ID, and `400` `INVALID_CANCEL_REQUEST` for a malformed
- * body. It does not wait for the workflow to stop.
+ * `{ executionId, reason?, force? }`. Responds `202` while the execution is
+ * active, `200` with its terminal view, `404` for an unknown ID and `400` for
+ * a malformed body.
  */
 export const createCancelHandler = (params: ObservationParams): RouteHandler =>
   observationRoute(

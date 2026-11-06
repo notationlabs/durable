@@ -17,6 +17,29 @@ import {
 } from "@yieldstar/core";
 import { StepBranchesDecision, type BranchesDecision } from "./branches";
 
+/**
+ * A delay that a delivery passed. The driver records it as the delay's next
+ * attempt before it resumes the workflow past the delay, so replay resumes
+ * past it whatever the clock reads.
+ */
+export class StepDelayPassed extends StepDelay {}
+
+/**
+ * A step error that the step retries. `wakeAt` is when the retry is due, so
+ * a delivery before then suspends the step again without running it.
+ */
+export class StepRetrying extends StepError {
+  readonly wakeAt: number;
+  constructor(error: StepError, wakeAt: number) {
+    super(error.err, {
+      maxAttempts: error.maxAttempts,
+      retryInterval: error.retryInterval,
+      backoffStrategy: error.backOffStrategy,
+    });
+    this.wakeAt = wakeAt;
+  }
+}
+
 /** A `StepCacheCheck` that resumes with the step's unfinished record as a `StepUnfinished`, not null. */
 export class UnfinishedCacheCheck extends StepCacheCheck {}
 
@@ -32,10 +55,9 @@ export class StepUnfinished extends StepResponse {
 }
 
 /**
- * A cancellation delivered at this step. It is recorded as the step's result
- * and is a different record type from a `StepError`, so a
- * `WorkflowCancelledError` that a step function throws stays a step error.
- * The driver throws `err` into workflow code at the step.
+ * A cancellation delivered at this step. It is a separate type from
+ * `StepError` so that a `WorkflowCancelledError` thrown by a step function
+ * stays a step error.
  */
 export class StepCancelled extends StepResponse {
   static type = "step-cancelled";
@@ -90,14 +112,18 @@ function encodeResponse(response: StepResponse, stepKey: string): string {
       `,"err":${encodeThrownValue(response.err)}` +
       `,"maxAttempts":${JSON.stringify(response.maxAttempts)}` +
       `,"retryInterval":${JSON.stringify(response.retryInterval)}` +
-      `,"type":"step-error"}`
+      `,"type":"step-error"` +
+      (response instanceof StepRetrying ? `,"wakeAt":${JSON.stringify(response.wakeAt)}}` : "}")
     );
   }
   if (response instanceof StepCancelled) {
     return `{"err":${encodeThrownValue(response.err)},"type":"step-cancelled"}`;
   }
   if (response instanceof StepBranchesDecision) {
-    return encodeDecision(response.decision);
+    return encodeDecision(response.decision, response.keys, response.held);
+  }
+  if (response instanceof StepDelayPassed) {
+    return `{"passed":true,"type":"step-delay","wakeAt":${JSON.stringify(response.wakeAt)}}`;
   }
   if (response instanceof StepDelay) {
     return `{"type":"step-delay","wakeAt":${JSON.stringify(response.wakeAt)}}`;
@@ -105,28 +131,29 @@ function encodeResponse(response: StepResponse, stepKey: string): string {
   if (response instanceof StepEffectWait) {
     return `{"type":"effect-wait","wakeAt":${JSON.stringify(response.wakeAt)}}`;
   }
-  if (response instanceof StepStoreWait && response.wakeAt !== undefined) {
-    return `{"type":"store-wait","wakeAt":${JSON.stringify(response.wakeAt)}}`;
+  // JSON.stringify drops an undefined wakeAt.
+  if (response instanceof StepStoreWait || response instanceof StepJoinWait) {
+    return JSON.stringify({ type: response.type, wakeAt: response.wakeAt });
   }
-  if (response instanceof StepJoinWait && response.wakeAt !== undefined) {
-    return `{"type":"join-wait","wakeAt":${JSON.stringify(response.wakeAt)}}`;
-  }
-  if (
-    response instanceof StepStoreWait ||
-    response instanceof StepJoinWait ||
-    response instanceof StepInvalid
-  ) {
-    return `{"type":${JSON.stringify(response.type)}}`;
+  if (response instanceof StepInvalid) {
+    return `{"type":"step-invalid"}`;
   }
   throw new Error(`Cannot record a ${response.type} step response`);
 }
 
-function encodeDecision(decision: BranchesDecision): string {
+function encodeDecision(
+  decision: BranchesDecision,
+  keys: readonly string[],
+  held: readonly string[]
+): string {
   const type = `"type":"branches-decision"`;
   switch (decision.decision) {
     case "rejected":
     case "won":
-      return `{"decision":"${decision.decision}","index":${JSON.stringify(decision.index)},${type}}`;
+      return (
+        `{"decision":"${decision.decision}","index":${JSON.stringify(decision.index)}` +
+        `,"held":${JSON.stringify(held)},"keys":${JSON.stringify(keys)},${type}}`
+      );
     case "cancelled":
       return `{"decision":"cancelled","err":${encodeThrownValue(decision.err)},${type}}`;
     default:
@@ -134,29 +161,38 @@ function encodeDecision(decision: BranchesDecision): string {
   }
 }
 
-function decodeDecision(record: Record<string, unknown>): BranchesDecision {
+function decodeDecision(record: Record<string, unknown>): StepBranchesDecision {
   switch (record.decision) {
     case "fulfilled":
     case "settled":
     case "failed":
-      return { decision: record.decision };
+      return new StepBranchesDecision({ decision: record.decision });
     case "rejected":
-    case "won":
-      if (typeof record.index !== "number") break;
-      return { decision: record.decision, index: record.index };
+    case "won": {
+      const { index, keys, held } = record;
+      if (!Number.isInteger(index) || (index as number) < 0) {
+        throw new Error(
+          `Invalid step record: a ${record.decision} decision has an invalid index ${JSON.stringify(index)}`
+        );
+      }
+      const isKeys = (value: unknown): value is string[] =>
+        Array.isArray(value) && value.every((key) => typeof key === "string");
+      if (!isKeys(keys) || !isKeys(held)) {
+        throw new Error(`Invalid step record: a ${record.decision} decision has no keys`);
+      }
+      return new StepBranchesDecision(
+        { decision: record.decision, index: index as number },
+        keys,
+        held
+      );
+    }
     case "cancelled":
-      return { decision: "cancelled", err: decodeParsedValue(record.err, "err") };
+      return new StepBranchesDecision({
+        decision: "cancelled",
+        err: decodeParsedValue(record.err, "err"),
+      });
   }
   throw new Error(`Invalid step record: unknown combinator decision ${JSON.stringify(record.decision)}`);
-}
-
-/** Marks a step error record as raised after its branch was abandoned. */
-export function markAbandoned(json: string): string {
-  return JSON.stringify({ ...JSON.parse(json), abandoned: true });
-}
-
-export function isAbandonedRecord(json: string): boolean {
-  return JSON.parse(json).abandoned === true;
 }
 
 export function decodeStepRecord(json: string): StepResponse {
@@ -172,28 +208,31 @@ export function decodeStepRecord(json: string): StepResponse {
         );
       case "workflow-result":
         return new WorkflowResult(decodeParsedValue(record.result, "result"));
-      case "step-error":
-        return new StepError(decodeParsedValue(record.err, "err"), {
+      case "step-error": {
+        const error = new StepError(decodeParsedValue(record.err, "err"), {
           maxAttempts: record.maxAttempts,
           retryInterval: record.retryInterval,
           backoffStrategy: record.backOffStrategy,
         });
+        return typeof record.wakeAt === "number" ? new StepRetrying(error, record.wakeAt) : error;
+      }
       case "step-cancelled":
         return new StepCancelled(decodeParsedValue(record.err, "err"));
       case "branches-decision":
-        return new StepBranchesDecision(decodeDecision(record));
+        return decodeDecision(record);
       case "step-delay":
-        return new StepDelay(record.wakeAt);
+        return record.passed === true
+          ? new StepDelayPassed(record.wakeAt)
+          : new StepDelay(record.wakeAt);
       case "effect-wait":
         return new StepEffectWait(record.wakeAt);
       case "store-wait":
-        return new StepStoreWait(
-          typeof record.wakeAt === "number" ? record.wakeAt : undefined
-        );
-      case "join-wait":
-        return new StepJoinWait(
-          typeof record.wakeAt === "number" ? record.wakeAt : undefined
-        );
+      case "join-wait": {
+        const wakeAt = typeof record.wakeAt === "number" ? record.wakeAt : undefined;
+        return record.type === "store-wait"
+          ? new StepStoreWait(wakeAt)
+          : new StepJoinWait(wakeAt);
+      }
       case "step-invalid":
         return new StepInvalid();
     }

@@ -1,5 +1,4 @@
 import {
-  prepareJoinWaiter,
   readJoinTarget,
   type JoinClient,
   type JoinResult,
@@ -27,8 +26,7 @@ export class SqliteJoinClient implements JoinClient {
     this.joinWaitersDao = new JoinWaitersDao(db);
   }
 
-  async join(request: JoinWaiter): Promise<JoinResult> {
-    const waiter = prepareJoinWaiter(request);
+  async join(waiter: JoinWaiter): Promise<JoinResult> {
     return runTransaction(this.db, () => {
       const result = readJoinTarget(
         this.executionsDao.getState(waiter.targetExecutionId)
@@ -36,9 +34,5 @@ export class SqliteJoinClient implements JoinClient {
       if (result.status === "waiting") this.joinWaitersDao.upsertWaiter(waiter);
       return result;
     });
-  }
-
-  async getWaiters(targetExecutionId: string): Promise<JoinWaiter[]> {
-    return this.joinWaitersDao.getWaiters(targetExecutionId);
   }
 }

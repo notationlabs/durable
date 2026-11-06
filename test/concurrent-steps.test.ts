@@ -37,7 +37,7 @@ const MINUTE = 60_000;
 const DAY = 24 * 60 * MINUTE;
 const ORDER = "order-42";
 
-const PaymentStore = defineStore("payments", testSchema<{ paid?: boolean }>(), {
+const PaymentStore = defineStore("payments", testSchema<{ paid?: boolean; refunded?: boolean }>(), {
   initial: () => ({}),
 });
 
@@ -210,6 +210,199 @@ const router = {
     yield* step.delay("follow-up", 2 * DAY);
     return first.index;
   }),
+  "when-or-timeout-handler": workflow(async function* (step) {
+    const payments = step.store(PaymentStore);
+    const first = yield* step.race("payment-or-deadline", [
+      payments.when("paid", (state) => state.paid),
+      (async function* () {
+        yield* step.delay("deadline", DAY);
+        return yield* step.run("on-timeout", () => work("on-timeout", "timed out"));
+      })(),
+    ]);
+    observed.push(first);
+    yield* step.delay("follow-up", 2 * DAY);
+    return first.index;
+  }),
+  "nested-race-clock-back": workflow(async function* (step) {
+    const payments = step.store(PaymentStore);
+    const first = yield* step.race("outer", [
+      (async function* () {
+        yield* step.race("inner", [step.delay("d", MINUTE), step.delay("long", DAY)]);
+        return yield* payments.when("s2", (state) => state.refunded);
+      })(),
+      payments.when("y", (state) => state.paid),
+    ]);
+    yield* step.delay("after", DAY);
+    return first.index;
+  }),
+  "flat-race-clock-back": workflow(async function* (step) {
+    const payments = step.store(PaymentStore);
+    const first = yield* step.race("outer", [
+      (async function* () {
+        yield* step.delay("d", MINUTE);
+        return yield* payments.when("s2", (state) => state.refunded);
+      })(),
+      payments.when("y", (state) => state.paid),
+    ]);
+    yield* step.delay("after", DAY);
+    return first.index;
+  }),
+  "late-when-or-deadline": workflow(async function* (step) {
+    const payments = step.store(PaymentStore);
+    const first = yield* step.race("late-race", [
+      (async function* () {
+        yield* step.run("p1", () => work("p1", 1));
+        yield* step.run("p2", () => work("p2", 2));
+        yield* step.run("p3", () => work("p3", 3));
+        return yield* payments.when("late-paid", (state) => state.paid);
+      })(),
+      step.delay("late-deadline", DAY),
+    ]);
+    observed.push(first);
+    yield* step.delay("follow-up", 2 * DAY);
+    return first.index;
+  }),
+  "loser-delay-elapses": workflow(async function* (step) {
+    yield* step.race("el-race", [
+      (async function* () {
+        yield* step.delay("el-wait", MINUTE);
+        observed.push("loser passed el-wait");
+        return yield* step.run("el-notify", () => work("el-notify-loser", "loser"));
+      })(),
+      step.run("el-fast", () => work("el-fast", "fast")),
+    ]);
+    yield* step.run("el-notify", () => work("el-notify-after", "after"));
+    yield* step.delay("el-follow", DAY);
+    return "done";
+  }),
+  "loser-delay-elapses-before-decision": workflow(async function* (step) {
+    yield* step.race("race", [
+      step.run("slow", () => work("slow", "slow")),
+      (async function* () {
+        yield* step.delay("d", MINUTE);
+        observed.push("loser passed its delay");
+        yield* step.run("K", () => work("K-loser", "loser"));
+      })(),
+    ]);
+    yield* step.delay("after", DAY);
+    return yield* step.run("K", () => work("K-after", "after"));
+  }),
+  "winner-passed-delay": workflow(async function* (step) {
+    const first = yield* step.race("race", [
+      (async function* () {
+        yield* step.delay("d", MINUTE);
+        return yield* step.run("w", () => work("w", "w"));
+      })(),
+      step.delay("long", DAY),
+    ]);
+    observed.push(first.index);
+    yield* step.delay("after", MINUTE);
+    return first.index;
+  }),
+  "delay-written-during-decision": workflow(async function* (step) {
+    yield* step.race("race", [
+      step.run("fast", () => work("fast", "fast")),
+      (async function* () {
+        yield* step.delay("d", MINUTE);
+        observed.push("past-d");
+        return yield* step.run("K", () => work("K", "loser"));
+      })(),
+    ]);
+    yield* step.delay("after", DAY);
+    return "done";
+  }),
+  "race-beside-slow-call": workflow(async function* (step) {
+    const payments = step.store(PaymentStore);
+    yield* step.all("outer", [
+      payments.when("slow-wait", (state) => state.paid),
+      (async function* () {
+        yield* step.race("inner", [
+          step.run("a", () => work("a", "a")),
+          step.run("b", () => work("b", "b")),
+        ]);
+        observed.push("race returned");
+      })(),
+    ]);
+  }),
+  "loser-key-after-decision": workflow(async function* (step) {
+    yield* step.race("race", [
+      step.run("fast", () => work("fast", "fast")),
+      (async function* () {
+        yield* step.run("slow", () => work("slow", "slow"));
+        observed.push("loser resumed");
+        yield* step.run("T", () => work("T-loser", "loser"));
+      })(),
+    ]);
+    yield* step.delay("after", MINUTE);
+    return yield* step.run("T", () => work("T-after", "after"));
+  }),
+  "compensate-after-rejected": workflow(async function* (step) {
+    const done: string[] = [];
+    try {
+      yield* step.all("book", [
+        (async function* () {
+          yield* step.run("charge", () => work("charge", "charged"));
+          done.push("charge");
+        })(),
+        (async function* () {
+          yield* step.run("pack", () => work("pack", "packed"));
+          yield* step.run("ship", () => fail("ship"));
+        })(),
+      ]);
+    } catch {
+      for (const name of done) {
+        yield* step.delay(`wait-${name}`, MINUTE);
+        yield* step.run(`undo-${name}`, () => work(`undo-${name}`, undefined));
+      }
+    }
+    return done;
+  }),
+  "loser-state-partway": workflow(async function* (step) {
+    const seen: string[] = [];
+    yield* step.race("race", [
+      step.run("fast", () => work("fast", "fast")),
+      (async function* () {
+        yield* step.run("a", () => work("a", "a"));
+        seen.push("a");
+        yield* step.run("b", () => work("b", "b"));
+        seen.push("b");
+      })(),
+    ]);
+    yield* step.delay("after", MINUTE);
+    return seen;
+  }),
+  "nested-loser-state": workflow(async function* (step) {
+    const seen: string[] = [];
+    yield* step.race("race", [
+      step.run("fast", () => work("fast", "fast")),
+      step.all("inner", [
+        (async function* () {
+          yield* step.run("x", () => work("x", "x"));
+          seen.push("x");
+          yield* step.run("y", () => work("y", "y"));
+          seen.push("y");
+        })(),
+        step.delay("d", DAY),
+      ]),
+    ]);
+    yield* step.delay("after", MINUTE);
+    return seen;
+  }),
+  "loser-at-nested-combinator": workflow(async function* (step) {
+    yield* step.race("race", [
+      step.run("a", () => work("a", "a")),
+      (async function* () {
+        yield* step.run("b1", () => work("b1", "b1"));
+        yield* step.all("inner", [
+          (async function* () {
+            observed.push("inner code");
+            yield* step.run("c", () => work("c", "c"));
+          })(),
+        ]);
+      })(),
+    ]);
+    yield* step.delay("after", MINUTE);
+  }),
   "fail-then-succeed": workflow(async function* (step) {
     return yield* step.race("first", [
       step.run("a", () => fail("a")),
@@ -326,6 +519,37 @@ const router = {
       step.delay("later", 10 * MINUTE),
     ]);
   }),
+  "retry-beside-when": workflow(async function* (step) {
+    const payments = step.store(PaymentStore);
+    return yield* step.all("check", [
+      step.run("flaky", async () => {
+        ran.push("flaky");
+        throw new RetryableError("try again", { maxAttempts: 3, retryInterval: MINUTE });
+      }),
+      payments.when("paid", (state) => state.paid || state.refunded === false),
+    ]);
+  }),
+  "effect-beside-when": workflow(async function* (step) {
+    const payments = step.store(PaymentStore);
+    return yield* step.all("check", [
+      step.effect("charge", {
+        effectId: "charge:order-42",
+        operation: "charge-v1",
+        input: { amount: 4999 },
+        retryIn: DAY,
+        maxAttempts: 2,
+        lookup: async () => {
+          ran.push("lookup");
+          return { status: "unknown" };
+        },
+        perform: async () => {
+          ran.push("perform");
+          throw new Error("socket hang up");
+        },
+      }),
+      payments.when("paid", (state) => state.paid || state.refunded === false),
+    ]);
+  }),
   "nested-loser-key-reused": workflow(async function* (step) {
     yield* step.race("first", [
       step.all("inner", [step.run("K", () => work("K", "loser")), step.delay("d", DAY)]),
@@ -349,6 +573,20 @@ const router = {
     ]);
     yield* step.delay("after", MINUTE);
     return first.index;
+  }),
+  "loser-key-after-caught-error": workflow(async function* (step) {
+    yield* step.race("first", [
+      step.delay("deadline", MINUTE),
+      (async function* () {
+        try {
+          yield* step.run("a1", () => fail("a1"));
+        } catch {}
+        yield* step.run("K", () => work("K", "loser"));
+        yield* step.delay("long", DAY);
+      })(),
+    ]);
+    yield* step.delay("after", MINUTE);
+    return yield* step.run("K", () => work("K-after", "after"));
   }),
   "nested-loser-race": workflow(async function* (step) {
     const first = yield* step.race("first", [
@@ -526,6 +764,12 @@ test("race narrows its value by index, and all types its results in branch order
     expectTypeOf(all).toEqualTypeOf<[number, string]>();
     const settled = yield* step.all("settle", [step.run("e", () => 1)], { mode: "settle" });
     expectTypeOf(settled).toEqualTypeOf<[SettledResult<number>]>();
+    const mode = "settle" as "fail-fast" | "settle";
+    const either = yield* step.all("either", [step.run("f", () => 1)], { mode });
+    expectTypeOf(either).toEqualTypeOf<[number] | [SettledResult<number>]>();
+    const mapped = yield* step.race("mapped", [1, 2].map((n) => step.run(`m${n}`, () => n)));
+    expectTypeOf(mapped.index).toEqualTypeOf<number>();
+    expectTypeOf(mapped.value).toEqualTypeOf<number>();
   });
 });
 
@@ -727,6 +971,52 @@ describe.each(runtimes)("concurrent steps on $name", ({ create }) => {
       expect(await deliver()).toEqual({ status: "completed", result: ["ok", undefined] });
       expect(ran).toEqual(["flaky", "flaky"]);
     });
+    test("a sibling's wake before retryIn does not look the effect up or use an attempt", async () => {
+      await admit("effect-beside-when");
+      expect(await deliver()).toEqual({ status: "suspended", wakeAt: START + DAY });
+
+      for (const refunded of [true, undefined]) {
+        advance(1_000);
+        await runtime.stores.updateStore({
+          definition: PaymentStore,
+          id: ORDER,
+          updater(draft) {
+            draft.refunded = refunded;
+          },
+        });
+        expect(await deliver()).toEqual({ status: "suspended", wakeAt: START + DAY });
+      }
+      expect(ran).toEqual(["perform"]);
+      expect(await readStep("charge")).toMatchObject({ type: "effect-wait", attempt: 0 });
+
+      advance(DAY);
+      expect(await deliver()).toMatchObject({ status: "failed" });
+      expect(ran).toEqual(["perform", "lookup"]);
+    });
+
+    test("a sibling's wake during retry backoff does not run the step early", async () => {
+      await admit("retry-beside-when");
+      expect(await deliver()).toEqual({ status: "suspended", wakeAt: START + MINUTE });
+      expect(await readStep("flaky")).toMatchObject({ wakeAt: START + MINUTE, done: false });
+
+      for (const refunded of [true, undefined]) {
+        advance(1_000);
+        await runtime.stores.updateStore({
+          definition: PaymentStore,
+          id: ORDER,
+          updater(draft) {
+            draft.refunded = refunded;
+          },
+        });
+        expect(await deliver()).toEqual({ status: "suspended", wakeAt: START + MINUTE });
+      }
+      expect(ran).toEqual(["flaky"]);
+      expect(await readStep("flaky")).toMatchObject({ attempt: 0 });
+
+      advance(MINUTE);
+      expect(await deliver()).toEqual({ status: "suspended", wakeAt: START + 2_000 + 2 * MINUTE });
+      expect(ran).toEqual(["flaky", "flaky"]);
+    });
   });
 
   describe("race", () => {
@@ -752,6 +1042,48 @@ describe.each(runtimes)("concurrent steps on $name", ({ create }) => {
       expect(await claim()).toBeUndefined();
     });
 
+    test("when against delay: a payment made before the deadline wins in a delivery that runs after it", async () => {
+      await admit("when-or-deadline");
+      expect(await deliver()).toEqual({ status: "suspended", wakeAt: START + DAY });
+
+      advance(MINUTE);
+      await runtime.stores.updateStore({
+        definition: PaymentStore,
+        id: ORDER,
+        updater(draft) {
+          draft.paid = true;
+        },
+      });
+      advance(DAY);
+      expect(await deliver()).toEqual({ status: "suspended", wakeAt: START + MINUTE + 3 * DAY });
+      expect(observed).toEqual([{ index: 0, value: true }]);
+      expect(harness.storeWaiters()).toEqual([]);
+    });
+
+    test("a payment made before the deadline wins against a deadline branch whose handler step finishes first", async () => {
+      await admit("when-or-timeout-handler");
+      expect(await deliver()).toEqual({ status: "suspended", wakeAt: START + DAY });
+
+      advance(MINUTE);
+      await runtime.stores.updateStore({
+        definition: PaymentStore,
+        id: ORDER,
+        updater(draft) {
+          draft.paid = true;
+        },
+      });
+      advance(DAY);
+      const getStore = runtime.stores.getStore.bind(runtime.stores);
+      vi.spyOn(runtime.stores, "getStore").mockImplementation(async (params) => {
+        await until(() => ran.includes("on-timeout"));
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        return getStore(params);
+      });
+      expect(await deliver()).toEqual({ status: "suspended", wakeAt: START + MINUTE + 3 * DAY });
+      expect(observed).toEqual([{ index: 0, value: true }]);
+      expect(ran).toEqual(["on-timeout"]);
+    });
+
     test("when against delay: the deadline passes first, so delay wins and a later store change changes nothing", async () => {
       await admit("when-or-deadline");
       expect(await deliver()).toEqual({ status: "suspended", wakeAt: START + DAY });
@@ -773,6 +1105,159 @@ describe.each(runtimes)("concurrent steps on $name", ({ create }) => {
       expect(await claim()).toBeUndefined();
       advance(2 * DAY);
       expect(await deliver()).toEqual({ status: "completed", result: 1 });
+    });
+
+    test("a losing branch that replays steps before its wait still has its waiter deleted", async () => {
+      await admit("late-when-or-deadline");
+      expect(await deliver()).toEqual({ status: "suspended", wakeAt: START + DAY });
+      expect(harness.storeWaiters()).toEqual(["late-paid"]);
+
+      advance(DAY);
+      expect(await deliver()).toEqual({ status: "suspended", wakeAt: START + 3 * DAY });
+      expect(observed).toEqual([{ index: 1, value: undefined }]);
+      expect(harness.storeWaiters()).toEqual([]);
+
+      await runtime.stores.updateStore({
+        definition: PaymentStore,
+        id: ORDER,
+        updater(draft) {
+          draft.paid = true;
+        },
+      });
+      expect(await claim()).toBeUndefined();
+    });
+
+    test("a losing branch does not pass a delay that elapses after the race settles", async () => {
+      await admit("loser-delay-elapses");
+      expect(await deliver()).toEqual({ status: "suspended", wakeAt: START + DAY });
+      expect(ran.sort()).toEqual(["el-fast", "el-notify-after"]);
+
+      advance(DAY);
+      expect(await deliver()).toEqual({ status: "completed", result: "done" });
+      expect(observed).toEqual([]);
+    });
+
+    test("a losing branch does not pass a delay that elapsed between its suspension and the decision", async () => {
+      const slow = closeGate("slow");
+      await admit("loser-delay-elapses-before-decision");
+      const delivery = deliver();
+      await slow.entered;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      advance(2 * MINUTE);
+      slow.open();
+      expect(await delivery).toEqual({ status: "suspended", wakeAt: START + 2 * MINUTE + DAY });
+      expect(await readStep("race")).toMatchObject({ decision: "won", index: 0, keys: ["d"] });
+
+      advance(DAY);
+      expect(await deliver()).toEqual({ status: "completed", result: "after" });
+      expect(observed).toEqual([]);
+      expect(ran.sort()).toEqual(["K-after", "slow"]);
+    });
+
+    test("when the clock steps back, the winner of a recorded race passes a delay it passed before", async () => {
+      await admit("winner-passed-delay");
+      expect(await deliver()).toEqual({ status: "suspended", wakeAt: START + MINUTE });
+      advance(MINUTE);
+      expect(await deliver()).toEqual({ status: "suspended", wakeAt: START + 2 * MINUTE });
+      expect(await readStep("race")).toMatchObject({ decision: "won", index: 0 });
+
+      expect(await readStep("d")).toMatchObject({ type: "step-delay", passed: true });
+
+      advance(MINUTE);
+      const lease = (await claim())!;
+      advance(-MINUTE - 1000);
+      const outcome = await run(lease);
+      expect(outcome).toEqual({ status: "suspended", wakeAt: START + 2 * MINUTE });
+      await runtime.executions.acknowledge({ lease, outcome });
+      expect(observed).toEqual([0, 0]);
+
+      advance(MINUTE + 1000);
+      expect(await deliver()).toEqual({ status: "completed", result: 0 });
+    });
+
+    test.each(["nested-race-clock-back", "flat-race-clock-back"] as const)(
+      "%s: a decision made under a backwards clock lists the steps a branch reached before",
+      async (fixture) => {
+        await admit(fixture);
+        expect(await deliver()).toEqual({ status: "suspended", wakeAt: START + MINUTE });
+        advance(MINUTE);
+        expect((await deliver())?.status).toBe("suspended");
+        expect(harness.storeWaiters().sort()).toEqual(["s2", "y"]);
+
+        await runtime.stores.updateStore({
+          definition: PaymentStore,
+          id: ORDER,
+          updater(draft) {
+            draft.paid = true;
+          },
+        });
+        const lease = (await claim())!;
+        advance(-1000);
+        const outcome = await run(lease);
+        await runtime.executions.acknowledge({ lease, outcome });
+        expect(await readStep("outer")).toMatchObject({ decision: "won", index: 1 });
+        expect(((await readStep("outer")) as { keys: string[] }).keys).toContain("s2");
+        expect(harness.storeWaiters()).toEqual([]);
+
+        advance(DAY + 1000);
+        expect(await deliver()).toEqual({ status: "completed", result: 1 });
+      }
+    );
+
+    test("a delay written while the race decides is listed in the decision", async () => {
+      const fast = closeGate("fast");
+      const writeStep = runtime.heap.writeStep.bind(runtime.heap);
+      const delay = new Gate();
+      vi.spyOn(runtime.heap, "writeStep").mockImplementation(async (params) => {
+        if (params.stepKey === "d") await delay.pass();
+        return writeStep(params);
+      });
+      await admit("delay-written-during-decision");
+      const delivery = deliver();
+      await Promise.all([fast.entered, delay.entered]);
+      fast.open();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      delay.open();
+      expect(await delivery).toEqual({ status: "suspended", wakeAt: START + DAY });
+      expect(await readStep("race")).toMatchObject({ decision: "won", index: 0, keys: ["d"] });
+
+      advance(DAY);
+      expect(await deliver()).toEqual({ status: "completed", result: "done" });
+      expect(observed).toEqual([]);
+      expect(ran).not.toContain("K");
+    });
+
+    test("a slow runtime call in one branch does not hold up a race in another", async () => {
+      const registerWaiter = runtime.stores.registerWaiter.bind(runtime.stores);
+      const slow = new Gate();
+      vi.spyOn(runtime.stores, "registerWaiter").mockImplementation(async (waiter) => {
+        await slow.pass();
+        return registerWaiter(waiter);
+      });
+      await admit("race-beside-slow-call");
+      const delivery = deliver();
+      await slow.entered;
+      await until(() => observed.includes("race returned"));
+      slow.open();
+      expect((await delivery)?.status).toBe("suspended");
+    });
+
+    test("a key a losing branch would reach only after the decision is free for a later step", async () => {
+      const slow = closeGate("slow");
+      await admit("loser-key-after-decision");
+      const lease = (await claim())!;
+      const delivery = run(lease);
+      await until(async () => (await readStep("race")) !== null);
+      expect(await readStep("race")).toMatchObject({ decision: "won", index: 0, keys: ["slow"] });
+      slow.open();
+      const outcome = await delivery;
+      expect(outcome).toEqual({ status: "suspended", wakeAt: START + MINUTE });
+      await runtime.executions.acknowledge({ lease, outcome });
+
+      advance(MINUTE);
+      expect(await deliver()).toEqual({ status: "completed", result: "after" });
+      expect(observed).toEqual([]);
+      expect(ran.sort()).toEqual(["T-after", "fast", "slow"]);
     });
 
     test("a failed branch does not end the race: a later success wins", async () => {
@@ -823,13 +1308,102 @@ describe.each(runtimes)("concurrent steps on $name", ({ create }) => {
       for (const [stepKey, json] of [
         ["a", '{"result":"a","type":"step-result"}'],
         ["b", '{"result":"b","type":"step-result"}'],
-        ["first", '{"decision":"won","index":1,"type":"branches-decision"}'],
+        ["first", '{"decision":"won","held":[],"index":1,"keys":["a"],"type":"branches-decision"}'],
       ] as const) {
         await runtime.heap.writeStep({ lease, stepKey, stepAttempt: 0, done: true, stepResponseJson: json });
       }
       expect(await run(lease)).toEqual({ status: "suspended", wakeAt: START + MINUTE });
       expect(observed).toEqual([{ index: 1, value: "b" }]);
       expect(ran).toEqual([]);
+    });
+
+    test("a recorded index past the last branch fails as a changed outcome", async () => {
+      await admit("tie");
+      const lease = (await claim())!;
+      await runtime.heap.writeStep({
+        lease,
+        stepKey: "first",
+        stepAttempt: 0,
+        done: true,
+        stepResponseJson: '{"decision":"won","held":[],"index":5,"keys":[],"type":"branches-decision"}',
+      });
+      const outcome = await run(lease);
+      expect((outcome as { error: Error }).error.message).toMatch(/no longer reaches its recorded outcome/);
+    });
+
+    test("replay keeps the state a losing branch set before the decision, and stops it where the first run did", async () => {
+      const fast = closeGate("fast");
+      const b = closeGate("b");
+      await admit("loser-state-partway");
+      const lease = (await claim())!;
+      const delivery = run(lease);
+      await b.entered;
+      fast.open();
+      await until(async () => (await readStep("race")) !== null);
+      expect(await readStep("race")).toMatchObject({ decision: "won", index: 0, keys: ["a", "b"], held: ["b"] });
+      b.open();
+      const first = await delivery;
+      expect(first).toEqual({ status: "suspended", wakeAt: START + MINUTE });
+      await runtime.executions.acknowledge({ lease, outcome: first });
+      expect(await readStep("b")).toMatchObject({ result: "b", done: true });
+
+      advance(MINUTE);
+      expect(await deliver()).toEqual({ status: "completed", result: ["a"] });
+      expect(ran.sort()).toEqual(["a", "b", "fast"]);
+    });
+
+    test("replay keeps the state set inside a nested combinator in a losing branch", async () => {
+      const fast = closeGate("fast");
+      const y = closeGate("y");
+      await admit("nested-loser-state");
+      const lease = (await claim())!;
+      const delivery = run(lease);
+      await y.entered;
+      fast.open();
+      await until(async () => (await readStep("race")) !== null);
+      expect(await readStep("race")).toMatchObject({
+        decision: "won",
+        index: 0,
+        keys: ["inner", "d", "x", "y"],
+        held: ["inner", "y", "d"],
+      });
+      expect(await readStep("inner")).toBeNull();
+      y.open();
+      const first = await delivery;
+      expect(first).toEqual({ status: "suspended", wakeAt: START + MINUTE });
+      await runtime.executions.acknowledge({ lease, outcome: first });
+
+      advance(DAY);
+      expect(await deliver()).toEqual({ status: "completed", result: ["x"] });
+      expect(await readStep("inner")).toBeNull();
+      expect(ran.sort()).toEqual(["fast", "x", "y"]);
+    });
+
+    test("a losing branch stopped at a nested combinator's key runs the nested branches' code on the first run and on replay", async () => {
+      const a = closeGate("a");
+      const readStep_ = runtime.heap.readStep.bind(runtime.heap);
+      const innerRead = new Gate();
+      vi.spyOn(runtime.heap, "readStep").mockImplementation(async (params) => {
+        if (params.stepKey === "inner") await innerRead.pass();
+        return readStep_(params);
+      });
+      await admit("loser-at-nested-combinator");
+      const lease = (await claim())!;
+      const delivery = run(lease);
+      await innerRead.entered;
+      a.open();
+      await until(async () => (await readStep("race")) !== null);
+      expect(await readStep("race")).toMatchObject({ keys: ["b1", "inner"], held: ["inner"] });
+      innerRead.open();
+      const first = await delivery;
+      expect(first).toEqual({ status: "suspended", wakeAt: START + MINUTE });
+      await runtime.executions.acknowledge({ lease, outcome: first });
+      expect(observed).toEqual(["inner code"]);
+
+      advance(MINUTE);
+      expect(await deliver()).toEqual({ status: "completed", result: undefined });
+      expect(observed).toEqual(["inner code", "inner code"]);
+      expect(ran.sort()).toEqual(["a", "b1"]);
     });
 
     test("a losing branch's finally block does not run", async () => {
@@ -949,7 +1523,17 @@ describe.each(runtimes)("concurrent steps on $name", ({ create }) => {
       expect((result as { error: Error }).error.message).toMatch(/unique cache key/);
     });
 
-    test("a losing branch whose running step fails after the race settles runs no catch or finally block", async () => {
+    test("compensation after a fail-fast all sees the branches that finished before the failure, on every delivery", async () => {
+      await admit("compensate-after-rejected");
+      expect(await deliver()).toEqual({ status: "suspended", wakeAt: START + MINUTE });
+      expect(await readStep("book")).toMatchObject({ decision: "rejected", index: 1, keys: ["charge"], held: [] });
+
+      advance(MINUTE);
+      expect(await deliver()).toEqual({ status: "completed", result: ["charge"] });
+      expect(ran.sort()).toEqual(["charge", "pack", "ship", "undo-charge"]);
+    });
+
+    test("a losing branch whose running step fails after the race settles records the error and is not resumed", async () => {
       const slow = closeGate("slow-fail");
       await admit("loser-fails-late");
       const lease = (await claim())!;
@@ -962,6 +1546,18 @@ describe.each(runtimes)("concurrent steps on $name", ({ create }) => {
       advance(MINUTE);
       expect(await deliver()).toEqual({ status: "completed", result: 0 });
       expect(ran.sort()).toEqual(["fast", "slow-fail"]);
+    });
+
+    test("replay reaches the keys a losing branch reached after it caught a step error", async () => {
+      await admit("loser-key-after-caught-error");
+      expect(await deliver()).toEqual({ status: "suspended", wakeAt: START + MINUTE });
+      expect(await readStep("K")).toMatchObject({ result: "loser" });
+      advance(MINUTE);
+      expect(await deliver()).toEqual({ status: "suspended", wakeAt: START + 2 * MINUTE });
+      advance(MINUTE);
+      const result = await deliver();
+      expect((result as { error: Error }).error.message).toMatch(/unique cache key/);
+      expect(ran).not.toContain("K-after");
     });
 
     test("a nested combinator in a losing branch records no decision", async () => {
@@ -1060,6 +1656,23 @@ describe.each(runtimes)("concurrent steps on $name", ({ create }) => {
   describe("cancellation", () => {
     const cancel = (reason?: string) =>
       runtime.executions.cancel({ executionId: ORDER, ...(reason ? { reason } : {}) });
+
+    test("a recorded winner that reaches a passed delay again under a backwards clock is not cancelled there", async () => {
+      await admit("winner-passed-delay");
+      expect(await deliver()).toEqual({ status: "suspended", wakeAt: START + MINUTE });
+      advance(MINUTE);
+      expect(await deliver()).toEqual({ status: "suspended", wakeAt: START + 2 * MINUTE });
+      expect(await readStep("race")).toMatchObject({ decision: "won", index: 0 });
+
+      await cancel();
+      const lease = (await claim())!;
+      advance(-MINUTE - 1000);
+      const outcome = await run(lease);
+      expect(outcome).toEqual({ status: "cancelled" });
+      await runtime.executions.acknowledge({ lease, outcome });
+      expect(await readStep("d")).not.toMatchObject({ type: "step-cancelled" });
+      expect(await readStep("after")).toMatchObject({ type: "step-cancelled" });
+    });
 
     test("each unfinished branch of all receives WorkflowCancelledError, runs its cleanup, and all then throws it", async () => {
       await admit("cancel-inside-all");

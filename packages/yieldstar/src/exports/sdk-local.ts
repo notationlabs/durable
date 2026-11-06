@@ -126,12 +126,9 @@ export function createLocalSdk<W extends WorkflowRouter>(
     },
 
     /**
-     * Records a cancellation request and returns without waiting for the
-     * workflow to stop. Resolves with `requested` and the current view, with
-     * the terminal view when the execution is terminal (including after a
-     * forced cancel), and with `undefined` for an unknown ID.
-     * @throws {ExecutionCancelRequestError} for an empty ID, or a `reason` or
-     * `force` of the wrong type
+     * Requests cancellation without waiting for the workflow to stop. Resolves
+     * `undefined` for an unknown ID.
+     * @throws {ExecutionCancelRequestError} for invalid arguments
      */
     cancel(executionId: string, options?: CancelOptions): Promise<CancelResult | undefined> {
       return control.cancel(executionId, options);

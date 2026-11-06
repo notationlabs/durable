@@ -32,7 +32,28 @@ The three step functions run concurrently, so the checks take about one second i
 
 ### Replay
 
-On every delivery, the driver resumes every branch through its recorded steps. Each branch returns its values from its own records, as a single `step.run` does on replay, and `step.all` applies its recorded decision to them. For `place-order`, a delivery after `check-order` is recorded runs none of the three step functions.
+On every delivery, the driver resumes every branch through its recorded steps. Each branch returns its values from its own records, as a single `step.run` does on replay, and `step.all` applies its recorded decision to them. A branch that the combinator abandoned is resumed only as far as the first run resumed it (see [Abandoned branches](#abandoned-branches)). For `place-order`, a delivery after `check-order` is recorded runs none of the three step functions.
+
+Because every branch runs its workflow code again, state that a branch sets in workflow code is set on every delivery. Code after the combinator can read it, including after a failure:
+
+```ts
+const booked: string[] = [];
+try {
+  yield* step.all("book", [
+    (async function* () {
+      yield* step.run("charge", () => payments.charge(card));
+      booked.push("charge");
+    })(),
+    step.run("ship", () => courier.ship(address)),
+  ]);
+} catch {
+  if (booked.includes("charge")) {
+    yield* step.run("refund", () => payments.refund(card));
+  }
+}
+```
+
+If `ship` fails after `charge` returned, every later delivery replays `charge` and pushes it onto `booked`, so `refund` runs on the first run and on replay.
 
 Because values come from replay, a `step.run` with a [schema](./steps.md#schemas) that transforms its value returns the schema's output inside a branch too, on the first run and on replay.
 
@@ -52,7 +73,7 @@ In the default `fail-fast` mode, the first branch to fail settles `step.all`. A 
 | --- | --- |
 | `score-fraud` throws | The driver records `rejected` with the branch index, and `step.all` throws the `score-fraud` error. |
 | Another branch reaches its next step | It does not start it. The branch is abandoned (see [Abandoned branches](#abandoned-branches)). |
-| Replay | `score-fraud` throws again from its record, and `step.all` throws that error again. |
+| Replay | Every branch is resumed from its records, and the other branches stop where they stopped on the first run. `score-fraud` throws again from its record, and `step.all` throws that error again. |
 
 A branch that catches its own error and returns counts as succeeded:
 
@@ -80,7 +101,7 @@ const results = yield* step.all("check-order", branches, { mode: "settle" });
 
 ### Concurrency
 
-`concurrency` limits how many branches have a step in flight at once. A suspended branch does not hold a slot.
+`concurrency` limits how many branches have a step in flight at once. A suspended branch does not hold a slot. The limit applies to each step, not to a whole branch: a branch releases its slot between two steps, so with `concurrency: 5` over 100 branches of two steps each, most first steps run before any second step. To hold a resource for the length of a branch, such as "process at most five orders at a time", use a separate mechanism.
 
 ```ts
 yield* step.all("notify", recipients.map((r) => step.run(`notify:${r}`, () => send(r))), {
@@ -107,27 +128,38 @@ if (first.index === 1) {
 }
 ```
 
-`step.race` returns as soon as one branch returns. The result is `{ index, value }`: the winner's position in the array and its value. TypeScript narrows `value` by `index`, so `first.value` is the `when` result when `first.index === 0`.
+`step.race` is decided once one branch has returned and every branch has caught up with its records (see [Ties](#ties)). It returns once every losing branch has stopped, which waits for a losing `step.run` function that is already running (see [Abandoned branches](#abandoned-branches)). The result is `{ index, value }`: the winner's position in the array and its value. TypeScript narrows `value` by `index`, so `first.value` is the `when` result when `first.index === 0`.
 
 A branch that fails does not end the race. If every branch fails, `step.race` throws `WorkflowRaceError` with code `ALL_BRANCHES_FAILED` and each branch's error in `errors`, in branch order. An empty race throws `WorkflowRaceError` with no errors. `errors` is kept when the error ends the execution `failed`.
 
-`step.race` replaces the special cases for a wait with a deadline. `store.when(key, selector, { deadline })` and `step.join(key, id, { deadline })` remain, and behave as a race between the wait and a delay.
+A timed `store.when(key, selector, { deadline })` or `step.join(key, id, { deadline })` behaves like a race between the wait and a delay.
 
 ### Ties
 
 Suppose the payment and the deadline both land in the same delivery. If timing picked the winner, a replay after a crash could pick the other one, and `place-order` could release stock for an order that was paid.
 
-**The record decides every tie.** The driver records the first outcome under `payment-or-deadline`: `won`, with the index of the winner. Every later delivery returns that same winner, whatever order the branches finish in on replay. This is the rule both combinators rely on: a replay sees what the first run saw.
+**The record decides every tie.** The driver records the first outcome under `payment-or-deadline`: `won`, with the index of the winner. Every later delivery returns that winner's value. This is the rule both combinators rely on: a replay sees what the first run saw.
+
+A combinator without a recorded decision decides only once every branch has caught up with its records. A branch has caught up when it has returned, failed or suspended, or has reached a step that needs new work. A store or join wait first checks its condition, so it has caught up only after that check. A branch that replays its records quickly therefore cannot win against a branch that is still replaying.
+
+A race picks a branch that passed an elapsed delay in the same delivery only if no other branch returned. So a store or join wait that is the last step of its branch, and is satisfied when the delivery checks it, wins against a delay that elapsed. If the payment lands at minute one but the delivery it wakes runs after minute thirty, `when` still wins. This holds even when the delay's branch runs a step after the delay, such as `step.run("on-timeout", ...)`, and that step finishes before the wait's check. A timed `store.when` and `step.join` work the same way: they check their condition before their deadline.
+
+The rule covers only a branch that returns at its wait. If the wait's branch runs another step after the wait, such as `step.run("handle-payment", ...)`, the delay's branch can return first and win. An effect wait does not check its outcome first, so a settled `step.effect` can also lose to a delay that elapsed.
+
+When the payment and the deadline are both due in one delivery, a step after either branch's wait or delay can therefore run, while the race returns the other branch. Do not put side effects after a wait or a delay inside a race branch. Put them after the race, under a check of `first.index`, as `release-stock` is in the example.
 
 ## Abandoned branches
 
 A losing race branch, and an unfinished branch of a `fail-fast` `step.all` after a failure, are abandoned:
 
-- **No new steps.** The branch replays its recorded steps and stops at the first step that needs new work. Its generator is not resumed past that step, so its `finally` blocks do not run.
-- **Waiters deleted.** The write that records the decision deletes the store, effect and join waiters of every step the abandoned branches reached. A payment at minute thirty-one does not wake `place-order`. The losing delay's wake time is not requested again.
-- **In-flight functions finish.** A `step.run` function that is already running is not interrupted. Its result is recorded but not used, and the combinator returns only after it is recorded. The delivery therefore acknowledges only after every write from an abandoned branch. If the function returned a value, the branch resumes with it, as it would on replay, and stops at its next step. If the function failed, the branch stops there, and its `catch` and `finally` blocks do not run.
-- **Nested combinators record nothing.** A `step.all` or `step.race` inside an abandoned branch records no decision. Replay still drives its branches through their recorded steps.
-- **Between steps.** The driver checks for abandonment between steps. Workflow code that an abandoned branch runs between two steps is not interrupted.
+- **Stopped at once.** The branch starts no new step, and its generator is not resumed after the decision, so its `catch` and `finally` blocks do not run.
+- **Replayed up to the decision.** The decision record lists every step key the abandoned branches reached before the decision, and the keys among them at which a branch was waiting: its step was in flight, it was suspended there, or the step had finished but the branch was not yet resumed. The record therefore grows with the number of steps the abandoned branches reached. A `fail-fast` `step.all` over 1,000 branches of five steps can list about 5,000 keys, and every delivery reads them on replay. On replay, an abandoned branch is resumed through its recorded steps. It stops at a key it was waiting at, or at a key it did not reach. Its workflow code therefore runs up to the same point on every delivery, whatever the clock reads and whatever was recorded after the decision.
+- **Waiters deleted.** The write that records the decision deletes the store, effect and join waiters of every step at which an abandoned branch was waiting. The other steps they reached are finished, and their records already deleted their waiters. A payment at minute thirty-one does not wake `place-order`. The losing delay's wake time is not requested again.
+- **In-flight functions finish.** A `step.run` function that is already running is not interrupted. Its result is recorded but not used, and the combinator returns only after it is recorded. The delivery therefore acknowledges only after every write from an abandoned branch. The decision write also waits for every runtime call already in flight in the combinator's branches, including a `step.effect` call, so a slow effect call delays the decision, and with it the step after the combinator. Runtime calls in branches outside the combinator do not delay it. The branch is not resumed with the function's value or error, on the first run or on replay.
+
+  A race is therefore not a timeout for a `step.run`. In `step.race("call", [step.run("call-api", slowApi), step.delay("timeout", 5_000)])`, the delay suspends, but the delivery ends only when `call-api` has finished, and `call-api` then wins unless it throws. A delay can win only against a branch that suspends, such as one at a store, join or effect wait, or in a retry backoff.
+- **Nested combinators record nothing.** A `step.all` or `step.race` inside an abandoned branch records no decision. The keys its branches reached, and the keys they were waiting at, are listed with the outer decision. On replay, its branches stop where they stopped on the first run.
+- **Between steps.** The driver checks for abandonment between steps. Workflow code that an abandoned branch runs between two steps is not interrupted, but the step it reaches next is not started, and its key is not reserved. If the branch has reached a `step.all` or `step.race`, its branches still start, so their code runs up to their first step, on the first run and on replay.
 
 Cleanup that must follow a race belongs after the combinator, where the winner is known, as `release-stock` is in the example.
 
@@ -135,7 +167,7 @@ Cleanup that must follow a race belongs after the combinator, where the winner i
 
 Step keys inside branches are used as written; the combinator does not prefix them. Every key must be unique within the execution, across all branches and the combinator's own key, so a key repeated across two branches fails the execution, as a repeated key does outside a combinator.
 
-Replay reaches every key that a branch reached, including an abandoned branch. A step after a race that reuses such a key is therefore rejected on every delivery, not only on the first.
+The keys an abandoned branch reached before the decision stay reserved, because replay reaches them again. A step after a race that reuses such a key is therefore rejected on every delivery, not only on the first. A key the branch would reach only after the decision is not reserved, on the first run or on replay.
 
 ## Changing branches
 

@@ -98,13 +98,9 @@ export class ExecutionsDao {
   }
 
   /**
-   * Adds the workflow version and divergence columns. Rows from before them
-   * read as executions with no recorded version and no divergence.
-   *
-   * Every process that shares the file must run a version with replay
-   * stability support before a diverged execution is parked. A process on an
-   * earlier version does not read `divergence_*`, and would deliver a parked
-   * execution again when it next computes `next_claim_at`.
+   * Adds the workflow version and divergence columns if missing. Every
+   * process sharing the file must support divergence before a diverged
+   * execution is parked, or it delivers that execution again.
    */
   private setupReplayStability() {
     this.addMissingColumns([
@@ -117,9 +113,8 @@ export class ExecutionsDao {
   }
 
   /**
-   * Adds each column that does not exist yet. It runs under the write lock
-   * and checks again there, so processes that open the file together add
-   * each column once.
+   * Adds the columns that are missing, under the write lock so processes
+   * opening the file together add each one once.
    */
   private addMissingColumns(columns: readonly string[]) {
     const missing = () => {
@@ -140,14 +135,8 @@ export class ExecutionsDao {
   }
 
   /**
-   * Adds the cancellation columns and the index that finds an execution's
-   * children. The defaults make rows from before cancellation read as
-   * attached children with no request.
-   *
-   * Every process that shares the file must run a version with cancellation
-   * support before anything calls `cancel`. A process on an earlier version
-   * does not treat `cancelled` as terminal, cannot decode `step-cancelled`
-   * records or cancelled outcomes, and ignores cancellation requests.
+   * Adds the cancellation columns and child index if missing. Every process
+   * sharing the file must support cancellation before anything calls `cancel`.
    */
   private setupCancellation() {
     this.addMissingColumns([

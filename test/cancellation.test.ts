@@ -698,8 +698,6 @@ describe.each(runtimes)("cancellation on $name", ({ create }) => {
         cancelled("deadlock"),
         expect.objectContaining({ code: "JOINED_EXECUTION_CANCELLED", reason: "deadlock" }),
       ]);
-      expect(await runtime.joins.getWaiters("a")).toEqual([]);
-      expect(await runtime.joins.getWaiters("b")).toEqual([]);
     });
   });
 
@@ -736,7 +734,6 @@ describe.each(runtimes)("cancellation on $name", ({ create }) => {
 
       await cancel(TARGET, { reason: "stuck", force: true });
       expect(await deliver()).toMatchObject({ status: "failed" });
-      expect(await runtime.joins.getWaiters(TARGET)).toEqual([]);
       expect(caught).toEqual([
         expect.objectContaining({ code: "JOINED_EXECUTION_CANCELLED", reason: "stuck" }),
       ]);

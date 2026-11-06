@@ -74,7 +74,7 @@ Cancellation adds columns to two tables. `executions` gains `parent_detached` (`
 
 Replay stability adds columns to two tables. `executions` gains `workflow_version` and the divergence's `divergence_code`, `divergence_step_key`, `divergence_workflow_version` and `divergence_detected_at`; `divergence_code` is `NULL` when the execution has no divergence. `step_responses` gains `step_kind`. `SqliteRuntime` adds the columns when it opens a database created before them, under the write lock, so processes that open the file together add each column once. Existing executions read as having no recorded version and no divergence, and existing step records have no kind, so a delivery does not compare their kind on replay.
 
-A row in `join_waiters` can stay for good when no step result follows it: a stale holder registers after the step was recorded, or a deploy removes a join step that was still waiting. Its only effect is one extra delivery of the joiner when the target finishes, and `getWaiters` may list it. The runtime does not remove such rows.
+A row in `join_waiters` can stay for good when no step result follows it: a stale holder registers after the step was recorded, or a deploy removes a join step that was still waiting. Its only effect is one extra delivery of the joiner when the target finishes. The runtime does not remove such rows.
 
 Every process that shares one database must run a version with join support before any workflow uses `step.join` or `step.call`. A process on an earlier version acknowledges a terminal outcome without waking the join waiters on that execution, so their joiners wait until their deadline, or for good when they have none.
 

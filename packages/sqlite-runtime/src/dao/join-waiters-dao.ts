@@ -47,21 +47,6 @@ export class JoinWaitersDao {
       });
   }
 
-  getWaiters(targetExecutionId: string): JoinWaiter[] {
-    return this.db
-      .query<JoinWaiterRow>(
-        `SELECT target_execution_id, execution_id, step_key FROM join_waiters
-         WHERE target_execution_id = $targetExecutionId
-         ORDER BY execution_id, step_key`
-      )
-      .all({ $targetExecutionId: targetExecutionId })
-      .map((row) => ({
-        targetExecutionId: row.target_execution_id,
-        executionId: row.execution_id,
-        stepKey: row.step_key,
-      }));
-  }
-
   getWaitingExecutionIds(targetExecutionId: string): string[] {
     return this.db
       .query<JoinWaiterRow>(

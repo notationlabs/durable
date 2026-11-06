@@ -208,15 +208,10 @@ export function createHttpSdkFactory<W extends WorkflowRouter>() {
       },
 
       /**
-       * Records a cancellation request through the cancel route, and returns
-       * without waiting for the workflow to stop. Resolves with `requested`
-       * and the current view, with the terminal view when the execution is
-       * terminal (including after a forced cancel), and with `undefined` for
-       * an unknown ID.
-       * @throws {ExecutionCancelRequestError} before any request for an empty
-       * ID, or a `reason` or `force` of the wrong type
-       * @throws {HttpRouteError} for an error response other than `404`
-       * `EXECUTION_NOT_FOUND`
+       * Requests cancellation without waiting for the workflow to stop.
+       * Resolves `undefined` for an unknown ID.
+       * @throws {ExecutionCancelRequestError} for invalid arguments, before sending
+       * @throws {HttpRouteError} for any other error response
        */
       async cancel(
         executionId: string,

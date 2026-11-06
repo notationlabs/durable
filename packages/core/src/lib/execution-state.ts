@@ -634,22 +634,10 @@ export function prepareExecutionCancel(request: {
 }
 
 /**
- * Applies one cancellation request to an execution's state.
- *
- * - A terminal execution is unchanged, and the result is its outcome.
- * - A first request is recorded with its `reason` and `source`. A repeat
- *   keeps the first ones.
- * - A graceful request makes the execution due now. The redelivery delay
- *   still applies.
- * - A forced request records `cancelled`, clears every pending wake and ends
- *   any held lease by issuing a higher token, so the holder's next fenced
- *   write returns `lost`.
- *
- * `propagate` is true when the request changed the state in a way the
- * execution's non-detached children must also receive: a first request, or
- * a request that made it forced. `terminal` is true when it made the
- * execution terminal; adapters then delete the waiters it holds and wake its
- * join waiters in the same atomic write.
+ * Applies a cancellation request to an execution's state. `propagate` is true
+ * when non-detached children must also receive it. `terminal` is true when it
+ * force-cancelled the execution; adapters then delete its waiters and wake
+ * its join waiters in the same write.
  */
 export function requestExecutionCancellation(
   state: ExecutionState,
@@ -739,10 +727,8 @@ export function propagatedCancellation(state: ExecutionState): CancellationReque
 }
 
 /**
- * Whether a child that `caller` starts now must receive a cancellation
- * request at admission: the caller has a request that is not yet delivered
- * and the child is not detached. Children started by cleanup steps, after
- * delivery, receive none.
+ * The request a child receives at admission. Only a non-detached child of a
+ * caller with an undelivered request receives one.
  */
 export function cancellationForStartedChild(
   caller: ExecutionState,
