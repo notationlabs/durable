@@ -799,10 +799,15 @@ describe.each(runtimes)("replay stability on $name", ({ create }) => {
     test("two branches that call patched with the same ID both throw PATCH_IN_COMBINATOR, not a duplicate-key error", async () => {
       deploy({
         [WORKFLOW]: workflow(async function* (step) {
-          return yield* step.all(
+          const results = yield* step.all(
             "lookups",
             [step.patched("send-receipt"), step.patched("send-receipt")],
             { mode: "settle" }
+          );
+          return results.map((result) =>
+            result.status === "fulfilled"
+              ? result
+              : { status: result.status, error: { code: (result.error as WorkflowReplayError).code } }
           );
         }),
       });
