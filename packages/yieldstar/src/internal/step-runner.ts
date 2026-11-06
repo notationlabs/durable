@@ -1028,12 +1028,8 @@ function run(
     options = arg2 as StepRunOptions<StandardSchemaV1> | undefined;
   }
 
-  if (key) return durableStep(new StepKey(key, { kind: "run" }), fn, options?.schema);
-  return durableStep(
-    new StepKey(getCallSiteHash(run), { kind: "run", keyless: true }),
-    fn,
-    options?.schema
-  );
+  const stepKey = new StepKey(key || getCallSiteHash(run), { kind: "run", keyless: !key });
+  return durableStep(stepKey, fn, options?.schema);
 }
 
 type StepSchemaInput<S extends StandardSchemaV1> = Durable<
@@ -1058,12 +1054,8 @@ function createDelay(clock: () => number) {
       retryInterval = arg1;
     }
 
-    if (key) return delayStep(new StepKey(key, { kind: "delay" }), retryInterval, clock);
-    return delayStep(
-      new StepKey(getCallSiteHash(delay), { kind: "delay", keyless: true }),
-      retryInterval,
-      clock
-    );
+    const stepKey = new StepKey(key || getCallSiteHash(delay), { kind: "delay", keyless: !key });
+    return delayStep(stepKey, retryInterval, clock);
   }
 
   return delay;
@@ -1113,9 +1105,7 @@ function poll(
     predicate = arg2 as PollPredicate;
   }
 
-  const stepKey = key
-    ? new StepKey(key, { kind: "poll" })
-    : new StepKey(getCallSiteHash(poll), { kind: "poll", keyless: true });
+  const stepKey = new StepKey(key || getCallSiteHash(poll), { kind: "poll", keyless: !key });
 
   const task = async () => {
     if (!(await predicate())) {

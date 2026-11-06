@@ -160,15 +160,14 @@ function createWorkflowGenerator<
     StepResponse
   > {
     const { executionId } = deliveryEvent;
-    // Every step the history recorded before this delivery. It is not
-    // updated, since the records this delivery writes are for keys in
-    // `stepKeys`.
-    const recordedSteps = new Set(
+    // The steps the history recorded before this delivery that replay has
+    // not requested yet. A key is deleted once it is requested.
+    const unconsumedSteps = new Set(
       await infrastructure(() => heapClient.listStepKeys({ executionId }))
     );
     // An execution with history but no recorded version was first delivered
     // before versions were recorded, by code that declared none.
-    const workflowVersion = recordedVersion ?? (recordedSteps.size > 0 ? 1 : declaredVersion);
+    const workflowVersion = recordedVersion ?? (unconsumedSteps.size > 0 ? 1 : declaredVersion);
     const event: WorkflowEvent<Params, Context> = { ...deliveryEvent, workflowVersion };
     const stepRunner = createStepRunner({ event, clock });
     const workflowIterator = workflowFn(stepRunner, event, logger);
@@ -177,11 +176,9 @@ function createWorkflowGenerator<
       executions: executionClient,
       joins: joinClient,
     };
-    // The keys this delivery requested, shared by every branch, so a key
-    // repeated across branches is rejected. A recorded step counts as
-    // consumed once its key is in this set.
-    const stepKeys = new Set<string>();
-    // The kind each requested key was requested as, stored with its records.
+    // The keys this delivery requested, shared by every branch so a key
+    // repeated across branches is rejected, with the kind each was requested
+    // as, which is stored with its records. Every key written is requested.
     const stepKinds = new Map<string, string>();
     // The answer each patch ID gave in this delivery, so a second call with
     // the same ID gives the same answer.
@@ -210,19 +207,12 @@ function createWorkflowGenerator<
       return stopped(branch) || branch.settled;
     }
 
-    function firstUnconsumed(): string | undefined {
-      for (const stepKey of recordedSteps) {
-        if (!stepKeys.has(stepKey)) return stepKey;
-      }
-      return undefined;
-    }
-
     /**
      * Ends the delivery as diverged when a recorded step has not been
      * consumed. `stepKey` names the step that would have run, if any.
      */
     function assertConsumed(stepKey?: string) {
-      const unconsumed = firstUnconsumed();
+      const [unconsumed] = unconsumedSteps;
       if (unconsumed === undefined) return;
       throw diverge(
         "NONDETERMINISTIC_REPLAY",
@@ -242,12 +232,11 @@ function createWorkflowGenerator<
       deleteWaitersOf?: readonly string[];
     }) {
       stopIfAborted(signal);
-      const stepKind = stepKinds.get(params.stepKey);
       const written = await infrastructure(() =>
         heapClient.writeStep({
           lease,
           ...params,
-          ...(stepKind !== undefined ? { stepKind } : {}),
+          stepKind: stepKinds.get(params.stepKey)!,
           workflowVersion,
         })
       );
@@ -301,10 +290,7 @@ function createWorkflowGenerator<
           stepAttempt,
           stepResponseJson: cancelled.json,
         })),
-      ].map((step) => {
-        const stepKind = stepKinds.get(step.stepKey);
-        return stepKind !== undefined ? { ...step, stepKind } : step;
-      });
+      ].map((step) => ({ ...step, stepKind: stepKinds.get(step.stepKey)! }));
       // Set before the write, so no combinator settles another way meanwhile.
       // A failed write ends the delivery.
       for (const combinator of combinators) {
@@ -425,11 +411,11 @@ function createWorkflowGenerator<
           resumeWith = new StepResult(patches.get(stepKey));
           continue;
         }
-        if (stepKeys.has(stepKey)) {
+        if (stepKinds.has(stepKey)) {
           throw new Error("Each step in a loop must have a unique cache key.");
         }
-        stepKeys.add(stepKey);
-        if (requested.kind !== undefined) stepKinds.set(stepKey, requested.kind);
+        stepKinds.set(stepKey, requested.kind);
+        unconsumedSteps.delete(stepKey);
         branch.reach(stepKey);
         if (!isCombinator && branch.holds(stepKey)) return { status: "stopped" };
         // The first run resumed the branch past this step before the decision.
@@ -443,7 +429,7 @@ function createWorkflowGenerator<
         );
 
         const recordedKind = cached?.meta.kind;
-        if (recordedKind !== undefined && requested.kind !== undefined && recordedKind !== requested.kind) {
+        if (recordedKind !== undefined && recordedKind !== requested.kind) {
           throw diverge(
             "NONDETERMINISTIC_REPLAY",
             `Step "${stepKey}" is recorded as a ${recordedKind} step, but replay requested it as a ${requested.kind} step`,
@@ -455,7 +441,7 @@ function createWorkflowGenerator<
           // A marker is recorded only at the edge of the history, so the
           // check below is all a patch needs.
           let applies = cached !== null;
-          if (!cached && firstUnconsumed() === undefined) {
+          if (!cached && unconsumedSteps.size === 0) {
             await writeStep({
               stepKey,
               stepAttempt: 0,
@@ -992,8 +978,8 @@ function createWorkflowGenerator<
 
     async function recordWorkflowResult(value: unknown) {
       const stepKey = WORKFLOW_RESULT_STEP_KEY;
-      stepKeys.add(stepKey);
       stepKinds.set(stepKey, "result");
+      unconsumedSteps.delete(stepKey);
       assertConsumed();
       const cached = await infrastructure(() =>
         heapClient.readStep({ executionId, stepKey })
