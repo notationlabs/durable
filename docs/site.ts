@@ -101,21 +101,21 @@ export default {
       ],
     },
     {
-      label: "Packages",
-      slug: "packages",
+      label: "Reference",
+      slug: "reference",
       sections: [
         {
-          heading: "Reference",
+          heading: "Packages",
           icon: "terminal",
           links: [
-            { label: "@notation/durable", slug: "packages/durable" },
-            { label: "/runtime", slug: "packages/runtime" },
-            { label: "/http", slug: "packages/http" },
-            { label: "/sqlite", slug: "packages/sqlite" },
-            { label: "/worker", slug: "packages/worker" },
+            { label: "@notation/durable", slug: "reference/durable" },
+            { label: "/runtime", slug: "reference/runtime" },
+            { label: "/http", slug: "reference/http" },
+            { label: "/sqlite", slug: "reference/sqlite" },
+            { label: "/worker", slug: "reference/worker" },
             {
               label: "@notation/durable-conformance",
-              slug: "packages/conformance",
+              slug: "reference/conformance",
             },
           ],
         },
