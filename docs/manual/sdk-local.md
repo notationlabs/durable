@@ -1,249 +1,235 @@
 # Local SDK
 
-`createLocalSdk` builds a typed client that admits executions directly into a runtime in the same process, and reads them back from their execution records. It takes your `Router` type as a generic parameter, so TypeScript checks every `workflowId` and its corresponding `params` at compile time.
+The local SDK starts executions, reads their status and results, and cancels them. It reads and writes the runtime's records directly, so it works in any process that has access to the runtime, such as a web server that shares the SQLite file with the dispatcher.
 
-## Setup
+This page uses an API that exports a month of an account's data as a CSV file. The `export-report` workflow builds the file and returns its URL. The API starts an export, reports its progress, and lets the user cancel it:
 
-```ts
-import { ExecutionDispatcher, createLocalSdk } from "@notation/durable";
-import type { Router } from "./shared";
+```ts [src/api/exports.ts]
+import { sdk } from "../durable/client";
 
-const sdk = createLocalSdk<Router>(runtime, { invoker });
+export async function startExport(accountId: string, month: string) {
+  const { executionId } = await sdk.trigger({
+    workflowId: "export-report",
+    executionId: `export:${accountId}:${month}`,
+    idempotent: true,
+    params: { accountId, month },
+  });
 
-// The SDK never runs workflow code. A dispatcher must be running somewhere
-// against the same runtime to deliver what the SDK admits.
-new ExecutionDispatcher(runtime, { invoker, logger }).start();
-```
+  return executionId;
+}
 
-| Option         | Type              | Default | Description                                                                         |
-| -------------- | ----------------- | ------- | ----------------------------------------------------------------------------------- |
-| `invoker`      | `WorkflowInvoker` | –       | Optional. When the dispatcher runs in this process, lets `wait` and `triggerAndWait` read the record as soon as the dispatcher records an outcome, instead of at their next read. No result depends on it |
-| `pollInterval` | `number`          | `25`    | Milliseconds between reads of the execution record in `wait` and `triggerAndWait`. It must be a finite number greater than zero; any other value throws a `RangeError` |
+export async function getExport(executionId: string) {
+  const execution = await sdk.poll(executionId);
 
-## `sdk.trigger`
-
-Admits an execution and resolves with `{ executionId, status }` once admission commits. `status` is `"accepted"`, or `"existing"` for an [idempotent](#idempotent-trigger) repeat. Admission writes the [execution record](./workflows.md#execution-records) and makes it due immediately; `trigger` does not wait for a worker to start.
-
-```ts
-const { executionId } = await sdk.trigger({
-  workflowId: "process-order",
-  params: { orderId: "abc123" },
-});
-```
-
-`trigger` throws an `ExecutionAdmissionError` when admission is rejected:
-
-| `code`                           | Cause                                                                     |
-| -------------------------------- | ------------------------------------------------------------------------- |
-| `EXECUTION_ID_CONFLICT`          | The supplied `executionId` is already in use. IDs are never reused, even after the execution fails |
-| `EXECUTION_REQUEST_MISMATCH`     | An idempotent trigger's `executionId` is in use by a different request    |
-| `IDEMPOTENT_TRIGGER_REQUIRES_ID` | An idempotent trigger has no `executionId`                                |
-| `INVALID_EXECUTION_EVENT`        | `params` or `context` are not durable values (see below), or `idempotent` is not a boolean |
-
-```ts
-import { ExecutionAdmissionError } from "@notation/durable";
-
-try {
-  await sdk.trigger({ workflowId: "process-order", executionId: "order-abc123", params });
-} catch (err) {
-  if (err instanceof ExecutionAdmissionError && err.code === "EXECUTION_ID_CONFLICT") {
-    // order-abc123 was already admitted
+  if (!execution) {
+    return { status: "not-found" };
   }
+
+  if (execution.status === "completed") {
+    const { url } = execution.result as { url: string };
+    return { status: "ready", url };
+  }
+
+  return { status: execution.status };
+}
+
+export async function cancelExport(executionId: string) {
+  await sdk.cancel(executionId, { reason: "cancelled by user" });
 }
 ```
 
-## Idempotent trigger
+`sdk` is the SDK from the [Quick start](./quickstart.md), in `src/durable/client.ts`.
 
-Suppose a web server triggers `process-order` with the ID `order-42`, and the response is lost. The server retries with the same ID. Without idempotent mode, the retry throws `EXECUTION_ID_CONFLICT`. That error does not tell the server whether its first trigger was admitted, or whether a different request already owns `order-42`.
+## Creating the SDK
 
-Pass `idempotent: true` with your own `executionId` to make the retry safe:
+`createLocalSdk` takes the runtime, and the `Router` type as a type argument:
 
 ```ts
-const { executionId, status } = await sdk.trigger({
-  executionId: `order-${orderId}`,
-  idempotent: true,
-  workflowId: "process-order",
-  params: { orderId },
+const sdk = createLocalSdk<Router>(runtime, { invoker });
+```
+
+TypeScript uses `Router` to check each workflow ID, and the params that go with it.
+
+| Option | Default | Does |
+| --- | --- | --- |
+| `invoker` | None | Lets `wait` see an outcome as soon as the dispatcher in this process records it, instead of at its next read. Results are the same without it |
+| `pollInterval` | `25` | Milliseconds between reads of the record while `wait` waits. Must be greater than zero |
+
+**The SDK does not run workflow code.** It writes a new execution to the runtime and returns. A dispatcher that uses the same runtime, in this process or another one, delivers the execution to a worker. Without a running dispatcher, executions stay `admitted`.
+
+## Starting an execution
+
+`trigger` records a new execution and makes it due at once. It returns when the record is written, and does not wait for the workflow to start.
+
+| Field | Required | Holds |
+| --- | --- | --- |
+| `workflowId` | Yes | The workflow's ID in the router |
+| `params` | If the workflow declares params | The workflow's `event.params` |
+| `context` | No | Extra values, read in the workflow as the `event.context` map. See [Event](./workflows.md#event) |
+| `executionId` | No | The execution's ID. Without one, Durable creates a random UUID |
+| `idempotent` | No | Makes a repeat of the same trigger safe. See [Repeated triggers](#repeated-triggers) |
+
+`trigger` returns `{ executionId, status }`, where `status` is `"accepted"` for a new execution.
+
+Each delivery reads `params` and `context` from the record, so both must be [durable values](./step-values.md). A function or a class instance in either one makes `trigger` throw.
+
+## Execution IDs
+
+An execution ID can be chosen by the caller. The example uses `export:acct-1:2026-10`, so the same account and month always map to the same execution.
+
+**An execution ID is never used twice.** A second trigger with an ID that is in use throws `ExecutionAdmissionError` with the code `EXECUTION_ID_CONFLICT`, even if the first execution has ended.
+
+## Repeated triggers
+
+A user clicks "Export" twice, or the browser repeats a request after a dropped connection. The second call to `startExport` uses the same ID, so without `idempotent` it throws `EXECUTION_ID_CONFLICT`. That error does not say whether the first call started the export, or whether a different request owns the ID.
+
+With `idempotent: true`, `trigger` compares the new request with the execution that has the ID:
+
+| The execution with the ID | `trigger` |
+| --- | --- |
+| Does not exist | Records a new execution and returns `"accepted"` |
+| Has the same `workflowId` and `params` | Records nothing and returns `"existing"`, with the same ID |
+| Has a different `workflowId` or `params` | Throws `EXECUTION_REQUEST_MISMATCH`, and records nothing |
+
+So the second click returns `"existing"`, and `getExport` reports the same export.
+
+The comparison follows these rules:
+
+- The key order of objects in `params` does not matter.
+- Missing `params` and `{}` are different.
+- `context` is not compared, because it holds per-request data, such as the ID of the user who made the request.
+- The execution's status does not matter. A repeat after the export has completed also returns `"existing"`.
+
+`idempotent: true` requires an `executionId`. TypeScript reports a missing ID, and `trigger` throws `IDEMPOTENT_TRIGGER_REQUIRES_ID` for callers without the types.
+
+## Admission errors
+
+`trigger` throws `ExecutionAdmissionError` when it records nothing:
+
+| `code` | Cause |
+| --- | --- |
+| `EXECUTION_ID_CONFLICT` | The ID is in use, and the trigger is not idempotent |
+| `EXECUTION_REQUEST_MISMATCH` | The ID is in use by a different request, and the trigger is idempotent |
+| `IDEMPOTENT_TRIGGER_REQUIRES_ID` | The trigger is idempotent and has no `executionId` |
+| `INVALID_EXECUTION_EVENT` | `params` or `context` are not durable values, or `idempotent` is not a boolean |
+
+## Reading an execution
+
+`poll` reads an execution's record once, and returns a view of it, or `undefined` if no execution has the ID. `getExport` uses it to report progress.
+
+Every view has these fields:
+
+| Field | Holds |
+| --- | --- |
+| `executionId` | The execution's ID |
+| `workflowId` | The workflow's ID |
+| `status` | The [execution status](./steps.md#execution-status) |
+| `admittedAt`, `updatedAt` | When the execution was recorded and last changed, from the clock of the process that wrote them |
+| `parent` | For a child workflow, the parent's execution ID and step key, and whether the child is detached |
+| `cancellation` | The [cancellation request](./cancellation.md#requesting-cancellation), if there is one |
+
+A view of an execution that has ended also has its outcome:
+
+| `status` | Extra fields |
+| --- | --- |
+| `completed` | `result`, the workflow's return value |
+| `failed` | `error`, the error the workflow threw |
+| `cancelled` | `reason` and `source`, from the cancellation |
+
+**`result` has the type `unknown`.** A view is not tied to one workflow, so TypeScript does not know the result's type. `getExport` asserts the type of the result. A view leaves out `params` and `context`.
+
+## Waiting for an outcome
+
+`wait` waits until the execution has ended, and returns its view:
+
+```ts
+const execution = await sdk.wait(executionId, { timeout: 30_000 });
+```
+
+| The execution | `wait` returns |
+| --- | --- |
+| Ends before the timeout | Its view, with `status` `completed`, `failed` or `cancelled` |
+| Has not ended when the timeout passes | `{ status: "timed-out", execution }`, where `execution` is the current view |
+| Does not exist | `undefined`, at once |
+
+`wait` reads the record first, so an execution that has already ended returns at once. Without a `timeout`, `wait` waits until the execution ends. A `signal` option takes an `AbortSignal`, and `wait` rejects with the signal's reason when it aborts.
+
+`wait` reads the record, not a message from the worker, so it sees an outcome that another process recorded, and it works across a restart.
+
+## Starting and waiting in one call
+
+`triggerAndWait` calls `trigger`, waits without a timeout, and returns the workflow's return value:
+
+```ts
+const { url } = await sdk.triggerAndWait({
+  workflowId: "export-report",
+  params: { accountId: "acct-1", month: "2026-10" },
 });
 ```
 
-When the ID is not in use, the trigger is admitted as usual and returns `"accepted"`. When the ID is in use, the runtime compares the request with the record:
+Unlike a view's `result`, the return value has the workflow's result type.
 
-- If `workflowId` and `params` match, the trigger admits nothing and returns `"existing"` with the same `executionId`. This is true whatever the execution's status, including `completed`, `failed` and `cancelled`, and also when the first trigger was not idempotent.
-- If either differs, the trigger throws `EXECUTION_REQUEST_MISMATCH`, and the record is unchanged.
+| The execution | `triggerAndWait` |
+| --- | --- |
+| Completes | Returns the workflow's return value |
+| Fails | Throws the workflow's error, as recorded. See [What the record keeps](./errors.md#what-the-record-keeps) |
+| Is cancelled | Throws `WorkflowCancelledError`, with the cancellation's `reason` and `source` |
 
-`params` match when their canonical durable value encodings are equal. The encoding sorts the keys of plain objects, so their key order does not matter. Missing `params` and `{}` do not match. `context` is not compared, because it carries per-request data such as an authentication token. Of two idempotent triggers with the same request that run at the same time, one returns `"accepted"` and the other `"existing"`.
+## Listing executions
 
-So the retry for `order-42` returns `"existing"`, and the server can call [`wait`](#sdkwait) on `order-42`. A trigger that reuses `order-42` with a different amount throws `EXECUTION_REQUEST_MISMATCH`, and the caller knows to choose a new ID.
-
-Without `idempotent`, a used ID still throws `EXECUTION_ID_CONFLICT`.
-
-`TriggerEvent` requires `executionId` when `idempotent` is `true`, so leaving it out is a type error. Admission still checks it, so an untyped caller, such as an HTTP client, gets `IDEMPOTENT_TRIGGER_REQUIRES_ID`.
-
-## `sdk.triggerAndWait`
-
-`trigger` followed by `wait` without a timeout. It returns the workflow's return value.
+`list` returns executions one page at a time, most recently recorded first. An admin page that shows every export uses it like this:
 
 ```ts
-const result = await sdk.triggerAndWait({
-  workflowId: "process-order",
-  params: { orderId: "abc123" },
-});
-```
+let page = await sdk.list({ workflowId: "export-report", limit: 100 });
 
-The promise settles from the execution record, not from an in-memory event, so it settles even if another process ran the execution or the worker restarted. It does not need an `invoker`. If the record is `failed`, the promise rejects with the recorded error. The error keeps its `name`, `message`, `stack`, a string `code`, its `cause` and its durable fields, and it is revived as its class when that class is registered with `registerErrorClass` (see [Errors in step records](./steps.md#errors-in-step-records)). If the record is `cancelled`, the promise rejects with a `WorkflowCancelledError` that carries the outcome's `reason` and `source`.
-
-## `sdk.poll`
-
-Returns the current [view](#execution-views) of an execution, or `undefined` if no record has that ID.
-
-```ts
-const execution = await sdk.poll("order-abc123");
-if (execution?.status === "running") {
-  // a worker holds a lease on it
-}
-```
-
-## `sdk.wait`
-
-Reads the execution record, and then waits for it to reach `completed`, `failed` or `cancelled`. It resolves with the terminal view.
-
-```ts
-const execution = await sdk.wait("order-abc123", { timeout: 30_000 });
-
-if (!execution) {
-  // no record has this ID
-} else if (execution.status === "timed-out") {
-  // execution.execution is the current view, for example "suspended"
-} else if (execution.status === "failed") {
-  throw execution.error;
-} else if (execution.status === "cancelled") {
-  // execution.reason and execution.source are the cancellation's
-} else {
-  return execution.result;
-}
-```
-
-- `wait` reads the record before it waits, so an outcome recorded before the call is returned at once.
-- It returns an outcome recorded by any process that shares the runtime's backend, and across a restart.
-- When `timeout` (in milliseconds) passes first, it resolves with `{ status: "timed-out", execution }`, where `execution` is the current view. It does not throw.
-- Without a `timeout`, it waits until the execution is terminal.
-- For an unknown ID it resolves with `undefined` at once. It does not wait for a later admission.
-- When `signal` (an `AbortSignal`) aborts, it stops reading the record and rejects with the signal's reason.
-- A negative `timeout` throws a `RangeError`.
-
-A failed execution returns the same error, with the same `name` and `message`, every time it is read.
-
-## `sdk.list`
-
-Pages through executions, newest first.
-
-```ts
-let page = await sdk.list({ workflowId: "process-order", status: "failed", limit: 100 });
 while (true) {
-  for (const execution of page.executions) console.log(execution.executionId);
+  for (const execution of page.executions) {
+    console.log(execution.executionId, execution.status);
+  }
+
   if (!page.cursor) break;
-  page = await sdk.list({ workflowId: "process-order", status: "failed", cursor: page.cursor });
+
+  page = await sdk.list({ workflowId: "export-report", limit: 100, cursor: page.cursor });
 }
 ```
 
-| Field        | Type              | Description                                                                   |
-| ------------ | ----------------- | ----------------------------------------------------------------------------- |
-| `workflowId` | `string`          | Optional. Only executions of this workflow                                    |
-| `status`     | `ExecutionStatus` | Optional. Only executions with this status                                   |
-| `cursor`     | `string`          | Optional. The `cursor` of the previous page                                   |
-| `limit`      | `number`          | Optional. Executions per page. Defaults to `50`; values above `1000` are lowered to `1000` |
+| Field | Does |
+| --- | --- |
+| `workflowId` | Returns only executions of this workflow |
+| `status` | Returns only executions with this status |
+| `limit` | Sets the number of executions per page. The default is `50`, and the most is `1000` |
+| `cursor` | Continues from the page that returned it. Pass it with the same filters |
 
-The result is `{ executions, cursor? }`. `cursor` is present when more executions may follow. It is opaque: pass it back unchanged with the same filters.
+Each page has a `cursor` if more executions may follow. The list includes child workflows.
 
-The order is the order in which the backend admitted the executions, not `admittedAt`. The backend gives each execution an admission sequence number when it admits it, so the order holds across processes, whatever their clocks. The list includes executions started by [`step.start`](./steps.md#stepstart).
+The list is ordered by when the runtime recorded each execution, not by `admittedAt`, so the order holds across processes whose clocks differ. While a caller pages through the list, these rules hold:
 
-- Paging never returns an execution twice.
-- Every matching execution admitted before the first page appears once. Executions admitted after the first page do not appear on later pages.
-- `status` is compared with the status at the runtime clock's current time, so `running` matches executions with a live lease. An execution whose status changes while you page through a `status` filter may appear or disappear on later pages.
+- No execution appears twice.
+- Every execution that matched when the first page was read appears once.
+- Executions recorded after the first page was read do not appear.
+- An execution whose status changes can appear or disappear on later pages, if the list filters by `status`.
 
-`list` throws `ExecutionListRequestError` (`code: "INVALID_LIST_REQUEST"`) for a `workflowId` that is not a string, a `limit` that is not a positive integer, an unknown `status`, or a malformed `cursor`.
+`list` throws `ExecutionListRequestError` for a `limit` that is not a positive integer, an unknown `status`, or a cursor that `list` did not return.
 
-## `sdk.cancel`
+## Cancelling
 
-Records a [cancellation](./cancellation.md) request and returns without waiting for the workflow to stop.
+`cancel` records a cancellation request, and returns without waiting for the workflow to stop. `cancelExport` uses it with a reason:
 
 ```ts
-const result = await sdk.cancel("order-42", { reason: "abandoned" });
+await sdk.cancel(executionId, { reason: "cancelled by user" });
+```
 
-if (!result) {
-  // no record has this ID
-} else if (result.status === "requested") {
-  // result.execution is the current view, with result.execution.cancellation set
-} else {
-  // the execution is terminal: result is its terminal view
+It returns `undefined` if no execution has the ID. See [Cancellation](./cancellation.md) for what the workflow does with the request, the `force` option and the other return values.
+
+## Code for either SDK
+
+The [HTTP SDK](./sdk-http.md) has the same `poll`, `wait`, `list` and `cancel` methods. `@notation/durable` exports their types as `ExecutionObserver`, for `poll`, `wait` and `list`, and `ExecutionControl`, for `cancel`. A function that takes an `ExecutionObserver` works with either SDK:
+
+```ts
+import type { ExecutionObserver } from "@notation/durable";
+
+export async function recentFailedExports(observer: ExecutionObserver) {
+  const page = await observer.list({ workflowId: "export-report", status: "failed", limit: 20 });
+  return page.executions;
 }
 ```
-
-| Option   | Type      | Default | Description                                                              |
-| -------- | --------- | ------- | ------------------------------------------------------------------------ |
-| `reason` | `string`  | –       | Optional. Recorded with the request and carried by `WorkflowCancelledError` |
-| `force`  | `boolean` | `false` | Records `cancelled` at once, without running workflow code (see [Forced cancellation](./cancellation.md#forced-cancellation)) |
-
-`cancel` resolves with a `CancelResult`, or `undefined` for an unknown ID:
-
-```ts
-type CancelResult =
-  | { status: "requested"; execution: ActiveExecutionView }
-  | TerminalExecutionView;
-```
-
-- A graceful request on an active execution resolves with `requested` and the view read after the request was recorded.
-- A forced request resolves with the `cancelled` view.
-- An execution that is already terminal is not changed, and `cancel` resolves with its view. This includes an execution that reached a terminal status between recording the request and reading the view.
-
-`cancel` throws `ExecutionCancelRequestError`, a `TypeError`, for an empty execution ID, a `reason` that is not a string, or a `force` that is not a boolean. It records nothing in that case.
-
-## Execution views
-
-`poll`, `wait` and `list` return views of the execution record:
-
-```ts
-// Not exported: the fields every view has.
-type ExecutionViewBase = {
-  executionId: string;
-  workflowId: string;
-  admittedAt: number;
-  updatedAt: number;
-  parent?: { executionId: string; stepKey: string; detached: boolean };
-  cancellation?: ExecutionCancellation;
-};
-
-type ActiveExecutionView = ExecutionViewBase & {
-  status: "admitted" | "running" | "suspended";
-};
-
-type TerminalExecutionView =
-  | (ExecutionViewBase & { status: "completed"; result: unknown })
-  | (ExecutionViewBase & { status: "failed"; error: Error })
-  | (ExecutionViewBase & { status: "cancelled"; reason?: string; source?: string });
-
-type ExecutionView = ActiveExecutionView | TerminalExecutionView;
-
-type WaitResult =
-  | TerminalExecutionView
-  | { status: "timed-out"; execution: ActiveExecutionView };
-
-type ExecutionViewPage = { executions: ExecutionView[]; cursor?: string };
-```
-
-`parent` is present on executions started by [`step.start`](./steps.md#stepstart) or [`step.call`](./steps.md#stepcall), and names the caller's execution ID and step key, and whether the child was started detached. `cancellation` is present once a cancellation request is recorded (see [Requesting cancellation](./cancellation.md#requesting-cancellation)). A view leaves out `params`, `context`, lease and wake state and `unacknowledgedDeliveryCount`. Operators can read those with `runtime.executions.get`. `admittedAt` and `updatedAt` come from the clock of the process that wrote them, so use them for display only.
-
-Both the local SDK and the [HTTP SDK](./sdk-http.md) implement the `ExecutionObserver` interface (`poll`, `wait` and `list`) and the `ExecutionControl` interface (`cancel`), which `@notation/durable` exports with these types. Code that only reads executions can take an `ExecutionObserver` and work with either SDK.
-
-## Trigger event shape
-
-| Field         | Type                  | Required                 | Description                                                  |
-| ------------- | --------------------- | ------------------------ | ------------------------------------------------------------ |
-| `workflowId`  | `string`              | Yes                      | ID matching a key in the router                              |
-| `params`      | `Record<string, any>` | Depends on workflow type | Input data accessible via `event.params` inside the workflow |
-| `executionId` | `string`              | No                       | Custom execution ID. The runtime chooses one if omitted      |
-| `context`     | `Record<string, any>` | No                       | Becomes the read-only `event.context` map                    |
-| `idempotent`  | `boolean`             | No                       | Makes a repeat of the same request return `"existing"`. Requires `executionId` |
-
-Every delivery reads `params` and `context` back from the record exactly as they were admitted, so both must be durable values (see [Step values](./steps.md#step-values)). Admission rejects functions, class instances, `NaN` and `Infinity`, invalid `Date`s, sparse arrays and circular references with `INVALID_EXECUTION_EVENT`. `undefined` properties, errors, `Date`s, `Map`s, `Set`s and `bigint`s are accepted and read back as the same type. `workflow` rejects params types that are not durable at compile time, so `trigger` only accepts durable params for workflows that declare them; params typed `any`, the default for a workflow that does not, are checked only at admission.
