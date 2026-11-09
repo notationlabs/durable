@@ -1,8 +1,8 @@
 import type { DocsSite } from "@notation/docs";
 
 export default {
-  slug: "engine",
-  label: "Durable Engine",
+  slug: "durable",
+  label: "Durable",
   root: new URL(".", import.meta.url),
   version: { packageJson: "package.json" },
   categories: [
