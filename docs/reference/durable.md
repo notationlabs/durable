@@ -1,253 +1,127 @@
 # @notation/durable
 
-The package root. It exports the workflow definition API, router factory, error classes, and both SDK clients.
-
-## Install
+The package root exports what an application needs to define workflows and stores, run them, and start executions.
 
 ```sh
 @pm.add("@notation/durable")
 ```
 
-## Exports
-
-```ts
-import { workflow, createWorkflow } from "@notation/durable";
-import { createWorkflowRouter } from "@notation/durable";
-import { RetryableError, ExecutionAdmissionError, WorkflowStartError, WorkflowJoinError } from "@notation/durable";
-import { ExecutionListRequestError, HttpRouteError } from "@notation/durable";
-import { WorkflowCancelledError, ExecutionCancelRequestError } from "@notation/durable";
-import { WorkflowRaceError } from "@notation/durable";
-import { WorkflowValueError, registerErrorClass, WORKFLOW_RESULT_STEP_KEY } from "@notation/durable";
-import { WorkflowEffectError, EffectDeliveryError, EffectClientInvariantError } from "@notation/durable";
-import { defineStore } from "@notation/durable";
-import { createLocalSdk } from "@notation/durable";
-import { createHttpSdkFactory } from "@notation/durable";
-import type {
-  WorkflowFn,
-  StepRunner,
-  StepRunOptions,
-  StartOptions,
-  DurableStepFn,
-  WorkflowStore,
-  TimedWhenResult,
-  TimedJoinResult,
-  Branch,
-  BranchResults,
-  SettledResult,
-  SettledResults,
-  RaceResult,
-  AllOptions,
-  ExecutionRecord,
-  ExecutionStatus,
-  ExecutionParent,
-  ExecutionCancellation,
-  ExecutionAdmissionErrorCode,
-  TriggerAck,
-  ExecutionObserver,
-  ExecutionView,
-  ActiveExecutionView,
-  TerminalExecutionView,
-  WaitResult,
-  ExecutionWaitOptions,
-  ExecutionListRequest,
-  ExecutionViewPage,
-  ExecutionControl,
-  CancelOptions,
-  CancelResult,
-  Durable,
-  DurableObject,
-  DurableValue,
-  ErrorClass,
-  WorkflowValueErrorCode,
-  WorkflowStartErrorCode,
-  WorkflowJoinErrorCode,
-  EffectDescriptor,
-  EffectLookup,
-  EffectRecord,
-  WorkflowEffectErrorCode,
-  EffectDeliveryErrorCode,
-} from "@notation/durable";
-```
-
-## `workflow(fn)` / `createWorkflow(fn)`
-
-Defines a workflow. Returns a `WorkflowGenerator`. `Params` and `Result` are checked with `Durable<T>` (see [Step values](../manual/steps.md#step-values)), so a workflow whose params or result type holds a function is a type error. A generic `Result` cannot be checked, so a function that wraps `workflow` must give it a concrete result type.
-
-```ts
-const w = workflow<Params, Result>(async function* (step, event, logger) {
-  return yield* step.run(() => compute());
-});
-```
-
-| Type parameter | Constraint                    | Description                                  |
-| -------------- | ----------------------------- | -------------------------------------------- |
-| `Params`       | `Record<string, any> \| void` | Shape of `event.params`; must be durable     |
-| `Result`       | any                           | Return type of the workflow; must be durable |
-| `Context`      | `ReadonlyMap<any, any>`       | Shape of `event.context` (set by middleware) |
-
-## `createWorkflowRouter(workflows)`
-
-Registers workflows with string IDs. Returns the same object, typed for SDK consumption.
-
-```ts
-const router = createWorkflowRouter({
-  order: orderWorkflow,
-  reminder: reminderWorkflow,
-});
-export type Router = typeof router;
-```
-
-## `RetryableError`
-
-Thrown inside `step.run` to trigger structured retries. It is registered by default, so replay rethrows a `RetryableError`.
-
-```ts
-throw new RetryableError(message, { maxAttempts, retryInterval });
-```
-
-| Property        | Type     | Description                        |
-| --------------- | -------- | ---------------------------------- |
-| `maxAttempts`   | `number` | Total attempts including the first |
-| `retryInterval` | `number` | Milliseconds between attempts      |
-
-## `ExecutionAdmissionError`
-
-Thrown by both SDKs' `trigger` when admission is rejected. `err.code` is one of:
-
-| `code`                           | Cause                                                                     |
-| -------------------------------- | ------------------------------------------------------------------------- |
-| `EXECUTION_ID_CONFLICT`          | The `executionId` is already in use                                       |
-| `EXECUTION_REQUEST_MISMATCH`     | An idempotent trigger's `executionId` is in use with a different `workflowId` or `params` |
-| `IDEMPOTENT_TRIGGER_REQUIRES_ID` | An idempotent trigger has no `executionId`                                |
-| `INVALID_EXECUTION_EVENT`        | `params` or `context` are not durable values, or `idempotent` is not a boolean |
-
-See [Idempotent trigger](../manual/sdk-local.md#idempotent-trigger).
-
-## `ExecutionListRequestError`
-
-Thrown by both SDKs' `list`, and by `ExecutionClient.list`, for a `workflowId` that is not a string, a `limit` that is not a positive integer, an unknown `status`, or a malformed `cursor`. `err.code` is `"INVALID_LIST_REQUEST"`.
-
-## `ExecutionCancelRequestError`
-
-Thrown by both SDKs' `cancel`, before anything is recorded or sent, for an empty execution ID, a `reason` that is not a string, or a `force` that is not a boolean. It extends `TypeError`.
-
-## `HttpRouteError`
-
-Thrown by the HTTP SDK for an error response that has no more specific error, such as an observation middleware denial or an `EXECUTION_NOT_FOUND` from `waitForResult`. `err.status` is the response status, and `err.code` is the response's `code` when the body has one.
-
-## `WorkflowStartError`
-
-Thrown to workflow code by `step.start` when the runtime rejects the start. `err.code` is `"INVALID_START_PARAMETERS"` (`params` are not a durable value, or `workflowId` is empty) or `"START_REQUEST_MISMATCH"` (the step already started a different workflow, different `params` or a different `detached` option). See [`step.start`](../manual/steps.md#stepstart).
-
-## `WorkflowJoinError`
-
-Thrown to workflow code by `step.join` and `step.call`. `err.code` is `"JOINED_EXECUTION_FAILED"` (the target failed, and `err.cause` is its recorded error), `"JOINED_EXECUTION_CANCELLED"` (the target was cancelled, and `err.reason` and `err.source` are its outcome's), `"JOIN_TARGET_NOT_FOUND"` (no execution has the target ID) or `"JOIN_SELF"` (the target is the calling execution). `err.executionId` is the target's ID. It is recorded as the step's error, so replay throws the same class, code and `executionId`. See [`step.join`](../manual/steps.md#stepjoin).
-
-## `WorkflowCancelledError`
-
-Thrown into workflow code at the first unfinished step once a cancellation request is delivered. `err.reason` is the request's reason, and `err.source` is the execution where the cancellation began, when it was propagated from a parent. The throw is recorded as the step's result, so replay throws the same error at the same step. A workflow that lets it escape ends `cancelled`; one that catches it and returns ends `completed`. `triggerAndWait` and `waitForResult` also throw it for a cancelled execution. It is registered by default. See [Cancellation](../manual/cancellation.md).
-
-## `WorkflowRaceError`
-
-Thrown by `step.race` when every branch fails, and by an empty race. `code` is `ALL_BRANCHES_FAILED`, and `errors` holds each branch's error in branch order. `errors` is typed `unknown[]`, because a branch can throw a value that is not an `Error`. `errors` is a non-enumerable array, as on `AggregateError`, so a `failed` outcome keeps it – see [Concurrent Steps](../manual/concurrent-steps.md#steprace).
-
-## `WorkflowEffectError`
-
-Thrown to workflow code by `step.effect`. `err.code` is `"INVALID_EFFECT_REQUEST"` (the `effectId`, `operation`, `input`, `retryIn`, `maxAttempts`, `lookup`, `perform` or `failsOn` is invalid), `"EFFECT_REQUEST_MISMATCH"` (the effect already exists with a different `operation` or `input`) or `"EFFECT_OUTCOME_UNKNOWN"` (the outcome is still unknown after `maxAttempts` attempts). It is recorded as the step's error, so replay throws the same class and code. See [`step.effect`](../manual/steps.md#stepeffect).
-
-## `EffectDeliveryError`
-
-The `cause` of the `InfrastructureError` with which `step.effect` ends a delivery without recording its step. It never reaches workflow code. `err.code` is `"EFFECT_CLIENT_UNAVAILABLE"`, `"EFFECT_HANDLER_INVALID"` or `"EFFECT_RUNTIME_INVARIANT"`, and `err.effectId` and `err.stepKey` name the effect and step. See [Effect errors](../manual/steps.md#effect-errors).
-
-## `WorkflowValueError`
-
-Thrown to workflow code when a step's value cannot be recorded unchanged. `err.code` is `"INVALID_STEP_VALUE"` (a step result, store state or workflow result is not a durable value) or `"STEP_SCHEMA_INVALID"` (a step's `schema` rejected its value), and `err.stepKey` names the step; it is `WORKFLOW_RESULT_STEP_KEY` (`"$$workflow-result$$"`) for an invalid workflow result. See [Step values](../manual/steps.md#step-values).
-
-## `registerErrorClass(name, errorClass)`
-
-Registers the class that recorded errors named `name` are revived as, in this process. See [Errors in step records](../manual/steps.md#errors-in-step-records).
-
-## `createLocalSdk<Router>(runtime, { invoker?, pollInterval? })`
-
-Creates a local SDK client that admits executions into `runtime` and reads them back with `poll`, `wait` and `list`, and cancels them with `cancel`. It implements `ExecutionObserver` and `ExecutionControl`. See [Local SDK](../manual/sdk-local.md).
-
-## `createHttpSdkFactory<Router>()`
-
-Returns a factory for HTTP SDK clients. Each client implements `ExecutionObserver` and `ExecutionControl`. See [HTTP SDK](../manual/sdk-http.md).
-
-## `defineStore(name, schema, { initial })`
-
-Defines a durable store type from a name, any Standard Schema whose output type is durable (`DurableStoreSchema<Schema>`), and `initial`, a required synchronous function that returns the state of a new store from its `id`. Every operation on a missing store creates it from `initial(id)`. See [Durable Stores](../manual/stores.md#creating-a-store).
-
-```ts
-const ConversationStore = defineStore("conversation", schema, {
-  initial: (conversationId) => ({ messages: [], status: "idle" }),
-});
-```
-
-## Step runner
-
-Available on the first argument of a workflow function:
-
-```ts
-yield* step.run(fn);
-yield* step.run("key", fn);
-yield* step.run("key", fn, { schema });
-
-yield* step.delay(ms);
-yield* step.delay("key", ms);
-
-yield* step.poll(opts, predicate);
-yield* step.poll("key", opts, predicate);
-
-const store = step.store(definition, { id }); // no yield*
-
-yield* step.start("key", { workflowId, params });
-yield* step.start("key", { workflowId, params }, { detached: true });
-
-yield* step.join<R>("key", executionId);
-yield* step.join<R>("key", executionId, { deadline });
-
-yield* step.call<typeof childWorkflow>("key", { workflowId, params });
-yield* step.call<typeof childWorkflow>("key", { workflowId, params }, { deadline });
-yield* step.call<typeof childWorkflow>("key", { workflowId, params }, { detached: true, deadline });
-
-yield* step.effect("key", { effectId, operation, input, lookup, perform, retryIn, failsOn, maxAttempts });
-
-yield* step.all("key", branches);
-yield* step.all("key", branches, { concurrency, mode: "fail-fast" });
-yield* step.all("key", branches, { concurrency, mode: "settle" });
-
-yield* step.race("key", branches);
-```
-
-`step.store` returns a `WorkflowStore` handle synchronously and records no step, so a loop or helper can request the same store again. `id` defaults to `event.executionId`. The handle has the readonly properties `definition`, `id` and `key`, and the durable operations `get`, `select`, `update`, `updateFrom`, `deleteFrom`, `when` and `take`, each of which creates a missing store from the definition's `initial` – see [Durable Stores](../manual/stores.md) and [Waiting on State](../manual/store-waiting.md). Helpers that take the step runner can type it as `StepRunner`.
-
-`when(key, selector, { deadline })` waits for the selector to match or for `deadline`, whichever is recorded first, and returns a `TimedWhenResult<R>`: `{ status: "matched", value }` or `{ status: "timed-out" }`. `deadline` is required in this form, so an optional deadline needs a separate call to the untimed form – see [Waiting with a deadline](../manual/store-waiting.md#waiting-with-a-deadline).
-
-`step.start` starts another workflow as its own execution, once per step key, and returns `{ executionId }` – see [Steps](../manual/steps.md#stepstart). Its `StartOptions` has `detached`, which records the target's parent link as detached so that the target receives no cancellation propagated from the caller – see [Detached children](../manual/cancellation.md#detached-children). `step.call` takes `detached` in the same options object as `deadline`.
-
-`step.join` waits until the execution `executionId` is terminal and returns its result, or throws a `WorkflowJoinError` – see [Steps](../manual/steps.md#stepjoin). `step.call` starts a child as `step.start` does and joins it, under one step key; its type parameter checks `params` and types the result – see [Steps](../manual/steps.md#stepcall). `step.join`'s `R` defaults to `DurableValue`. `step.call` without a type parameter accepts no `params` and returns a `DurableValue`. With `{ deadline }`, both return a `TimedJoinResult<R>`: `{ status: "completed", result }` or `{ status: "timed-out" }`.
-
-`step.all` and `step.race` drive their branches concurrently and record their decision under their key – see [Concurrent Steps](../manual/concurrent-steps.md). A branch is any step generator, typed `Branch<T>` (`AsyncGenerator<StepResponse, T, any>`). `step.all` returns `BranchResults<B>`, a tuple of the branches' results, or with `mode: "settle"` a `SettledResults<B>` of `{ status: "fulfilled", value }` and `{ status: "rejected", error }`, where `error` is `unknown`. `step.race` returns a `RaceResult<B>`, `{ index, value }`, which narrows `value` by `index`. For branches in an array that is not a tuple, such as one built with `map`, `index` is a `number`. `AllOptions` has `concurrency`, a positive integer, and `mode`. When `mode` is typed `"fail-fast" | "settle"`, `step.all` returns the union of both result types. `step.delay` and `step.poll` are typed `AsyncGenerator<StepResponse, void, any>`, so they can be branches.
-
-`step.effect` calls an external system under a stable `effectId`, looking up an uncertain earlier attempt before performing it again, and returns the operation's result – see [Steps](../manual/steps.md#stepeffect). Its descriptor is typed `EffectDescriptor<T, Input>`, and `lookup` resolves with an `EffectLookup<T>`:
-
-```ts
-type EffectDescriptor<T, Input = DurableObject> = {
-  effectId: string;
-  operation: string;
-  input: Input; // checked with Durable<Input>
-  retryIn: number;
-  maxAttempts?: number;
-  lookup(effectId: string): Promise<EffectLookup<T>>;
-  perform(effectId: string): Promise<T>; // T is checked with Durable<T>
-  failsOn?(error: unknown): boolean;
-};
-
-type EffectLookup<T> =
-  | { status: "settled"; result: T }
-  | { status: "failed"; error: Error }
-  | { status: "not-found" }
-  | { status: "unknown" };
-```
+The package also has these entry points:
+
+| Entry point | Exports |
+| --- | --- |
+| [`@notation/durable/client`](./client.md) | The HTTP SDK, without Node modules |
+| [`@notation/durable/worker`](./worker.md) | The worker process and the invoker that starts it |
+| [`@notation/durable/sqlite`](./sqlite.md) | The SQLite runtime |
+| [`@notation/durable/http`](./http.md) | The HTTP routes |
+| [`@notation/durable/testing`](./testing.md) | The test SDK and the in-memory runtime |
+| [`@notation/durable/runtime`](./runtime.md) | The contracts and helpers for runtime authors |
+
+## Workflows
+
+| Export | Does | Page |
+| --- | --- | --- |
+| `workflow<Params, Result>(fn)` | Defines a workflow from an async generator function | [Defining workflows](../manual/workflows.md) |
+| `createWorkflow` | The same function as `workflow` | |
+| `createWorkflowRouter(workflows)` | Gives each workflow its ID, and returns the object unchanged | [Router](../manual/workflows.md#router) |
+| `defineStore(name, schema, { initial })` | Defines a kind of store | [Stores](../manual/stores.md) |
+
+## Steps
+
+A workflow function receives the step runner, typed `StepRunner`, as its first argument:
+
+| Member | Does | Page |
+| --- | --- | --- |
+| `step.run(key?, fn, options?)` | Runs a function once, and records its result | [Steps](../manual/steps.md#steprun) |
+| `step.delay(key?, ms)` | Waits | [Steps](../manual/steps.md#stepdelay) |
+| `step.poll(key?, options, predicate)` | Checks a condition until it is true | [Steps](../manual/steps.md#steppoll) |
+| `step.store(definition, { id? })` | Returns a handle on a store. Records no step | [Stores](../manual/stores.md) |
+| `step.start(key, target, options?)` | Starts another execution | [Child workflows](../manual/child-workflows.md#stepstart-and-stepjoin) |
+| `step.join(key, executionId, options?)` | Waits for another execution to end | [Child workflows](../manual/child-workflows.md#stepstart-and-stepjoin) |
+| `step.call(key, target, options?)` | Starts a child execution and waits for it | [Child workflows](../manual/child-workflows.md#stepcall) |
+| `step.effect(key, descriptor)` | Calls an external system once per effect ID | [External effects](../manual/effects.md#stepeffect) |
+| `step.all(key, branches, options?)` | Runs branches at once, and returns every result | [Concurrent steps](../manual/concurrent-steps.md#stepall) |
+| `step.race(key, branches)` | Runs branches at once, and returns the first result | [Concurrent steps](../manual/concurrent-steps.md#steprace) |
+| `step.event` | The execution's event | [Event](../manual/workflows.md#event) |
+| `step.clock` | The runtime's clock | |
+
+A store handle, typed `WorkflowStore`, has `get`, `select`, `update`, `updateFrom`, `deleteFrom`, `when` and `take`. See [Stores](../manual/stores.md) and [Waiting on state](../manual/store-waiting.md).
+
+## SDKs
+
+| Export | Does | Page |
+| --- | --- | --- |
+| `createLocalSdk<Router>(runtime, options?)` | Starts, reads and cancels executions through a runtime | [Local SDK](../manual/sdk-local.md) |
+| `createHttpSdkFactory<Router>()` | Returns a function that creates an SDK for a server's URL | [HTTP SDK](../manual/sdk-http.md) |
+
+`createLocalSdk` takes two options:
+
+| Option | Default | Does |
+| --- | --- | --- |
+| `pollInterval` | `25` | Milliseconds between reads of the record while `wait` waits |
+| `invoker` | None | Lets `wait` read the record as soon as the dispatcher in this process records an outcome |
+
+## Running workflows
+
+These classes run workflows. The [Quick start](../manual/quickstart.md) puts the runner in the worker process and the dispatcher in the server process.
+
+| Export | Does |
+| --- | --- |
+| `new WorkflowRunner(runtime, { router, logger })` | Runs one delivery of an execution, and returns its outcome |
+| `new ExecutionDispatcher(runtime, options)` | Claims due executions, and passes each one to an invoker |
+
+`ExecutionDispatcher` has the methods `start()`, `stop()`, `tick()` and `drain()`. `stop()` stops claiming and waits for the deliveries in progress. `tick()` claims once and returns the number of claims, and `drain()` waits for every delivery started so far.
+
+The dispatcher takes these options:
+
+| Option | Default | Does |
+| --- | --- | --- |
+| `invoker` | Required | Runs each delivery, for example in a worker process |
+| `logger` | Required | A pino logger |
+| `concurrency` | `10` | The most deliveries that run at once |
+| `pollInterval` | `10` | Milliseconds between claims when nothing is due |
+| `keepAlive` | `true` | Whether the dispatcher's timers keep the process alive |
+| `leaseDuration` | `30000` | Milliseconds that a lease lasts unless it is renewed |
+| `renewInterval` | `leaseDuration / 3` | Milliseconds between renewals. Must be less than `leaseDuration` |
+| `abortGracePeriod` | `1000` | Milliseconds to wait for a delivery after its lease is lost, before the dispatcher frees its slot |
+| `filter` | Every due execution | `{ executionIds }`. Claims only the executions in the list. An empty list throws a `RangeError` |
+
+See [Delivery guarantees](../runtime-authors/delivery-guarantees.md) for what leases and renewals do.
+
+## Errors
+
+| Export | Thrown by | Page |
+| --- | --- | --- |
+| `RetryableError` | Workflow code, to retry a step | [Retries](../manual/retries.md) |
+| `WorkflowValueError` | Steps, for a value that is not durable | [Error reference](../manual/error-reference.md#errors-in-workflow-code) |
+| `WorkflowStartError` | `step.start` and `step.call` | [Error reference](../manual/error-reference.md#errors-in-workflow-code) |
+| `WorkflowJoinError` | `step.join` and `step.call` | [Error reference](../manual/error-reference.md#errors-in-workflow-code) |
+| `WorkflowEffectError` | `step.effect` | [Error reference](../manual/error-reference.md#errors-in-workflow-code) |
+| `WorkflowRaceError` | `step.race` | [Error reference](../manual/error-reference.md#errors-in-workflow-code) |
+| `WorkflowCancelledError` | Steps, after a cancellation request | [Cancellation](../manual/cancellation.md) |
+| `StoreValidationError` | Store operations, for state that the schema rejects | [Stores](../manual/stores.md#invalid-state) |
+| `ExecutionAdmissionError` | `trigger` | [Error reference](../manual/error-reference.md#errors-from-the-sdk) |
+| `ExecutionListRequestError` | `list` | [Error reference](../manual/error-reference.md#errors-from-the-sdk) |
+| `ExecutionCancelRequestError` | `cancel` | [Error reference](../manual/error-reference.md#errors-from-the-sdk) |
+| `HttpRouteError` | The HTTP SDK | [HTTP SDK](../manual/sdk-http.md#errors) |
+| `EffectDeliveryError` | Nothing in workflow code. The cause of a failed delivery | [Failed deliveries](../manual/error-reference.md#failed-deliveries) |
+| `EffectClientInvariantError` | Effect clients | [Effect client](../runtime-authors/effect-client.md#errors) |
+
+| Export | Is |
+| --- | --- |
+| `registerErrorClass(name, errorClass)` | Registers a class to rebuild recorded errors of that name. See [Error classes](../manual/errors.md#error-classes) |
+| `WORKFLOW_RESULT_STEP_KEY` | `"$$workflow-result$$"`, the step key of the workflow's result |
+
+## Types
+
+| Group | Types |
+| --- | --- |
+| Workflows | `WorkflowFn`, `DurableWorkflowFn`, `WorkflowEvent`, `EventContext`, `StepRunner`, `StepRunOptions`, `DurableStepFn`, `StartOptions` |
+| Waits | `TimedWhenResult`, `TimedJoinResult` |
+| Branches | `Branch`, `BranchResults`, `SettledResult`, `SettledResults`, `RaceResult`, `AllOptions` |
+| Effects | `EffectDescriptor`, `EffectLookup`, `EffectRecord` |
+| Stores | `StoreDefinition`, `WorkflowStore`, `RuntimeStore`, `StoreKey`, `StoreState`, `StoreSnapshot`, `StoreVersion`, `StoreSelector`, `StorePath`, `Draft`, `StoreUpdateResult`, `StoreUpdateFromResult`, `StoreDeleteFromResult`, `DurableStoreSchema`, `StandardSchemaV1` |
+| Values | `Durable`, `DurableObject`, `DurableValue` |
+| Executions | `ExecutionRecord`, `ExecutionStatus`, `ExecutionOutcome`, `ExecutionParent`, `ExecutionCancellation` |
+| SDKs | `ExecutionObserver`, `ExecutionControl`, `ExecutionView`, `ActiveExecutionView`, `TerminalExecutionView`, `ExecutionViewPage`, `ExecutionListRequest`, `ExecutionWaitOptions`, `WaitResult`, `TriggerAck`, `CancelOptions`, `CancelResult` |
+| Errors | `ErrorClass`, `ExecutionAdmissionErrorCode`, `WorkflowValueErrorCode`, `WorkflowStartErrorCode`, `WorkflowJoinErrorCode`, `WorkflowEffectErrorCode`, `EffectDeliveryErrorCode` |
