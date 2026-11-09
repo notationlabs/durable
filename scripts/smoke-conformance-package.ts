@@ -54,13 +54,16 @@ try {
         "@notation/durable-conformance": conformance,
         "@types/node": "^22.18.0",
         typescript: "^5.9.2",
-        vitest: "3.2.7",
+        vitest: "^4.1.12",
       },
     })
   );
   await writeFile(
     join(directory, "conformance.test.ts"),
-    `import {
+    `import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
   registerCancellationClientConformance,
   registerEffectClientConformance,
   registerExecutionClientConformance,
@@ -69,21 +72,33 @@ try {
 } from "@notation/durable-conformance";
 import { SqliteRuntime, createSqliteDb } from "@notation/durable/sqlite/node";
 
-function sqlite(options?: ConstructorParameters<typeof SqliteRuntime>[1]) {
-  const db = createSqliteDb({ path: ":memory:", wal: false });
+function sqlite(options?: { clock: () => number }) {
+  const dir = mkdtempSync(join(tmpdir(), "conformance-"));
+  const path = join(dir, "durable.sqlite");
+  const dbs = [createSqliteDb({ path })];
+
+  const open = () => {
+    const db = createSqliteDb({ path });
+    dbs.push(db);
+    return new SqliteRuntime(db, options);
+  };
+
   return {
-    runtime: new SqliteRuntime(db, options),
-    createPeer: () => new SqliteRuntime(db, options),
-    restart: () => new SqliteRuntime(db, options),
-    dispose: () => db.close(),
+    runtime: new SqliteRuntime(dbs[0]!, options),
+    createPeer: open,
+    restart: open,
+    dispose() {
+      for (const db of dbs) db.close();
+      rmSync(dir, { recursive: true, force: true });
+    },
   };
 }
 
-registerStoreClientConformance({ name: "installed-sqlite", create: () => sqlite() });
-registerExecutionClientConformance({ name: "installed-sqlite", create: sqlite });
-registerEffectClientConformance({ name: "installed-sqlite", create: sqlite });
-registerJoinClientConformance({ name: "installed-sqlite", create: sqlite });
-registerCancellationClientConformance({ name: "installed-sqlite", create: sqlite });
+registerStoreClientConformance({ name: "sqlite", create: () => sqlite() });
+registerExecutionClientConformance({ name: "sqlite", create: sqlite });
+registerEffectClientConformance({ name: "sqlite", create: sqlite });
+registerJoinClientConformance({ name: "sqlite", create: sqlite });
+registerCancellationClientConformance({ name: "sqlite", create: sqlite });
 `
   );
   await writeFile(
