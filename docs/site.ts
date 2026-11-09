@@ -46,6 +46,7 @@ export default {
             { label: "Local SDK", slug: "manual/sdk-local" },
             { label: "HTTP SDK", slug: "manual/sdk-http" },
             { label: "HTTP Server", slug: "manual/http-server" },
+            { label: "Testing", slug: "manual/testing" },
           ],
         },
       ],
