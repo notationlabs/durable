@@ -619,7 +619,7 @@ export type EffectDescriptor<T, Input = DurableObject> = {
    */
   maxAttempts?: number;
   /** Reports what the external system knows about `effectId`. */
-  lookup(effectId: string): Promise<EffectLookup<T>>;
+  lookup(effectId: string): Promise<EffectLookup<NoInfer<T>>>;
   /** Performs the operation under `effectId`. */
   perform(effectId: string): Promise<T>;
   /**

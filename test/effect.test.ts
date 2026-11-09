@@ -1064,6 +1064,21 @@ describe("types", () => {
       });
       expectTypeOf(charge).toEqualTypeOf<Charge>();
 
+      // The not-found branch must not add undefined to the inferred result.
+      const branched = yield* step.effect("branched", {
+        effectId: "e",
+        operation: "charge-v1",
+        input: config,
+        lookup: async (id) => {
+          const found = await cloud.charge(id);
+          if (found.amount === 0) return { status: "not-found" };
+          return { status: "settled", result: found };
+        },
+        perform: (id) => cloud.charge(id),
+        retryIn: 60_000,
+      });
+      expectTypeOf(branched).toEqualTypeOf<Charge>();
+
       const removed = yield* step.effect("remove", {
         effectId: "b",
         operation: "remove-v1",
