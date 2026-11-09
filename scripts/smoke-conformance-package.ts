@@ -89,14 +89,14 @@ registerCancellationClientConformance({ name: "installed-sqlite", create: sqlite
     join(directory, "testing.test.ts"),
     `import { expect, test } from "vitest";
 import { workflow } from "@notation/durable";
-import { createTestSdkFactory } from "@notation/durable/testing";
+import { createTestSdk } from "@notation/durable/testing";
 
 const greet = workflow<{ name: string }, string>(async function* (step, event) {
   return yield* step.run(() => \`Hello, \${event.params.name}\`);
 });
 
 test("the testing entry point runs a workflow in memory", async () => {
-  const sdk = createTestSdkFactory()({ greet });
+  const sdk = createTestSdk({ greet });
   await expect(
     sdk.triggerAndWait({ workflowId: "greet", params: { name: "World" } })
   ).resolves.toBe("Hello, World");
