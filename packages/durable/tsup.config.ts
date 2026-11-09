@@ -8,6 +8,7 @@ const source = (path: string) => resolve(here, "..", path);
 export default defineConfig({
   entry: {
     index: source("sdk/src/index.ts"),
+    client: source("sdk/src/client.ts"),
     runtime: source("core/src/index.ts"),
     http: source("http-server/src/index.ts"),
     worker: source("worker-invoker/src/index.ts"),

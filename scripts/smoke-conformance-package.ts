@@ -1,4 +1,5 @@
 import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import { builtinModules } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -113,6 +114,33 @@ test("the testing entry point runs a workflow in memory", async () => {
   run(["pnpm", "install"], directory);
   run(["pnpm", "exec", "tsc", "--noEmit", "--strict", "--module", "nodenext", "--moduleResolution", "nodenext", "--skipLibCheck", "false", "--types", "node", "conformance.test.ts", "testing.test.ts"], directory);
   run(["pnpm", "exec", "vitest", "run", "conformance.test.ts", "testing.test.ts"], directory);
+
+  // Bun's browser target replaces Node built-ins with polyfills, so the
+  // output does not show them. The plugin records them as they resolve.
+  const nodeImports = new Set<string>();
+  const client = await Bun.build({
+    entrypoints: [join(directory, "node_modules/@notation/durable/dist/client.js")],
+    target: "browser",
+    plugins: [
+      {
+        name: "record-node-builtins",
+        setup(build) {
+          build.onResolve({ filter: /.*/ }, (args) => {
+            if (args.path.startsWith("node:") || builtinModules.includes(args.path.split("/")[0])) {
+              nodeImports.add(args.path);
+            }
+            return undefined;
+          });
+        },
+      },
+    ],
+  });
+  if (!client.success) {
+    throw new AggregateError(client.logs, "@notation/durable/client does not bundle for the browser");
+  }
+  if (nodeImports.size > 0) {
+    throw new Error(`@notation/durable/client imports ${[...nodeImports].join(", ")}`);
+  }
 } finally {
   await rm(directory, { recursive: true, force: true });
 }
