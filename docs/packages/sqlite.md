@@ -2,7 +2,7 @@
 
 `SqliteRuntime`: a driver-agnostic SQLite implementation of the `Runtime` contract, with execution records, the heap, and durable stores in one database. Bun and Node connector entry points provide the native database driver.
 
-See [Bun with SQLite](../runtimes/resident-process-bun.md) and [Node with SQLite](../runtimes/resident-process-node.md) for complete resident-process wiring.
+See [Running a server](../manual/running-a-server.md), [Bun](../manual/bun.md) and [Node](../manual/node.md).
 
 ## Install
 
