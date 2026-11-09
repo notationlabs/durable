@@ -1,6 +1,6 @@
-# Durable 🤘
+# Notation Durable
 
-JavaScript-native distributed workflows.
+A TypeScript-native durable execution engine that runs anywhere.
 
 Write workflows as async generator functions that yield steps. First-class primitives for retries, delays, polling, and durable stores.
 
