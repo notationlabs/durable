@@ -109,10 +109,12 @@ export default {
           icon: "terminal",
           links: [
             { label: "@notation/durable", slug: "reference/durable" },
-            { label: "/runtime", slug: "reference/runtime" },
-            { label: "/http", slug: "reference/http" },
-            { label: "/sqlite", slug: "reference/sqlite" },
+            { label: "/client", slug: "reference/client" },
             { label: "/worker", slug: "reference/worker" },
+            { label: "/sqlite", slug: "reference/sqlite" },
+            { label: "/http", slug: "reference/http" },
+            { label: "/testing", slug: "reference/testing" },
+            { label: "/runtime", slug: "reference/runtime" },
             {
               label: "@notation/durable-conformance",
               slug: "reference/conformance",
