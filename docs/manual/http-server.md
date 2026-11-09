@@ -1,8 +1,8 @@
 # HTTP server
 
-`@notation/durable/http` serves the SDK's operations as HTTP routes. Code that cannot reach the runtime directly, such as a browser app or a service on another machine, uses the routes to start executions, read them and cancel them, through the [HTTP SDK](./sdk-http.md).
+`@notation/durable/http` serves the SDK's operations as HTTP routes. Code that cannot reach the runtime directly, such as an app server on another host, uses the routes to start executions, read them and cancel them, through the [HTTP SDK](./sdk-http.md).
 
-This page serves the routes to a browser app where signed-in users export reports. A user can start an export, and read and cancel only their own:
+This page serves the routes to the web app of a reports product, which runs on another host. The app calls the routes on behalf of signed-in users, with each user's session token. A user can start an export, and read and cancel only their own:
 
 ```ts [src/durable/server.ts]
 import pino from "pino";
@@ -130,7 +130,7 @@ export const requireUser = createMiddleware(async (req, event, next) => {
 });
 ```
 
-`userFromRequest` is the application's own code. It reads the session from the request, and returns the user's ID or `undefined`.
+`userFromRequest` is the application's own code. It reads the session token from the `Authorization` header, and returns the user's ID or `undefined`.
 
 A middleware function receives these arguments:
 

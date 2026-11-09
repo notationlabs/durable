@@ -1,126 +1,148 @@
 # HTTP SDK
 
-`createHttpSdkFactory` produces a factory function that creates typed SDK clients bound to a remote server's base URL. Like the local SDK, it takes your `Router` type as a generic parameter so TypeScript validates every `workflowId` and its corresponding `params` at compile time. The server must expose the routes from [`createRoutes`](./http-server.md).
+The HTTP SDK starts, reads and cancels executions through the routes of an [HTTP server](./http-server.md). Code that cannot reach the runtime directly, such as an app server on another host, uses it in place of the [local SDK](./sdk-local.md).
 
-## Setup
+This page uses the web app of a reports product. The app server runs on a different host from Durable. A signed-in user starts an export of a month of their account's data, waits for it, and can cancel it. The app calls Durable with the user's session token, so the Durable server knows which user made each request:
 
-```ts
+```ts [src/durable-client.ts]
 import { createHttpSdkFactory } from "@notation/durable";
-import type { Router } from "./shared";
+import type { Router } from "./workflows/router";
 
 const createSdk = createHttpSdkFactory<Router>();
-const sdk = createSdk({ url: "http://localhost:8080" });
+
+export function sdkForUser(sessionToken: string) {
+  return createSdk({
+    url: "https://durable.internal.example.com/durable",
+    fetchOptions: {
+      headers: { Authorization: `Bearer ${sessionToken}` },
+    },
+  });
+}
 ```
 
-Pass `fetchOptions` to attach custom headers or other `RequestInit` properties to every outgoing request. The SDK sends them to every route, so the same header can satisfy both the server's trigger middleware and its [observation middleware](./http-server.md#observation-middleware):
+The app's export functions use it:
 
-```ts
-const sdk = createSdk({
-  url: "http://localhost:8080",
-  fetchOptions: {
-    headers: { Authorization: "Bearer token" },
-  },
-});
+```ts [src/exports.ts]
+import { sdkForUser } from "./durable-client";
+
+export async function startExport(sessionToken: string, accountId: string, month: string) {
+  const sdk = sdkForUser(sessionToken);
+
+  const { executionId } = await sdk.trigger({
+    workflowId: "export-report",
+    executionId: `export:${accountId}:${month}`,
+    idempotent: true,
+    params: { accountId, month },
+  });
+
+  return executionId;
+}
+
+export async function waitForExport(sessionToken: string, executionId: string) {
+  const sdk = sdkForUser(sessionToken);
+  const { url } = await sdk.waitForResult({ executionId });
+
+  return url;
+}
+
+export async function cancelExport(sessionToken: string, executionId: string) {
+  const sdk = sdkForUser(sessionToken);
+  await sdk.cancel(executionId, { reason: "cancelled by user" });
+}
 ```
 
-## `sdk.trigger`
+## Creating the SDK
 
-Posts to `/trigger` and returns a handle containing `executionId`, `status`, `ack()`, and `waitForResult()`. The server admits the execution and responds with the execution ID it accepted; the SDK reads `executionId` from that response rather than generating one itself. `status` is `"accepted"`, or `"existing"` for an idempotent repeat that matched an execution already admitted with the same request (see [Idempotent trigger](./sdk-local.md#idempotent-trigger)).
+`createHttpSdkFactory` takes the `Router` type as a type argument, and returns a function that creates an SDK for one server. TypeScript uses `Router` to check each workflow ID and its params, as it does for the local SDK. Creating an SDK sends no request, so the app creates one for each user.
+
+**Import the router with `import type`.** The SDK needs only the router's type, so the app server does not load the workflows or the code they import.
+
+| Option | Holds |
+| --- | --- |
+| `url` | The address of the routes, including the server's `basePath`. The SDK adds `/trigger`, `/poll` and so on |
+| `fetchOptions` | Options that the SDK passes to `fetch` for every request, such as `headers`. `method` and `body` are not allowed |
+
+The SDK sends the same `fetchOptions` to every route. In the example, the `Authorization` header reaches both the server's [trigger middleware](./http-server.md#trigger-middleware) and its [observation middleware](./http-server.md#observation-middleware), so both can identify the user.
+
+## Differences from the local SDK
+
+`poll`, `wait`, `list` and `cancel` take the same arguments and return the same values as in the local SDK. `trigger` is different, and there is no `triggerAndWait`:
+
+| Local SDK | HTTP SDK |
+| --- | --- |
+| `trigger` returns `{ executionId, status }` | `trigger` returns `{ executionId, status }` with two methods, `ack` and `waitForResult` |
+| `triggerAndWait(event)` | `(await trigger(event)).waitForResult()` |
+| None | `waitForResult({ executionId })` |
+
+## Starting an execution
+
+`trigger` sends the event to `/trigger`, and returns when the server has recorded the execution:
 
 ```ts
 const exec = await sdk.trigger({
-  workflowId: "process-order",
-  executionId: "order-abc123",
-  idempotent: true,
-  params: { orderId: "abc123" },
+  workflowId: "export-report",
+  params: { accountId: "acct-1", month: "2026-10" },
 });
+
+exec.executionId;          // the ID the server recorded
+exec.status;               // "accepted" or "existing"
+await exec.waitForResult(); // the workflow's return value
 ```
 
-When the server rejects the admission, `trigger` throws an `ExecutionAdmissionError` with the server's `code`: `EXECUTION_ID_CONFLICT` or `EXECUTION_REQUEST_MISMATCH` for a `409`, and `INVALID_EXECUTION_EVENT` or `IDEMPOTENT_TRIGGER_REQUIRES_ID` for a `400` (see [Local SDK](./sdk-local.md#sdktrigger)). `trigger` throws `INVALID_EXECUTION_EVENT` without sending a request when its own params or context are not durable. Any other error response, such as a middleware denial, throws an `HttpRouteError` with the response's `status`, and its `code` when the body has one.
+Without an `executionId` in the event, the server chooses the ID, and the response carries it. `exec.ack()` returns `{ executionId, status }`.
 
-## `exec.ack()`
+The event's fields and the [idempotent trigger](./sdk-local.md#repeated-triggers) work as in the local SDK. In the example, a user who clicks "Export" twice gets `"existing"` for the second click.
 
-Returns the parsed trigger response, `{ executionId, status }`.
+Server middleware can add to the event's context, or replace it. See [Trigger middleware](./http-server.md#trigger-middleware).
+
+## Waiting for a result
+
+`waitForResult` waits until the execution ends, and returns the workflow's return value with the workflow's result type. `waitForExport` uses it with an ID that `startExport` returned in an earlier request:
 
 ```ts
-const { executionId } = await exec.ack();
+const { url } = await sdk.waitForResult({ executionId });
 ```
 
-## `exec.waitForResult()`
+| The execution | `waitForResult` |
+| --- | --- |
+| Completes | Returns the workflow's return value |
+| Fails | Throws the workflow's error, as recorded. See [What the record keeps](./errors.md#what-the-record-keeps) |
+| Is cancelled | Throws `WorkflowCancelledError`, with the cancellation's `reason` and `source` |
+| Does not exist | Throws `HttpRouteError` with the code `EXECUTION_NOT_FOUND` |
 
-Calls [`sdk.wait`](#sdkpoll-sdkwait-and-sdklist) without a timeout. It returns the result, or throws the recorded error.
+The server sends the error with Durable's codec, so the error keeps its class, `code` and `cause` across HTTP. A class registered with [`registerErrorClass`](./errors.md#error-classes) in the app server is read back as that class.
 
-```ts
-const result = await exec.waitForResult();
-```
+## Waits longer than the server allows
 
-The server writes the view with the durable value codec, and the SDK reads it with the same codec, so `undefined` properties keep their keys and errors keep their shape across HTTP. If the record is `failed`, `waitForResult` throws the recorded error as its registered class, with its original `stack`, `code` and `cause`. If the record is `cancelled`, it throws a `WorkflowCancelledError` with the outcome's `reason` and `source`. For an unknown ID it throws an `HttpRouteError` with code `EXECUTION_NOT_FOUND`.
+The server holds a `/wait` request open for at most its `maxWait`, 8 seconds by default, and then responds `timed-out`. `wait` and `waitForResult` send the request again until the execution ends, or until their own `timeout` passes. So a wait with no timeout, or a timeout longer than `maxWait`, works as it does with the local SDK.
 
-`sdk.waitForResult({ executionId })` does the same for an execution triggered elsewhere.
+When a `signal` passed to `wait` aborts, `wait` aborts the request in progress, sends no more, and rejects with the signal's reason.
 
-## `sdk.poll`, `sdk.wait` and `sdk.list`
+## Errors
 
-These behave as they do in the [local SDK](./sdk-local.md#sdkpoll), and return the same [views](./sdk-local.md#execution-views). They post to `/poll`, `/wait` and `/list`.
+The SDK turns error responses into the same results that the local SDK returns where it can:
 
-```ts
-const execution = await sdk.wait("order-abc123", { timeout: 30_000 });
-```
+| Server response | SDK result |
+| --- | --- |
+| `404` `EXECUTION_NOT_FOUND` from `/poll`, `/wait` or `/cancel` | `poll`, `wait` and `cancel` return `undefined` |
+| `409` or `400` from `/trigger`, with one of the [admission error](./sdk-local.md#admission-errors) codes | `trigger` throws `ExecutionAdmissionError` with the server's code |
+| `400` `INVALID_LIST_REQUEST` | `list` throws `ExecutionListRequestError` |
+| Any other error response | Throws `HttpRouteError` |
 
-The server holds each `/wait` request open for at most 8 seconds by default (its `maxWait`), and then responds `timed-out`. `sdk.wait` repeats the request until the execution is terminal or your own `timeout` passes, so a `timeout` longer than 8 seconds, or no `timeout`, works as it does locally.
+The SDK checks some arguments before it sends a request. `trigger` throws `ExecutionAdmissionError` with the code `INVALID_EXECUTION_EVENT` for params or context that are not durable values. `cancel` throws `ExecutionCancelRequestError` for an empty execution ID, a `reason` that is not a string or a `force` that is not a boolean.
 
-Errors map to the same results as in the local SDK where they can:
+**A `404` without the code `EXECUTION_NOT_FOUND` throws.** A wrong `url` also responds `404`, so the SDK does not take every `404` to mean that the execution does not exist.
 
-| Server response                    | SDK result                                     |
-| ---------------------------------- | ---------------------------------------------- |
-| `404` `EXECUTION_NOT_FOUND` from `/poll` or `/wait` | `poll` and `wait` resolve with `undefined` |
-| `400` `INVALID_LIST_REQUEST`       | `list` throws `ExecutionListRequestError`      |
-| Any other error response           | Throws an `HttpRouteError`                     |
-
-A `404` without the code `EXECUTION_NOT_FOUND`, for example from a wrong `url` or a server without the observation routes, throws an `HttpRouteError`, so `waitForResult` does not report an existing execution as unknown.
-
-A negative `timeout` throws a `RangeError` before any request. When `signal` aborts, `sdk.wait` aborts its current request, sends no more, and rejects with the signal's reason.
-
-`sdk.trigger` reads the ack, `{ executionId, status }`, from the response body. `status` is `"accepted"` for a `202` and `"existing"` for a `200`.
-
-## `sdk.cancel`
-
-Behaves as the [local SDK's `cancel`](./sdk-local.md#sdkcancel) does, and posts to `/cancel`. It returns once the server has recorded the request, without waiting for the workflow to stop.
-
-```ts
-const result = await sdk.cancel("order-42", { reason: "abandoned" });
-```
-
-| Server response                     | SDK result                                           |
-| ----------------------------------- | ---------------------------------------------------- |
-| `202` with `{ status: "requested", execution }` | Resolves with that result                |
-| `200` with a terminal view          | Resolves with the view, including after a forced cancel |
-| `404` `EXECUTION_NOT_FOUND`         | Resolves with `undefined`                            |
-| Any other error response, such as a middleware denial | Throws an `HttpRouteError`         |
-
-`cancel` checks its arguments before it sends a request, and throws `ExecutionCancelRequestError` for an empty execution ID, a `reason` that is not a string, or a `force` that is not a boolean.
-
-## `HttpRouteError`
-
-`HttpRouteError` is the error for a response that has no more specific error, such as an observation middleware denial. It carries the response's `status`, and its `code` when the body has one.
+`HttpRouteError` has the response's `status`, and its `code` when the body has one. The example can tell that the server denied a request because the user's session expired:
 
 ```ts
 import { HttpRouteError } from "@notation/durable";
 
 try {
-  await sdk.poll("order-abc123");
+  await sdk.poll(executionId);
 } catch (err) {
-  if (err instanceof HttpRouteError && err.status === 403) {
-    // observation middleware denied the request
+  if (err instanceof HttpRouteError && err.status === 401) {
+    // The user's session has expired.
   }
 }
 ```
-
-## Trigger event shape
-
-| Field         | Type                  | Required                 | Description                                                  |
-| ------------- | --------------------- | ------------------------ | ------------------------------------------------------------ |
-| `workflowId`  | `string`              | Yes                      | ID matching a key in the router                              |
-| `params`      | `Record<string, any>` | Depends on workflow type | Input data accessible via `event.params` inside the workflow |
-| `executionId` | `string`              | No                       | Custom execution ID. The runtime chooses one if omitted      |
-| `context`     | `Record<string, any>` | No                       | Additional context passed through middleware                 |
-| `idempotent`  | `boolean`             | No                       | Makes a repeat of the same request return `"existing"`. Requires `executionId`; `true` without one is a type error |
