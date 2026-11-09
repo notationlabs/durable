@@ -1,180 +1,220 @@
-# HTTP Server
+# HTTP server
 
-The HTTP server exposes a runtime's execution records through POST endpoints, so clients can admit executions and read them back over the network. Its handlers use standard `Request` and `Response` types. The example uses `Bun.serve`, but the routes object can plug into any Request-to-Response router.
+`@notation/durable/http` serves the SDK's operations as HTTP routes. Code that cannot reach the runtime directly, such as a browser app or a service on another machine, uses the routes to start executions, read them and cancel them, through the [HTTP SDK](./sdk-http.md).
 
-## Server
+This page serves the routes to a browser app where signed-in users export reports. A user can start an export, and read and cancel only their own:
 
-```ts [server.ts]
+```ts [src/durable/server.ts]
 import pino from "pino";
-import { ExecutionDispatcher } from "@notation/durable";
 import { createRoutes } from "@notation/durable/http";
-import { createWorkflowInvoker } from "@notation/durable/worker";
-import { runtime } from "./shared";
+import { dispatcher } from "./client";
+import { ownExecutionsOnly, requireUser } from "./auth";
+import { runtime } from "./runtime";
 
 const logger = pino();
-const workerPath = new URL("./worker.ts", import.meta.url).href;
-const invoker = createWorkflowInvoker({ workerPath, logger });
 
-const dispatcher = new ExecutionDispatcher(runtime, { invoker, logger });
 dispatcher.start();
 
 Bun.serve({
   port: 8080,
-  routes: {
-    "/status": new Response("OK"),
-    ...createRoutes({ runtime, invoker, logger }),
-  },
+  routes: createRoutes({
+    basePath: "/durable",
+    runtime,
+    logger,
+    middleware: [requireUser],
+    observationMiddleware: [ownExecutionsOnly],
+  }),
 });
 ```
 
-`runtime` is the `SqliteRuntime` from the [quick start](./quickstart.md)'s `shared.ts`, and the worker is the same `worker.ts`. The routes only read and write execution records; the dispatcher is what delivers admitted executions to workers. `invoker` is optional. When the dispatcher runs in the same process, it lets `/wait` and `/events` respond as soon as the dispatcher records an outcome, instead of at their next read of the record. No response depends on it.
-
-## Client
-
-```ts
-import { createHttpSdkFactory } from "@notation/durable";
-import type { Router } from "./shared";
-
-const createSdk = createHttpSdkFactory<Router>();
-const sdk = createSdk({ url: "http://localhost:8080" });
-
-const exec = await sdk.trigger({
-  workflowId: "my-workflow",
-});
-await exec.ack();
-const result = await exec.waitForResult();
-```
-
-`waitForResult` posts to `/wait`. See [HTTP SDK](./sdk-http.md) for `poll`, `wait`, `list` and `cancel`.
+`runtime` and `dispatcher` are from the [Quick start](./quickstart.md). `requireUser` and `ownExecutionsOnly` are shown below, in [Trigger middleware](#trigger-middleware) and [Observation middleware](#observation-middleware).
 
 ## Routes
 
-`createRoutes` registers six POST endpoints:
+`createRoutes` returns an object that maps each path to a handler for `POST`. A handler takes a standard `Request` and returns a `Response`, so the object works with `Bun.serve` as above, and with any router that takes `Request` handlers.
 
-| Endpoint        | Body                                                           | Responses                                                                                                     |
-| --------------- | -------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
-| `POST /trigger` | `{ workflowId, params?, context?, executionId?, idempotent? }` | `202 { executionId, status: "accepted" }` once admission commits; `200 { executionId, status: "existing" }` for an idempotent repeat; `409` `EXECUTION_ID_CONFLICT` or `EXECUTION_REQUEST_MISMATCH`; `400` `INVALID_EXECUTION_EVENT` or `IDEMPOTENT_TRIGGER_REQUIRES_ID` |
-| `POST /poll`    | `{ executionId }`                                              | `200` with the execution's view; `404` `EXECUTION_NOT_FOUND`                                                  |
-| `POST /wait`    | `{ executionId, timeout? }`                                    | `200` with a `WaitResult`; `404` `EXECUTION_NOT_FOUND`                                                        |
-| `POST /list`    | `{ workflowId?, status?, cursor?, limit? }`                    | `200 { executions, cursor? }`                                                                                 |
-| `POST /cancel`  | `{ executionId, reason?, force? }`                             | `202 { status: "requested", execution }` while the execution is active; `200` with the terminal view when it is terminal, including after a forced cancel; `404` `EXECUTION_NOT_FOUND`; `400` `INVALID_CANCEL_REQUEST` |
-| `POST /events`  | `{ executionId }`                                              | Deprecated. Blocks until the record is terminal. `200` with the encoded result, `500` with the encoded recorded error, `404` `EXECUTION_NOT_FOUND` |
+| Route | Does | HTTP SDK method |
+| --- | --- | --- |
+| `POST /durable/trigger` | Records a new execution | `trigger` |
+| `POST /durable/poll` | Returns an execution's view | `poll` |
+| `POST /durable/wait` | Waits for an execution to end | `wait` |
+| `POST /durable/list` | Returns a page of executions | `list` |
+| `POST /durable/cancel` | Records a cancellation request | `cancel` |
+| `POST /durable/events` | Deprecated. Use `/wait` | None |
 
-The views, wait results and pages are the same as the [local SDK](./sdk-local.md#execution-views) returns. A failed or cancelled execution is a `200` response from `/poll` and `/wait`, with the error or the cancellation's `reason` and `source` in the view. `/events` responds `500` with an encoded `WorkflowCancelledError` for a cancelled execution.
+Each route does what the [local SDK](./sdk-local.md) method of the same name does. Without `basePath`, the routes are `/trigger`, `/poll` and so on.
 
-`/cancel` records the [cancellation](./cancellation.md) request and responds. It does not wait for the workflow to stop.
+**The routes do not run workflow code.** They read and write the runtime's records. A dispatcher that uses the same runtime delivers the executions that `/trigger` records. The example starts it in the same process.
 
-`/wait` holds the request open for at most 8 seconds by default, below Bun's default 10-second idle timeout; the `maxWait` option of `createRoutes` changes it. `maxWait` and `pollInterval` must be a finite number greater than zero, because the HTTP SDK repeats a capped request at once and a wait re-reads the record after each `pollInterval`; `createRoutes` throws a `RangeError` otherwise. When the execution is not terminal by then, or by `timeout` if that is shorter, it responds `200` with `{ status: "timed-out", execution }`. The [HTTP SDK](./sdk-http.md) repeats the request until the execution is terminal. `/events` has no cap; use `/wait` instead. When a client disconnects, its `/wait` or `/events` request stops reading the record.
+## Options
 
-Each open `/wait` or `/events` request reads the execution record every `pollInterval` milliseconds (25 by default). The requests do not share reads, so many concurrent waits multiply the load on the backend. Raise `pollInterval` or lower `maxWait` in `createRoutes` if many clients wait at once. Passing `invoker` lets a wait respond as soon as the dispatcher in the same process records an outcome, so a longer `pollInterval` costs less latency.
+| Option | Default | Does |
+| --- | --- | --- |
+| `runtime` | Required | The runtime whose records the routes read and write |
+| `logger` | Required | A pino logger |
+| `basePath` | `""` | A prefix for every route, starting with `/` |
+| `middleware` | `[]` | Functions that run before `/trigger` records an execution |
+| `observationMiddleware` | `[]` | Functions that allow or deny the other routes |
+| `maxWait` | `8000` | The longest, in milliseconds, that `/wait` holds a request open |
+| `pollInterval` | `25` | Milliseconds between reads of the record while `/wait` waits |
+| `invoker` | None | Lets `/wait` respond as soon as the dispatcher in this process records an outcome |
 
-Every route reads its body with the durable value codec, and writes views, results and recorded errors with it. Plain JSON is a valid encoding, so any HTTP client can call the routes, while the HTTP SDK can also send `undefined` values, `Date`s, `Map`s, `Set`s, `bigint`s and errors, which the codec writes as objects tagged with a `$type` key. A plain object with its own `$type` key must be sent wrapped as `{ "$type": "object", "value": ... }`.
+`createRoutes` throws a `RangeError` if `maxWait` or `pollInterval` is not a number greater than zero.
 
-`/trigger` responds before any workflow code runs. When the body omits `executionId`, the runtime chooses one and the response carries it.
+## Request and response bodies
 
-### Errors
+Each route takes a JSON object with the fields of the SDK method's arguments:
 
-Error responses carry `{ code, message }`. Besides the codes in the table above, the routes respond:
+| Route | Body |
+| --- | --- |
+| `/trigger` | `{ workflowId, params?, context?, executionId?, idempotent? }` |
+| `/poll` | `{ executionId }` |
+| `/wait` | `{ executionId, timeout? }` |
+| `/list` | `{ workflowId?, status?, limit?, cursor? }` |
+| `/cancel` | `{ executionId, reason?, force? }` |
 
-| Condition                                                    | Response                                |
-| ------------------------------------------------------------ | --------------------------------------- |
-| A `/poll`, `/wait`, `/list` or `/events` body that is not a JSON object, a missing or empty `executionId`, or a `timeout` that is negative or not a number | `400` `INVALID_OBSERVATION_REQUEST` |
-| A `/list` `workflowId` that is not a string, a `limit` that is not a positive integer, an unknown `status`, or a malformed `cursor` | `400` `INVALID_LIST_REQUEST` |
-| A `/cancel` body that is not a JSON object, a missing or empty `executionId`, a `reason` that is not a string, or a `force` that is not a boolean | `400` `INVALID_CANCEL_REQUEST` |
-| Observation middleware denies the request                    | `401` `UNAUTHORIZED` or `403` `FORBIDDEN` |
-| Middleware throws, or the runtime fails                      | `500` `INTERNAL_ERROR`                  |
+A response body holds what the SDK method returns, such as `{ executionId, status }` from `/trigger` or a [view](./sdk-local.md#reading-an-execution) from `/poll`.
 
-A `500` response always has the message `Internal error`. The server logs the thrown error with `logger.error` and does not send its message, so middleware and database details stay on the server.
+Bodies are JSON, written by Durable's codec for [durable values](./step-values.md). The codec writes values that JSON cannot hold, such as a `Date`, a `Map`, `undefined` or an error, as objects with a `$type` key.
 
-A `/trigger` body that is not a valid trigger event, including an `idempotent` value that is not a boolean, responds `400` `INVALID_EXECUTION_EVENT`. A `/list` `limit` above 1000 is lowered to 1000.
+So a failed execution's error reaches the HTTP SDK with its class, `code` and `cause`. Plain JSON is valid input, so any HTTP client can call the routes.
 
-An optional `basePath` prefixes every route:
+## Status codes
 
-```ts
-createRoutes({ runtime, logger, basePath: "/api/workflows" });
-// → POST /api/workflows/trigger
-// → POST /api/workflows/poll
-// → POST /api/workflows/wait
-// → POST /api/workflows/list
-// → POST /api/workflows/cancel
-// → POST /api/workflows/events
-```
+| Route | Success | Other responses |
+| --- | --- | --- |
+| `/trigger` | `202` for a new execution. `200` for an idempotent repeat that returns `"existing"` | `409` for `EXECUTION_ID_CONFLICT` and `EXECUTION_REQUEST_MISMATCH`. `400` for `INVALID_EXECUTION_EVENT` and `IDEMPOTENT_TRIGGER_REQUIRES_ID` |
+| `/poll`, `/wait` | `200` | `404` `EXECUTION_NOT_FOUND` |
+| `/list` | `200` | `400` `INVALID_LIST_REQUEST` |
+| `/cancel` | `202` while the execution has not ended. `200` with the view once it has ended, including after a forced cancel | `404` `EXECUTION_NOT_FOUND`. `400` `INVALID_CANCEL_REQUEST` |
 
-## Middleware
+A failed or cancelled execution is a `200` from `/poll` and `/wait`. The view holds the error, or the cancellation's `reason`.
 
-Trigger middleware functions run before the execution is admitted and can inspect the request, modify the event context, or short-circuit with an early response:
+Error responses have the body `{ code, message }`. These codes can come from any route:
 
-```ts
+| Response | When |
+| --- | --- |
+| `400` `INVALID_OBSERVATION_REQUEST` | A `/poll`, `/wait`, `/list` or `/events` body is not a JSON object. Or a `/poll` or `/wait` body has no `executionId`, or has a `timeout` that is negative or not a number |
+| `401` `UNAUTHORIZED`, `403` `FORBIDDEN` | Observation middleware denied the request |
+| `500` `INTERNAL_ERROR` | Middleware threw, or the runtime failed |
+
+A `500` response always has the message `Internal error`. The server logs the error with `logger.error`, and does not send it, so database and middleware details stay on the server.
+
+## Long waits
+
+`/wait` holds the request open until the execution ends, or until `maxWait` passes, whichever comes first. If `maxWait` passes first, it responds `200` with `{ status: "timed-out", execution }`. The HTTP SDK then sends the request again, so its `wait` works with timeouts longer than `maxWait`.
+
+The default `maxWait` of 8 seconds is below Bun's default idle timeout of 10 seconds. Keep `maxWait` below the idle timeout of the server and of any proxy in front of it, or they close the connection before `/wait` responds.
+
+Each open `/wait` request reads the record every `pollInterval` milliseconds. Open requests do not share reads, so many waiting clients add load to the database. If many clients wait at once, raise `pollInterval`, and pass `invoker` so that a wait still responds as soon as the dispatcher in this process records an outcome.
+
+## Trigger middleware
+
+Trigger middleware runs on `/trigger`, before the execution is recorded. `requireUser` rejects requests without a signed-in user, and records the user's ID in the execution's context:
+
+```ts [src/durable/auth.ts]
 import { createMiddleware } from "@notation/durable/http";
+import { userFromRequest } from "../auth";
 
-const auth = createMiddleware(async (req, event, next, logger) => {
-  const token = req.headers.get("Authorization");
-  if (!token) return new Response("Unauthorized", { status: 401 });
-  event.context.set("userId", parseToken(token).sub);
+export const requireUser = createMiddleware(async (req, event, next) => {
+  const userId = await userFromRequest(req);
+
+  if (!userId) {
+    return Response.json({ code: "UNAUTHORIZED", message: "Sign in first" }, { status: 401 });
+  }
+
+  event.context.clear();
+  event.context.set("userId", userId);
+
   return next();
 });
-
-createRoutes({ runtime, logger, middleware: [auth] });
 ```
 
-Each middleware receives four arguments: `req` (the incoming `Request`), `event` (a `MiddlewareEvent` whose `context` map is mutable at this stage, and whose `executionId` is `undefined` when the client lets the runtime choose one), `next` (a function that forwards to the next middleware or the final handler), and `logger`.
+`userFromRequest` is the application's own code. It reads the session from the request, and returns the user's ID or `undefined`.
 
-Once every middleware has run, the context map is frozen and admitted with the event. Every delivery reads it back from the execution record as a read-only `Map` available through `event.context`, so context values must be durable values (see [Step values](./steps.md#step-values)).
+A middleware function receives these arguments:
 
-Trigger middleware does not run for the observation routes or `/cancel`.
+| Argument | Holds |
+| --- | --- |
+| `req` | The `Request` |
+| `event` | The execution to record: `workflowId`, `params`, `executionId` and a `context` map that the middleware can change |
+| `next` | A function that calls the next middleware, or records the execution after the last one. It returns the response |
+| `logger` | The logger passed to `createRoutes` |
+
+A middleware function that returns its own response, without calling `next`, stops the request, and nothing is recorded. A function that calls `next` can also change the response before it returns it, for example to add headers.
+
+The workflow reads the context as `event.context`, so it can read the user's ID with `event.context.get("userId")`. Context values must be [durable values](./step-values.md).
+
+**The context starts with the values that the client sent.** A client can send `context: { userId: "user-admin" }` in the body, and without middleware that changes it, the workflow receives that value. `requireUser` calls `event.context.clear()` first, so the workflow receives only the values that the middleware set.
 
 ## Observation middleware
 
-`/poll`, `/wait`, `/list` and `/events` return results and errors, which are often derived from `params`, to anyone who can call them, and `/cancel` lets anyone who can call it stop any execution. Without observation middleware, any caller that can reach the server can read and cancel every execution, and `/list` returns every execution's ID with its result or error. When `createRoutes` has trigger `middleware` but no `observationMiddleware`, it logs a warning, because a deployment that guards `/trigger` would otherwise gain open observation and cancel routes on upgrade. Pass `observationMiddleware: []` to allow every request on purpose and silence the warning. Configure observation middleware to decide who may read and cancel them:
+**Without observation middleware, anyone who can reach the server can read and cancel every execution.** `/list` returns every execution, with its result or error. Observation middleware decides who can use `/poll`, `/wait`, `/list`, `/cancel` and `/events`.
 
-```ts
+`ownExecutionsOnly` allows a user to read and cancel only the executions they started. It compares the user with the `userId` that `requireUser` recorded:
+
+```ts [src/durable/auth.ts]
 import type { ObservationMiddlewareFunction } from "@notation/durable/http";
 
-const tenantOnly: ObservationMiddlewareFunction = async (req, request, logger) => {
-  const tenant = tenantFromToken(req.headers.get("Authorization"));
-  if (!tenant) return { allow: false, status: 401 };
-  // A list filter has no tenant, so this policy does not allow lists.
-  if (request.operation === "list") return { allow: false, status: 403 };
+export const ownExecutionsOnly: ObservationMiddlewareFunction = async (req, request) => {
+  const userId = await userFromRequest(req);
+
+  if (!userId) {
+    return { allow: false, status: 401 };
+  }
+
+  if (request.operation === "list") {
+    return { allow: false, status: 403 };
+  }
+
   const record = await request.load();
-  // An unknown ID is denied too, so a caller cannot probe for other tenants' IDs.
-  if (record?.params?.tenant !== tenant) return { allow: false, status: 403 };
+
+  if (record?.context.get("userId") !== userId) {
+    return { allow: false, status: 403 };
+  }
+
   return { allow: true };
 };
-
-createRoutes({ runtime, logger, observationMiddleware: [tenantOnly] });
 ```
 
-Each function receives three arguments: `req` (the incoming `Request`), `request` (an `ObservationRequest` that describes what the caller asks to read or cancel) and `logger`. `ObservationRequest` is one of:
+A list filter does not name a user, so this policy denies `/list`.
 
-```ts
-type ObservationRequest =
-  | {
-      operation: "poll" | "wait" | "events";
-      executionId: string;
-      load(): Promise<ExecutionRecord | undefined>;
-    }
-  | {
-      operation: "list";
-      filter: { workflowId?: string; status?: ExecutionStatus };
-    }
-  | {
-      operation: "cancel";
-      executionId: string;
-      force: boolean;
-      load(): Promise<ExecutionRecord | undefined>;
-    };
-```
+The function receives the `Request`, a description of the request, and the logger. It returns `{ allow: true }`, or `{ allow: false, status }` with a status of `401` or `403`. The description depends on the route:
 
-Each function resolves with `{ allow: true }` or `{ allow: false, status: 401 | 403 }`.
+| `request.operation` | Other fields |
+| --- | --- |
+| `"poll"`, `"wait"`, `"events"` | `executionId`, and `load()` |
+| `"cancel"` | `executionId`, `force`, and `load()` |
+| `"list"` | `filter`, with `workflowId` and `status` |
 
-- The functions run in array order, before the route reads any record. The first denial wins, and the later functions do not run.
-- A denial responds `401` `UNAUTHORIZED` or `403` `FORBIDDEN`, never `404`. So a denied caller cannot tell whether an execution exists.
-- `load` reads the full execution record, including `params` and `context`, for a policy that needs them. It resolves `undefined` for an unknown ID. A policy that denies only when the record exists reveals whether it exists. The example above denies an unknown ID as well, so it reveals nothing.
-- A `list` request carries its filter and no `load`.
-- A `cancel` request carries the `executionId`, whether the request is forced, and `load`. The same functions authorize reads and cancels, so a policy that should allow reads but not cancels, or not forced cancels, must check `operation` and `force`.
+`load()` reads the whole execution record, including `params` and `context`, or returns `undefined` if no execution has the ID.
+
+Observation middleware follows these rules:
+
+- The functions run in array order, before the route reads anything. The first denial ends the request.
+- A denial responds `401` `UNAUTHORIZED` or `403` `FORBIDDEN`, never `404`.
 - A function that throws responds `500` `INTERNAL_ERROR`.
-- Observation middleware does not run for `/trigger`.
+- The same functions decide reads and cancels. A policy that allows reads but not cancels checks `request.operation`.
 
-`/trigger` also reveals something about existing executions. A caller that trigger middleware allows can send `idempotent: true` with another execution's ID and a guess at its `params`. The response is `200` `existing` when the guess matches and `409` `EXECUTION_REQUEST_MISMATCH` when it does not, so the caller can test guesses at that execution's `params`. Any trigger with a used ID also shows that the ID exists. Observation middleware cannot prevent this. Limit who may trigger with trigger middleware, or use execution IDs that other callers cannot guess.
+**A policy that denies only existing executions shows which IDs exist.** If `ownExecutionsOnly` allowed requests when `load()` returned `undefined`, a caller would get `404` for an unknown ID and `403` for another user's execution. `ownExecutionsOnly` denies both with `403`.
 
-This package does not choose an authorization policy.
+If `createRoutes` has trigger middleware but no `observationMiddleware`, it logs a warning. To allow every request on purpose, pass `observationMiddleware: []`.
+
+## What `/trigger` shows
+
+`/trigger` can show that an execution exists, and observation middleware does not run on it:
+
+- A trigger with an ID that is in use responds `409`, so the caller learns that the ID exists.
+- An idempotent trigger with another user's execution ID and a guess at its `params` responds `200` if the guess is right, and `409` if it is wrong.
+
+To prevent this, limit who can trigger with trigger middleware, or let the server choose execution IDs, which are random UUIDs.
+
+## Order of checks
+
+The routes check the body before middleware runs. A request with an invalid body gets `400` even from a caller that middleware would reject with `401`. The `400` response describes only what was wrong with the body.
+
+## `/events`
+
+`/events` is deprecated. It waits without a time limit, and responds `200` with the workflow's return value, or `500` with the workflow's error.
+
+**A `500` from `/events` does not always mean that the workflow failed.** For a failed or cancelled execution, the body is the recorded error, written by the codec. For a server error, the body is `{ code: "INTERNAL_ERROR", message: "Internal error" }`. Use `/wait` instead, which reports both outcomes as `200` views.
