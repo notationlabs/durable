@@ -1315,10 +1315,14 @@ async function* evaluateWhen<T, R>(params: {
   if (!read.ok) return yield* fail(stepKey, read.error);
 
   const snapshot = read.value;
-  const { result, readPaths } = trackStoreSelector(
-    cloneStoreState(snapshot.state as T),
-    selector
-  );
+  let tracked: ReturnType<typeof trackStoreSelector<T, R | undefined | null | false>>;
+  try {
+    tracked = trackStoreSelector(cloneStoreState(snapshot.state as T), selector);
+  } catch (err) {
+    // Recorded as the step's error, as for `select` and `take`.
+    return yield* fail(stepKey, err);
+  }
+  const { result, readPaths } = tracked;
 
   if (result !== undefined && result !== null && result !== false) {
     return { matched: true, value: result as NonNullable<R> };

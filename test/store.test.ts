@@ -1065,6 +1065,46 @@ test("an initial state that throws reaches workflow code from every operation", 
   expect(await sdk.storeClient.listStores(UnseededStore)).toEqual([]);
 });
 
+test("a selector that throws records the error as the step's outcome", async () => {
+  let selectorRuns = 0;
+  const throwing = (): false => {
+    selectorRuns++;
+    throw new Error("selector failed");
+  };
+  const testWorkflow = workflow(async function* (step) {
+    const store = step.store(ConversationStore, { id: "throwing-selector" });
+    const operations = {
+      when: () => store.when("when", throwing),
+      timedWhen: () => store.when("timed-when", throwing, { deadline: Date.now() + 60_000 }),
+      select: () => store.select("select", throwing),
+      take: () => store.take("take", throwing, () => {}),
+    };
+    const errors: Record<string, string> = {};
+    for (const [name, operation] of Object.entries(operations)) {
+      try {
+        yield* operation();
+      } catch (err) {
+        errors[name] = (err as Error).message;
+      }
+    }
+    yield* step.delay("replay", REPLAY_DELAY_MS);
+    return errors;
+  });
+
+  const sdk = createSdk({ workflow: testWorkflow });
+  const result = await sdk.triggerAndWait({ workflowId: "workflow" });
+
+  expect(result).toEqual({
+    when: "selector failed",
+    timedWhen: "selector failed",
+    select: "selector failed",
+    take: "selector failed",
+  });
+  // Replay after the delay throws the recorded errors without running the
+  // selectors again.
+  expect(selectorRuns).toBe(4);
+});
+
 function strictSchema<T>(validator: (v: unknown) => string | undefined): StandardSchemaV1<unknown, T> {
   return {
     "~standard": {
