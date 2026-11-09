@@ -1,64 +1,45 @@
-# Notation Durable
+# Durable
 
-A TypeScript-native durable execution engine that runs anywhere.
-
-Write workflows as async generator functions that yield steps. First-class primitives for retries, delays, polling, and durable stores.
-
-## Install
+Durable is a TypeScript library for running workflows and keeping state that outlives any single process. It runs inside your application on Bun or Node, and keeps its records in a SQLite file.
 
 ```sh
-bun add @notation/durable
+npm install @notation/durable pino
 ```
 
-The runtime parts are entry points of the same package:
-
-- Local execution: `@notation/durable/worker`, `@notation/durable/sqlite`
-- HTTP server: `@notation/durable/http`, `@notation/durable/worker`
-
-Runtime authors can check a runtime with `@notation/durable-conformance`.
-
-Select `@notation/durable/sqlite/bun` for `bun:sqlite` or `@notation/durable/sqlite/node` for `node:sqlite`.
-
-## Quick Look
-
-Define a workflow that composes steps:
+A workflow is an async generator function made of steps. Durable records the result of each step as it finishes, so a workflow can wait for days and survive a restart without repeating the steps that already finished:
 
 ```ts
 import { workflow } from "@notation/durable";
+import { sendEmail } from "./email";
 
-export const simple = workflow(async function* (step) {
-  const n = yield* step.run(() => 1);
-  yield* step.delay(1000);
-  return yield* step.run(() => n * 2);
+export const onboarding = workflow<{ email: string }>(async function* (step, event) {
+  const { email } = event.params;
+
+  yield* step.run("send-welcome", async () => {
+    await sendEmail(email, "Welcome to Acme");
+  });
+
+  yield* step.delay("wait", 3 * 24 * 60 * 60 * 1000);
+
+  yield* step.run("send-tips", async () => {
+    await sendEmail(email, "Three tips for your first week");
+  });
 });
 ```
 
-Retries are explicit and structured:
+The [Quick start](https://notation.dev/durable/manual/quickstart) sets up the runtime and the worker process, and starts this workflow. The [documentation](https://notation.dev/durable) covers workflows, stores, deployment and the API.
 
-```ts
-import { RetryableError } from "@notation/durable";
+## Packages
 
-yield* step.run(async () => {
-  // e.g. flaky fetch
-  throw new RetryableError("temporary", { maxAttempts: 4, retryInterval: 1000 });
-});
-```
-
-## Learn More
-
-- Full usage, runtimes, APIs, and examples: [packages/durable/README.md](packages/durable/README.md)
-- Runtime families and connectors: [docs/runtimes/index.md](docs/runtimes/index.md)
-- Store connector specification and qualification: [docs/store-connector-spec.md](docs/store-connector-spec.md)
+| Package | Is |
+| --- | --- |
+| [`@notation/durable`](packages/durable) | The library |
+| [`@notation/durable-conformance`](packages/durable-conformance) | Test suites for authors of other runtimes |
 
 ## Contributing
 
-- Please open an issue to discuss significant changes before submitting a PR.
-- See CONTRIBUTING.md for repo layout, dev workflow, testing, and release details.
+Please open an issue to discuss a significant change before you submit a pull request. See [CONTRIBUTING.md](CONTRIBUTING.md) for the repository layout, the development commands and releases.
 
 ## License
 
 MIT
-
-## Author
-
-[Daniel Grant](https://danielgrant.co)
