@@ -7,12 +7,7 @@ on:
 
 jobs:
   test:
-    name: ${{ matrix.runtime }}
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        runtime: [bun, node]
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -26,4 +21,6 @@ jobs:
       - run: pnpm install --frozen-lockfile --filter '!@notation/durable-docs'
       - run: pnpm exec pok build
       - run: pnpm exec pok typecheck
-      - run: pnpm exec pok test ${{ matrix.runtime }}
+      - run: pnpm exec pok test bun
+      # Installs the packed packages and runs the conformance suites under Node.
+      - run: pnpm exec pok test conformance
