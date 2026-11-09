@@ -334,6 +334,7 @@ test("an EffectClient failure inside a worker replies retry: deliver rejects, th
   );
   expect(errors[0]!.err).toMatchObject({
     name: "InfrastructureError",
+    code: "EFFECT_CLIENT_UNAVAILABLE",
     cause: { name: "EffectDeliveryError", code: "EFFECT_CLIENT_UNAVAILABLE" },
   });
   // Released, not expired: the record has no live lease.

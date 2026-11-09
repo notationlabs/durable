@@ -407,10 +407,16 @@ const INFRASTRUCTURE_ERROR = Symbol.for("@notation/durable.infrastructureError")
  */
 export class InfrastructureError extends Error {
   readonly [INFRASTRUCTURE_ERROR] = true;
+  /** The cause's `code`, when it is a string. */
+  readonly code?: string;
 
   constructor(cause: unknown) {
     super(cause instanceof Error ? cause.message : String(cause), { cause });
     this.name = "InfrastructureError";
+    // pino's error serializer writes the cause's message and stack, but not
+    // its fields, so the code is copied here for the logs.
+    const code = (cause as { code?: unknown } | null)?.code;
+    if (typeof code === "string") this.code = code;
   }
 
   static is(value: unknown): value is InfrastructureError {

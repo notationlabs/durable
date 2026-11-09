@@ -30,6 +30,7 @@
 ### Added
 
 - `@notation/durable/client` exports the HTTP SDK, `HttpRouteError`, the errors the SDK throws, `registerErrorClass` and the execution view types. It imports no Node built-ins, pino or the dispatcher, so it bundles for the browser. `@notation/durable` still exports the HTTP SDK.
+- `InfrastructureError` has the `code` of its cause, when the cause has one. pino's error serializer does not write a cause's fields, so a log of a failed delivery now shows the code, such as `EFFECT_HANDLER_INVALID`.
 - `@notation/durable/testing` runs workflows in memory, without a worker process or a database file. `createTestSdk(router, { logger?, clock? })` returns a local SDK over a new `MemoryRuntime`, together with that `runtime` and the `dispatcher` it starts on the first trigger. The entry point also exports `MemoryRuntime` and `createInProcessInvoker`, which delivers executions in the calling process.
 - `workflow` and `createWorkflow` default their type parameters to `EventParams`, `DurableValue | void` and `EventContext`, so `workflow<Params, Result>` and `workflow<Params>` typecheck.
 - `StoreValidationError` is exported from `@notation/durable`.
