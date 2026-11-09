@@ -5,7 +5,7 @@ The HTTP SDK starts, reads and cancels executions through the routes of an [HTTP
 This page uses the web app of a reports product. The app server runs on a different host from Durable. A signed-in user starts an export of a month of their account's data, waits for it, and can cancel it. The app calls Durable with the user's session token, so the Durable server knows which user made each request:
 
 ```ts [src/durable-client.ts]
-import { createHttpSdkFactory } from "@notation/durable";
+import { createHttpSdkFactory } from "@notation/durable/client";
 import type { Router } from "./workflows/router";
 
 const createSdk = createHttpSdkFactory<Router>();
@@ -56,6 +56,8 @@ export async function cancelExport(sessionToken: string, executionId: string) {
 `createHttpSdkFactory` takes the `Router` type as a type argument, and returns a function that creates an SDK for one server. TypeScript uses `Router` to check each workflow ID and its params, as it does for the local SDK. Creating an SDK sends no request, so the app creates one for each user.
 
 **Import the router with `import type`.** The SDK needs only the router's type, so the app server does not load the workflows or the code they import.
+
+`@notation/durable/client` exports the HTTP SDK, its errors and the view types. Unlike `@notation/durable`, it imports no Node modules, so the same code also works in a browser.
 
 | Option | Holds |
 | --- | --- |
@@ -136,7 +138,7 @@ The SDK checks some arguments before it sends a request. `trigger` throws `Execu
 `HttpRouteError` has the response's `status`, and its `code` when the body has one. The example can tell that the server denied a request because the user's session expired:
 
 ```ts
-import { HttpRouteError } from "@notation/durable";
+import { HttpRouteError } from "@notation/durable/client";
 
 try {
   await sdk.poll(executionId);
