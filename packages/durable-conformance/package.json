@@ -11,8 +11,8 @@
   "type": "module",
   "exports": {
     ".": {
-      "types": "./dist/runtime-conformance/index.d.ts",
-      "import": "./dist/runtime-conformance/index.js"
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
     }
   },
   "files": [
@@ -22,12 +22,18 @@
   "publishConfig": {
     "access": "public"
   },
+  "scripts": {
+    "build": "tsup"
+  },
   "peerDependencies": {
     "@notation/durable": "workspace:^",
     "vitest": "^3.2.4"
   },
   "devDependencies": {
     "@notation/durable": "workspace:*",
+    "@types/node": "^22.18.0",
+    "tsup": "^8.5.1",
+    "typescript": "^5.9.3",
     "vitest": "^3.2.4"
   }
 }

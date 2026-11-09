@@ -1,7 +1,7 @@
 import type { WorkflowFn } from "@durable/sdk";
 import { expect, test, vi } from "vitest";
 import { createWorkflow } from "@durable/sdk";
-import { EventContext } from "../packages/core/dist";
+import { EventContext } from "@durable/core";
 import { createSdk } from "./sdk";
 
 test("running sync workflows to completion", async () => {

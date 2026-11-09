@@ -107,7 +107,7 @@ const hosts = new Map<string, ReturnType<typeof createRoutes>>();
 let hostCount = 0;
 
 async function routeFetch(input: string | URL | Request, init?: RequestInit) {
-  const request = new Request(input, init);
+  const request = input instanceof Request ? new Request(input, init) : new Request(input.toString(), init);
   const url = new URL(request.url);
   const routes = hosts.get(url.host);
   const route = routes?.[url.pathname];

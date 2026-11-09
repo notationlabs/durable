@@ -1,10 +1,10 @@
 import { defineCommand } from "@pokit/core";
 
 export const command = defineCommand({
-  label: "Watch packages, declarations and tests",
+  label: "Watch types and tests",
   run: async (r) => {
     await r.exec(
-      "pnpm exec concurrently -r \"bun --filter '*' --parallel build --watch\" \"pnpm exec tsc -b --watch\" \"pnpm exec vitest\"",
+      "pnpm exec concurrently -r \"pnpm exec tsc -p . --watch --preserveWatchOutput\" \"pnpm exec vitest\"",
     );
   },
 });

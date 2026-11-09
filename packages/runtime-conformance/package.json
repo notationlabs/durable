@@ -3,16 +3,8 @@
   "version": "0.9.0",
   "private": true,
   "type": "module",
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
   "exports": {
-    ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
-    }
-  },
-  "scripts": {
-    "build": "bun build src/index.ts --outfile dist/index.js --target node --packages=external"
+    ".": "./src/index.ts"
   },
   "dependencies": {
     "@durable/core": "workspace:*"

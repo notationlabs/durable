@@ -1,20 +1,15 @@
 import type { Logger } from "pino";
-import type {
-  WorkflowGenerator,
-  WorkflowEvent,
-  EventParams,
-  ExecutionLease,
-  WorkflowRunOutcome,
-} from "..";
+import type { WorkflowGenerator } from "../base/workflow";
+import type { WorkflowEvent, EventParams } from "../base/event";
+import type { ExecutionLease, WorkflowRunOutcome } from "../base/execution";
+import { InfrastructureError, WorkflowCancelledError } from "../base/execution";
 import {
-  InfrastructureError,
   StepDelay,
   StepEffectWait,
   StepJoinWait,
   StepStoreWait,
-  WorkflowCancelledError,
   WorkflowResult,
-} from "..";
+} from "../base/step";
 import type { Runtime } from "../base/runtime";
 import type { DeliveryOptions } from "../base/invoker";
 import { EventContext } from "../base/event";

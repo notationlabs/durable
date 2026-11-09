@@ -1,16 +1,9 @@
 {
   "extends": "./tsconfig.base.json",
-  "files": [],
-  "references": [
-    { "path": "./packages/core" },
-    { "path": "./packages/sdk" },
-    { "path": "./packages/test-invoker" },
-    { "path": "./packages/test-runtime" },
-    { "path": "./packages/test-utils" },
-    { "path": "./packages/http-server" },
-    { "path": "./packages/sqlite-runtime" },
-    { "path": "./packages/runtime-conformance" },
-    { "path": "./packages/worker-invoker" },
-    { "path": "./test" }
-  ]
+  "compilerOptions": {
+    "types": ["node", "bun"]
+  },
+  "include": ["packages/*/src/**/*.ts", "test/**/*.ts"],
+  // Its source imports the built @notation/durable, so tsup checks it during the build.
+  "exclude": ["packages/durable-conformance"]
 }

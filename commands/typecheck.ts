@@ -1,8 +1,8 @@
 import { defineCommand } from "@pokit/core";
 
 export const command = defineCommand({
-  label: "Build type declarations",
+  label: "Type-check the workspace",
   run: async (r) => {
-    await r.exec("pnpm exec tsc -b");
+    await r.exec("pnpm exec tsc -p .");
   },
 });

@@ -1,11 +1,6 @@
 {
   "extends": "../tsconfig.base.json",
   "compilerOptions": {
-    "composite": false,
-    "declaration": false,
-    "declarationMap": false,
-    "emitDeclarationOnly": false,
-    "noEmit": true,
     "types": ["bun", "node"]
   },
   "include": ["**/*.ts"],

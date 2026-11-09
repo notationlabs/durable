@@ -7,24 +7,11 @@
     "moduleResolution": "bundler",
     "moduleDetection": "force",
 
-    // Best practices
     "strict": true,
     "skipLibCheck": true,
     "skipDefaultLibCheck": true,
     "noFallthroughCasesInSwitch": true,
 
-    // Some stricter flags (disabled by default)
-    "noUnusedLocals": false,
-    "noUnusedParameters": false,
-    "noPropertyAccessFromIndexSignature": false,
-
-    // Project references settings
-    "composite": true,
-    "declaration": true,
-    "declarationMap": true,
-    "sourceMap": true,
-
-    // Don't automatically include anything
-    "emitDeclarationOnly": true
+    "noEmit": true
   }
 }

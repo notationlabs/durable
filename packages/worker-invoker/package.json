@@ -6,10 +6,8 @@
     "node": ">=22.6"
   },
   "type": "module",
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
-  "scripts": {
-    "build": "bun build src/index.ts --outfile dist/index.js --target node --packages=external"
+  "exports": {
+    ".": "./src/index.ts"
   },
   "dependencies": {
     "@durable/core": "workspace:*",

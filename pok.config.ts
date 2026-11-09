@@ -1,8 +1,8 @@
 import { defineConfig } from "@pokit/core";
 import { release } from "pok-plugins";
 
-/** Builds the workspace and assembles the published packages; identical across packages, so it runs once. */
-const BUILD = "bun scripts/build.ts";
+/** Builds both published packages in dependency order; identical across packages, so it runs once. */
+const BUILD = 'pnpm --filter "./packages/*" run build';
 
 const published = (dir: string) => ({ file: `packages/${dir}/package.json`, build: BUILD });
 const versionOnly = (file: string) => ({ file, publish: false as const });
