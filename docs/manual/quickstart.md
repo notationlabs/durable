@@ -1,6 +1,14 @@
-# Quick Start
+# Quick start
 
-A Durable application has three parts: **workflows** that define the work, a **worker** that executes it, and an **app** that triggers it and runs the dispatcher that hands due executions to workers. This guide sets up all three with SQLite persistence.
+This guide builds an application that runs one workflow on Bun. The workflow builds a greeting, waits one second, then adds punctuation. For Node, see [Node](./node.md).
+
+The application has three files:
+
+| File | Contains |
+| --- | --- |
+| `shared.ts` | The workflow, and the storage that both processes open |
+| `worker.ts` | The worker process, which runs workflow code |
+| `app.ts` | The application, which starts the workflow and waits for its result |
 
 ## Install
 
@@ -8,36 +16,31 @@ A Durable application has three parts: **workflows** that define the work, a **w
 @pm.add("@notation/durable pino")
 ```
 
-This quick start uses Bun. For Node, use the [`node:sqlite` connector guide](../runtimes/resident-process-node.md); the shared runtime APIs are identical.
-
-## 1. Define a workflow
-
-A workflow is a generator function that yields steps. Each step is a checkpoint, the result of which is persisted by the runtime and can be retrieved if the workflow is paused or needs to be re-run.
+## 1. Define the workflow
 
 ```ts [shared.ts]
 import { workflow, createWorkflowRouter } from "@notation/durable";
 import { SqliteRuntime, createSqliteDb } from "@notation/durable/sqlite/bun";
 
 export const greet = workflow<{ name: string }, string>(async function* (step, event) {
-  const greeting = yield* step.run(() => `Hello, ${event.params.name}`);
-  yield* step.delay(1000);
-  return yield* step.run(() => `${greeting}!`);
+  const greeting = yield* step.run("greeting", () => `Hello, ${event.params.name}`);
+  yield* step.delay("pause", 1000);
+  return yield* step.run("punctuate", () => `${greeting}!`);
 });
 
 export const router = createWorkflowRouter({ greet });
 export type Router = typeof router;
 
-export const db = createSqliteDb({ path: "./.db/local.sqlite" });
-export const runtime = new SqliteRuntime(db);
+export const runtime = new SqliteRuntime(createSqliteDb({ path: "./.db/local.sqlite" }));
 ```
 
-`createWorkflowRouter` registers workflows by ID. Those IDs become the typed keys the SDK uses to trigger them.
+The two type arguments of `workflow` are the workflow's params and its result.
 
-`SqliteRuntime` keeps execution records, step results and stores in one SQLite file. The app and the worker each construct one over the same file.
+`createWorkflowRouter` gives each workflow an ID. Here the ID of `greet` is `"greet"`. The `Router` type lets TypeScript check the ID and params wherever the workflow is started.
+
+`SqliteRuntime` is Durable's storage, and it keeps every record in one SQLite file. `createSqliteDb` opens the file, creating it and its folder if needed, and `SqliteRuntime` creates its tables.
 
 ## 2. Create the worker
-
-The worker is a subprocess that runs workflow deliveries in isolation. It connects the `WorkflowRunner` to the SQLite runtime, then listens for execution events over IPC.
 
 ```ts [worker.ts]
 import pino from "pino";
@@ -46,22 +49,20 @@ import { createWorkflowWorker } from "@notation/durable/worker";
 import { router, runtime } from "./shared";
 
 const logger = pino();
-
 const runner = new WorkflowRunner(runtime, { router, logger });
 
 createWorkflowWorker(runner, logger).listen();
 ```
 
-## 3. Trigger and await the result
+The worker runs workflow code. It opens its own `SqliteRuntime` over the same file as the application, and waits for the application to send it work.
 
-The app entry point creates an invoker that spawns worker subprocesses on demand, starts an `ExecutionDispatcher` that delivers due executions through that invoker, and uses the typed SDK to trigger workflows.
+## 3. Start the workflow
 
 ```ts [app.ts]
 import pino from "pino";
 import { ExecutionDispatcher, createLocalSdk } from "@notation/durable";
 import { createWorkflowInvoker } from "@notation/durable/worker";
-import { runtime } from "./shared";
-import type { Router } from "./shared";
+import { runtime, type Router } from "./shared";
 
 const logger = pino();
 const workerPath = new URL("./worker.ts", import.meta.url).href;
@@ -80,7 +81,15 @@ console.log(result); // "Hello, World!"
 await dispatcher.stop();
 ```
 
-The SDK only admits the execution: it writes an execution record and makes it due. The dispatcher claims it, forks a worker, and records the outcome. `triggerAndWait` resolves once that record reaches `completed`.
+The application uses three objects:
+
+| Object | Role |
+| --- | --- |
+| `invoker` | Starts a worker process from `worker.ts` each time the workflow needs to run |
+| `dispatcher` | Finds workflows that are due to run, and hands each one to the invoker |
+| `sdk` | Starts workflows and reads their results |
+
+Each start of a workflow is an execution. `sdk.triggerAndWait` writes a record for a new execution of `greet`, then waits until the record holds a result. The SDK never runs workflow code itself, so a dispatcher must be running.
 
 ## 4. Run it
 
@@ -88,10 +97,12 @@ The SDK only admits the execution: it writes an execution record and makes it du
 bun app.ts
 ```
 
-The workflow executes two steps with a 1-second delay between them. 
+The application prints `Hello, World!` after about one second. This is what happens:
 
-The first step computes a greeting. The delay suspends the execution, and its record becomes due again one second later. The dispatcher then delivers it to a new worker, and the second step appends punctuation.
+1. The dispatcher finds the new execution and starts a worker.
+2. The worker runs `greeting`, stores its result, and stops at `pause`. The invoker then stops the worker process.
+3. One second later, the dispatcher starts a new worker.
+4. The new worker replays `greeting` from its stored result, passes `pause`, runs `punctuate`, and stores the workflow's result.
+5. `triggerAndWait` reads the result and returns it.
 
-The state lives in `.db/local.sqlite`.
-
-On resume, completed steps replay from the heap without re-executing.
+The records stay in `.db/local.sqlite`.
