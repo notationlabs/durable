@@ -1,237 +1,194 @@
 # Cancellation
 
-An execution ends when its workflow returns or throws. `cancel` adds a third way: it asks a running workflow to stop, and the workflow receives the request as an error at its next unfinished step.
+An execution ends when its workflow returns or throws. Cancellation is a third way: code outside the workflow asks the execution to stop. The workflow receives the request as a `WorkflowCancelledError` at its next unfinished step, so it can clean up before it ends.
 
-This page uses one example throughout. A shop triggers `place-order` with the execution ID `order-42`. The workflow reserves stock, starts a `fulfil-order` child that books a courier, and then waits on the payments store until the order is paid:
+This page uses a workflow that holds seats at a venue until the customer pays. It also starts a child workflow that emails the customer a payment reminder every hour:
 
 ```ts
 import { WorkflowCancelledError, workflow } from "@notation/durable";
+import { Booking } from "./booking";
 
-const placeOrder = workflow<{ orderId: string }>(async function* (step, event) {
-  const { orderId } = event.params;
-  const reservation = yield* step.run("reserve-stock", () => stock.reserve(orderId));
+export const holdSeats = workflow<{ bookingId: string; seats: string[] }>(async function* (step, event) {
+  const { bookingId, seats } = event.params;
 
-  yield* step.start("start:fulfilment", {
-    workflowId: "fulfil-order",
-    params: { orderId },
+  const hold = yield* step.run("hold-seats", async () => {
+    return await venue.hold(seats);
   });
 
-  const payments = step.store(PaymentStore, { id: orderId });
+  yield* step.start("start-reminders", {
+    workflowId: "send-payment-reminders",
+    params: { bookingId },
+  });
+
+  const booking = step.store(Booking, { id: bookingId });
+
   try {
-    yield* payments.when(`paid:${orderId}`, (state) => state.paid);
+    yield* booking.when("paid", (state) => state.paidAt);
   } catch (err) {
     if (err instanceof WorkflowCancelledError) {
-      yield* step.run("release-stock", () => stock.release(reservation.id));
+      yield* step.run("release-seats", async () => {
+        await venue.release(hold.id);
+      });
     }
     throw err;
   }
 });
 ```
 
-The customer closes the tab and never pays, so `order-42` is suspended on the `when` step. Without cancellation it waits forever, the stock stays reserved and the courier stays booked.
+The customer closes the tab and never pays. Without cancellation, the workflow waits on `paid` forever, the seats stay held and the reminders keep coming.
 
 ## Requesting cancellation
 
-An operator calls `cancel` with the execution ID and an optional reason:
+The application calls `cancel` on the SDK with the execution ID, and optionally a reason:
 
 ```ts
-const result = await sdk.cancel("order-42", { reason: "abandoned" });
+const result = await sdk.cancel(executionId, { reason: "abandoned" });
 ```
 
-`cancel` records a cancellation request on the [execution record](./workflows.md#execution-records), makes the execution due now, and returns. It does not wait for the workflow to stop. The local SDK and the HTTP SDK both have it (see [`sdk.cancel`](./sdk-local.md#sdkcancel)).
+`cancel` records the request on the execution, makes the execution due, and returns. It does not wait for the workflow to stop.
 
-The request is stored on the record as `cancellation`:
+| `cancel` returns | When |
+| --- | --- |
+| `{ status: "requested", execution }` | The execution has not ended. `execution` is its current view |
+| The execution's view | The execution had already ended, or the cancel was [forced](#forced-cancellation) |
+| `undefined` | No execution has this ID |
 
-```ts
-type ExecutionCancellation = {
-  reason?: string;
-  source?: string; // the execution where the cancellation began, when it was propagated
-  forced: boolean;
-  requestedAt: number;
-  deliveredAt?: number; // set when the throw into workflow code is recorded
-};
-```
+The request is saved on the execution as `cancellation`, and execution views include it:
 
-Execution views carry `cancellation` too, so `poll`, `wait` and `list` show it. An observer can tell the two phases apart by `deliveredAt`:
-
-| `deliveredAt` | Meaning                                                              |
-| ------------- | -------------------------------------------------------------------- |
-| Absent        | The request is recorded, and the workflow has not received it yet    |
-| Present       | The workflow has received `WorkflowCancelledError` and is cleaning up |
-
-The request stays on the record whatever the outcome.
+| Field | Holds |
+| --- | --- |
+| `reason` | The reason passed to `cancel` |
+| `source` | For a child, the ID of the execution where the cancellation began. See [Children](#children) |
+| `forced` | Whether the cancel was forced |
+| `requestedAt` | When `cancel` recorded the request |
+| `deliveredAt` | When the workflow received `WorkflowCancelledError`. Absent until then |
 
 ## Where the workflow receives it
 
-The next delivery replays the finished steps as usual. At the first unfinished step, the driver does not run or suspend that step. It records a `WorkflowCancelledError` as the step's result and throws it into workflow code at that step.
+The next delivery replays the finished steps as usual. At the first unfinished step, Durable does not run the step. It records a `WorkflowCancelledError` as the step's result, and throws it into the workflow.
 
-For `order-42`, `reserve-stock` and `start:fulfilment` replay from their records. The `when` step is the first unfinished step, so it throws `WorkflowCancelledError` with `reason: "abandoned"`. The `catch` block runs `release-stock`, and then rethrows.
+In the example, `hold-seats` and `start-reminders` replay from their records. `paid` is the first unfinished step, so it throws `WorkflowCancelledError` with `reason: "abandoned"`. The `catch` block runs `release-seats`, and then throws the error again.
 
 An unfinished step is one of these:
 
-- a step with no record yet, which would otherwise run;
-- a `when` or `take` waiting on a store;
-- a `step.join` or `step.call` waiting on its target;
-- a `step.effect` waiting to look up an uncertain outcome;
-- a step waiting for its next retry after a `RetryableError`;
-- a `step.delay` that has not elapsed.
+- A step with no record yet
+- A `when` or `take` that is waiting on a store
+- A `step.join` or `step.call` that is waiting for a child
+- A `step.effect` that is waiting to look up its outcome
+- A step that is waiting to retry
+- A `step.delay` that has not elapsed
 
-An admitted execution that has never run receives the error at its first step, and that step's function does not run.
+**A delivery that is already running does not receive the request.** Durable reads the request when a delivery starts, and does not interrupt a step function that is running. If `cancel` is called while `hold-seats` runs, that delivery carries on to `paid` and suspends. The next delivery throws at `paid`.
 
-**The driver reads the request when a delivery starts.** A delivery that is already running when the request arrives carries on without it. A step function that is already running is not interrupted. In the example, if `cancel` is called while `reserve-stock` is running, that delivery finishes `reserve-stock`, starts `fulfil-order` and suspends on the `when` step. The request had already made the execution due, so the next delivery throws at the `when` step. If the delivery in progress returns instead, the execution ends `completed`.
+If the delivery that is already running reaches the end of the workflow, the execution ends `completed`, and the request has no effect.
 
-### Recording the throw
+## After the throw
 
-The driver records the throw before it reaches workflow code, so the throw happens once. In one fenced write, the runtime:
+The step that throws stops waiting. In the example, `paid` no longer waits on the booking store, so a payment that arrives after the throw does not wake the workflow.
 
-1. records the step's result as a cancellation, which is a different record type from a step error;
-2. deletes the store, effect and join waiters of that step; and
-3. sets `cancellation.deliveredAt`.
+A later delivery replays the same `WorkflowCancelledError` at the same step, with the same `reason`, and the `catch` block runs again on the way to the next unfinished step.
 
-Step 2 matters for the example: a payment recorded after the throw does not wake `order-42`, because its store waiter is gone. A pending effect is not changed: its external operation is not cancelled, and a later `settle` still succeeds.
-
-Replay reads the recorded cancellation at the same step and throws the same error again, without reading the request. `WorkflowCancelledError` is registered by default (see [Errors in step records](./steps.md#errors-in-step-records)), so `instanceof` holds on replay, and `reason` and `source` are kept.
-
-A `WorkflowCancelledError` that a step function throws itself is an ordinary step error, not a delivered cancellation.
+A `step.effect` that was waiting on an external operation does not cancel that operation. If the operation needs to be undone, the cleanup code has to do it.
 
 ## Cleaning up
 
-After the throw, workflow code can run more durable steps. They are ordinary steps: they are recorded, and they can suspend and wake like any other. If `release-stock` were a `step.effect` that suspends, a later delivery would replay the recorded throw at the `when` step, enter the `catch` block again and continue the cleanup. A store, effect or join wait that a cleanup step registers wakes the execution as usual.
+Steps after the throw, such as `release-seats`, are ordinary steps. They are recorded, and they can retry, suspend and wake as any other step can. If `release-seats` waits to retry, a later delivery replays the throw at `paid`, enters the `catch` block again, and continues with `release-seats`.
 
-A child that a cleanup step starts receives no cancellation request.
-
-## Inside `step.all` and `step.race`
-
-When the first unfinished step is inside a [combinator](./concurrent-steps.md), the delivery lands in every unfinished branch at once. Suppose `order-42` waits for payment and for a manager's approval in one `step.all`:
-
-```ts
-yield* step.all("payment-and-approval", [
-  (async function* () {
-    try {
-      yield* payments.when("paid", (state) => state.paid);
-    } catch (err) {
-      yield* step.run("void-invoice", () => billing.void(orderId));
-      throw err;
-    }
-  })(),
-  approvals.when("approved", (state) => state.approved),
-]);
-```
-
-The driver replays each branch to its first unfinished step: `paid` in the first branch and `approved` in the second. One fenced write then:
-
-1. records a cancellation at `paid` and at `approved`;
-2. deletes the waiters of both steps;
-3. records the decision `cancelled` under `payment-and-approval`, and under any other combinator around those steps that has not settled; and
-4. sets `cancellation.deliveredAt`.
-
-Each branch then receives `WorkflowCancelledError`, and its own `catch` and `finally` blocks run. They may run durable steps, such as `void-invoice`. When every branch has finished, `step.all` throws `WorkflowCancelledError`, even if a branch caught the error and returned a value.
-
-A pending request takes precedence over a combinator that has not recorded a decision. While a branch is parked at an unfinished step, the combinator does not decide, even if another branch has already returned or failed. A `step.race` whose `when` branch returns while its delay branch is parked records `cancelled`, not `won`, and both branches run their cleanup. A `fail-fast` `step.all` with a branch that already failed throws `WorkflowCancelledError`, not that branch's error.
-
-A combinator that settled before the request arrived is not interrupted. Replay returns its recorded outcome, and the cancellation lands at the next unfinished step after it. Branches that the combinator abandoned do not receive it.
+A child that a cleanup step starts does not receive a cancellation request.
 
 ## Outcomes
 
-The execution's outcome depends on how the workflow ends:
+The execution's final status depends on how the workflow ends:
 
-| The workflow                                                    | Outcome     |
-| --------------------------------------------------------------- | ----------- |
-| Lets `WorkflowCancelledError` escape, by rethrowing it or not catching it | `cancelled` |
-| Catches the error and returns a value                           | `completed`. The workflow has declined the request |
-| Throws a different error                                        | `failed`    |
-| Throws its own `WorkflowCancelledError` with no request recorded | `failed`   |
+| The workflow | Status |
+| --- | --- |
+| Throws `WorkflowCancelledError`, by throwing it again or by not catching it | `cancelled` |
+| Catches the error and returns a value | `completed` |
+| Throws a different error | `failed` |
 
-`cancelled` is a terminal status, like `completed` and `failed`. Its outcome is `{ status: "cancelled", reason?, source? }`, with the request's first `reason` and `source`. A cancelled execution never runs workflow code again, and wakes for it are ignored.
+`holdSeats` throws the error again, so the execution ends `cancelled`, and its view has `reason: "abandoned"`. A cancelled execution does not run again.
 
-`order-42` rethrows, so it ends `cancelled` with `reason: "abandoned"`.
+**`WorkflowCancelledError` ends an execution `cancelled` only if a request was recorded before the delivery started.** Without a request, a workflow or step that throws its own `WorkflowCancelledError` ends the execution `failed`, as any other error does.
 
 ## Children
 
-When the request for `order-42` is recorded, the runtime also records a request on every child that `order-42` started with [`step.start`](./steps.md#stepstart) or [`step.call`](./steps.md#stepcall), and on their children, all the way down. So `fulfil-order` receives its own `WorkflowCancelledError`, and its own `catch` block can cancel the courier.
+When `cancel` records the request for `holdSeats`, it also records a request on every child that `holdSeats` started with `step.start` or `step.call`, and on their children, and so on. So `send-payment-reminders` receives its own `WorkflowCancelledError`, and no more reminders are sent.
 
-Each propagated request has:
+Each child's request has the parent's `reason`, and the same `forced` value. Its `source` is the ID of the execution where the cancellation began, so for `send-payment-reminders` and any child it starts, `source` is the ID of the `holdSeats` execution.
 
-- the same `force` value as the parent's request;
-- the parent's first `reason`; and
-- as `source`, the execution where the cancellation began: the parent's own `source`, or the parent's ID when the cancellation began there. For `fulfil-order` and its children, `source` is `order-42`.
+`cancel` records all of these requests in one write, before it returns. It does not wait for the parent to clean up.
 
-The runtime records the request and every propagated request in one all-or-nothing write, when `cancel` is called. It does not wait for the parent to finish.
+These children do not receive a request:
 
-These children receive no request:
+| Child | Why |
+| --- | --- |
+| A child that has already ended | Its own children do not receive one either |
+| A child started with `detached: true` | See below |
+| A child started by a cleanup step | The parent already received its request |
 
-- a child that is already terminal. The runtime does not look past it, so its own children receive no request either;
-- a child started with `detached: true` (see below);
-- a child started by a cleanup step, after the parent's `deliveredAt` is set.
+A child that a running delivery starts after `cancel` was called receives a request when it is created.
 
-A child that the parent starts after the request but before the throw, such as a `step.start` in the delivery that was running when `cancel` was called, receives a request when it is admitted.
-
-A descendant that already has a request keeps its first `reason` and `source`.
-
-### Detached children
-
-A child that should outlive its parent, such as a receipt email, is started with `detached: true`:
+A child that should outlive its parent, such as one that sends a receipt, is started with `detached: true`:
 
 ```ts
 yield* step.start(
-  "start:receipt",
-  { workflowId: "send-receipt", params: { orderId } },
+  "start-receipt",
+  { workflowId: "send-receipt", params: { bookingId } },
   { detached: true }
 );
 ```
 
-The child's `parent` link is recorded with `detached: true`, and the child receives no propagated request. `step.call` takes the same option. `detached` is part of the start request, so a replay that changes it throws `WorkflowStartError` with `START_REQUEST_MISMATCH`.
+`step.call` takes the same option.
+
+## Inside `step.all` and `step.race`
+
+When the next unfinished step is inside a [`step.all` or `step.race`](./concurrent-steps.md), every branch that has not finished receives `WorkflowCancelledError` at its own next unfinished step.
+
+Unlike a losing branch, each branch runs its `catch` and `finally` blocks, which can run cleanup steps. When every branch has finished, `step.all` or `step.race` throws `WorkflowCancelledError`. It throws it even if a branch caught the error and returned a value.
+
+**A request comes before a decision that has not been recorded.** If one branch of a race has already returned but another is still waiting, the race does not pick a winner. Every branch receives the error instead.
+
+A `step.all` or `step.race` that recorded its result before the request arrived is not affected. The error lands at the next unfinished step after it.
 
 ## Forced cancellation
 
-A graceful cancel trusts the workflow to clean up and stop. Suppose `release-stock` waits on a warehouse that never answers. `force: true` ends the execution without running workflow code:
+A request as described so far relies on the workflow to clean up and end. If `release-seats` waits on a venue system that never answers, the execution never ends. A forced cancel ends the execution without running any more workflow code:
 
 ```ts
-await sdk.cancel("order-42", { reason: "abandoned", force: true });
+await sdk.cancel(executionId, { reason: "abandoned", force: true });
 ```
 
-A forced cancel, in one all-or-nothing write:
+A forced cancel does the following, in one write:
 
-1. records the outcome `cancelled`;
-2. clears the execution's pending wake and deletes the store, effect and join waiters it holds;
-3. issues a higher lease token, so a worker that holds a lease on the execution has its next fenced write rejected as `lost`; and
-4. wakes every execution that joins it.
+1. Sets the execution's status to `cancelled`
+2. Removes everything the execution was waiting on, so nothing wakes it
+3. Makes sure that a delivery that is still running cannot record anything else
+4. Wakes executions that are waiting for it with `step.join` or `step.call`
 
-A forced cancel after a graceful one is accepted. It keeps the first `reason`, and sets `forced` to `true`. Force propagates to descendants in the same way as a graceful request, and makes each descendant's request forced.
+No cleanup code runs, so in the example the seats stay held. The execution's `cancellation` has no `deliveredAt`.
 
-## Repeated and late requests
+A forced cancel propagates to children as a request does, and forces the children's requests too.
 
-- A repeated request keeps the first `reason` and `source`.
-- Cancelling a terminal execution, including one that is already `cancelled`, changes nothing and returns its terminal view.
-- Cancelling an unknown execution ID returns `undefined`.
-- A graceful request makes the execution due now, but the [redelivery delay](./workflows.md#execution-records) still applies to an execution whose earlier deliveries ended without an outcome.
+## Repeated requests
 
-## Joining a cancelled execution
-
-A [`step.join`](./steps.md#stepjoin) or [`step.call`](./steps.md#stepcall) whose target ends `cancelled` throws `WorkflowJoinError` with code `JOINED_EXECUTION_CANCELLED`. The error carries the target's `reason` and `source`.
-
-```ts
-try {
-  yield* step.join("fulfilment:join", fulfilmentId);
-} catch (err) {
-  if (err instanceof WorkflowJoinError && err.code === "JOINED_EXECUTION_CANCELLED") {
-    // err.reason and err.source are the target's
-  }
-}
-```
-
-Two executions that join each other without a deadline wait forever. Cancelling either one ends the cycle.
+| Request | Result |
+| --- | --- |
+| A second request without `force` | Changes nothing. The first `reason` stays |
+| A forced request after one without `force` | Forces the cancel, and keeps the first `reason` |
+| Any request on an execution that has ended | Changes nothing, and returns the execution's view |
 
 ## Reading the outcome
 
-`wait` returns a cancelled execution's view as a terminal result. `triggerAndWait` and the HTTP SDK's `waitForResult` throw `WorkflowCancelledError` with the outcome's `reason` and `source`:
+`sdk.wait` returns the view of a cancelled execution, as for any execution that has ended:
 
 ```ts
-const execution = await sdk.wait("order-42");
+const execution = await sdk.wait(executionId);
+
 if (execution?.status === "cancelled") {
-  execution.reason; // "abandoned"
-  execution.cancellation?.deliveredAt; // absent after a forced cancel that ran no workflow code
+  console.log(execution.reason); // "abandoned"
 }
 ```
 
-An idempotent trigger that matches a cancelled execution returns `"existing"`, as it does for any status.
+`sdk.triggerAndWait` throws `WorkflowCancelledError` instead, with the `reason` and `source` of the cancellation.
+
+A parent whose `step.join` or `step.call` waits for a cancelled child receives `WorkflowJoinError` with the code `JOINED_EXECUTION_CANCELLED`. See [Child workflows](./child-workflows.md#child-failures).
