@@ -86,6 +86,24 @@ registerCancellationClientConformance({ name: "installed-sqlite", create: sqlite
 `
   );
   await writeFile(
+    join(directory, "testing.test.ts"),
+    `import { expect, test } from "vitest";
+import { workflow } from "@notation/durable";
+import { createTestSdkFactory } from "@notation/durable/testing";
+
+const greet = workflow<{ name: string }, string>(async function* (step, event) {
+  return yield* step.run(() => \`Hello, \${event.params.name}\`);
+});
+
+test("the testing entry point runs a workflow in memory", async () => {
+  const sdk = createTestSdkFactory()({ greet });
+  await expect(
+    sdk.triggerAndWait({ workflowId: "greet", params: { name: "World" } })
+  ).resolves.toBe("Hello, World");
+});
+`
+  );
+  await writeFile(
     join(directory, "pnpm-workspace.yaml"),
     `allowBuilds:
   esbuild: true
@@ -93,8 +111,8 @@ registerCancellationClientConformance({ name: "installed-sqlite", create: sqlite
   );
 
   run(["pnpm", "install"], directory);
-  run(["pnpm", "exec", "tsc", "--noEmit", "--strict", "--module", "nodenext", "--moduleResolution", "nodenext", "--skipLibCheck", "false", "--types", "node", "conformance.test.ts"], directory);
-  run(["pnpm", "exec", "vitest", "run", "conformance.test.ts"], directory);
+  run(["pnpm", "exec", "tsc", "--noEmit", "--strict", "--module", "nodenext", "--moduleResolution", "nodenext", "--skipLibCheck", "false", "--types", "node", "conformance.test.ts", "testing.test.ts"], directory);
+  run(["pnpm", "exec", "vitest", "run", "conformance.test.ts", "testing.test.ts"], directory);
 } finally {
   await rm(directory, { recursive: true, force: true });
 }

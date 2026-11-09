@@ -14,6 +14,7 @@ export default defineConfig({
     sqlite: source("sqlite-runtime/src/index.ts"),
     "sqlite-bun": source("sqlite-runtime/src/bun.ts"),
     "sqlite-node": source("sqlite-runtime/src/node.ts"),
+    testing: source("test-utils/src/testing.ts"),
   },
   format: "esm",
   platform: "node",

@@ -7,9 +7,12 @@
       "@durable/sdk": ["../sdk/src/index.ts"],
       "@durable/http-server": ["../http-server/src/index.ts"],
       "@durable/worker-invoker": ["../worker-invoker/src/index.ts"],
-      "@durable/sqlite-runtime": ["../sqlite-runtime/src/index.ts"]
+      "@durable/sqlite-runtime": ["../sqlite-runtime/src/index.ts"],
+      "@durable/test-runtime": ["../test-runtime/src/index.ts"],
+      "@durable/test-invoker": ["../test-invoker/src/index.ts"],
+      "@durable/test-utils": ["../test-utils/src/index.ts"]
     }
   },
-  "include": ["../core/src", "../sdk/src", "../http-server/src", "../worker-invoker/src", "../sqlite-runtime/src"],
+  "include": ["../core/src", "../sdk/src", "../http-server/src", "../worker-invoker/src", "../sqlite-runtime/src", "../test-runtime/src", "../test-invoker/src", "../test-utils/src"],
   "exclude": ["../*/src/**/*.test.ts"]
 }

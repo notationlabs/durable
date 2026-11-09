@@ -37,6 +37,10 @@
     "./sqlite/node": {
       "types": "./dist/sqlite-node.d.ts",
       "import": "./dist/sqlite-node.js"
+    },
+    "./testing": {
+      "types": "./dist/testing.d.ts",
+      "import": "./dist/testing.js"
     }
   },
   "files": [
