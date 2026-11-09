@@ -1,604 +1,158 @@
 # @notation/durable/runtime
 
-Base types, abstract classes, the `WorkflowRunner` execution engine, and the `ExecutionDispatcher`. This entry point defines the interfaces that runtime implementations such as `@notation/durable/sqlite` must satisfy.
+`@notation/durable/runtime` exports the contracts that a runtime implements, the helper functions that decide each operation, and the classes that run workflows. Applications import from [`@notation/durable`](./durable.md) instead. See [Runtimes](../runtime-authors/runtimes.md) for how the parts fit together.
 
-## Install
-
-```sh
-@pm.add("@notation/durable")
+```ts
+import { Runtime, isLeaseCurrent } from "@notation/durable/runtime";
 ```
 
-The entry point is part of the `@notation/durable` package.
+## Runtime
 
-## `Runtime` (abstract class)
-
-A runtime bundles the five clients that hold durable state, and the clock they all read. `SqliteRuntime` and `MemoryRuntime` extend it.
+A runtime extends the abstract class `Runtime`:
 
 ```ts
 abstract class Runtime {
-  abstract readonly clock: () => number; // shared by every client and by delay and retry steps
+  abstract readonly clock: () => number;
   abstract readonly executions: ExecutionClient;
-  abstract readonly effects: EffectClient; // step.effect's effect records
+  abstract readonly effects: EffectClient;
   abstract readonly heap: HeapClient;
-  abstract readonly joins: JoinClient; // step.join's waiters
+  abstract readonly joins: JoinClient;
   abstract readonly stores: StoreClient;
 }
-
-interface RuntimeOptions {
-  clock?: () => number; // every client reads time from this; defaults to Date.now
-}
 ```
 
-A runtime is defined by the guarantees its clients keep together, not by how many databases it uses. See [Runtime guarantees](https://github.com/notationlabs/durable/blob/main/docs/store-connector-spec.md#runtime-guarantees).
+`RuntimeOptions` is `{ clock?: () => number }`. `SqliteRuntime` and `MemoryRuntime` take it, and use `Date.now` without it.
 
-## `WorkflowRunner`
+## Clients
 
-Runs one delivery of a workflow against a runtime's heap and stores. The runner replays the generator, advances it to the next durable boundary, and resolves with a `WorkflowRunOutcome`.
+| Export | Kind | Page |
+| --- | --- | --- |
+| `ExecutionClient` | Interface | [Execution client](../runtime-authors/execution-client.md) |
+| `HeapClient` | Abstract class | [Heap client](../runtime-authors/heap-client.md) |
+| `StoreClient`, `CasStoreClient` | Abstract classes | [Store client](../runtime-authors/store-client.md) |
+| `EffectClient` | Interface | [Effect client](../runtime-authors/effect-client.md) |
+| `JoinClient` | Interface | [Join client](../runtime-authors/join-client.md) |
 
-```ts
-import { WorkflowRunner } from "@notation/durable/runtime";
+## Execution helpers
 
-const runner = new WorkflowRunner(runtime, { router, logger });
-```
+Each helper takes the stored `ExecutionState` and returns a new state or an answer. See [Execution client](../runtime-authors/execution-client.md) for which method calls which.
 
-| Param            | Type             | Description                       |
-| ---------------- | ---------------- | --------------------------------- |
-| `runtime`        | `Runtime`        | Supplies `heap`, `stores`, `executions`, `effects` and `joins` |
-| `options.router` | `WorkflowRouter` | Map of workflow IDs to generators |
-| `options.logger` | `Logger`         | Pino logger                       |
+| Helper | Returns |
+| --- | --- |
+| `prepareExecutionAdmission`, `matchExecutionAdmission` | The checked request, and the answer to a repeated admission |
+| `createExecutionState` | The state of a new execution, due at once |
+| `prepareExecutionStart`, `matchStartRequest`, `createStartedExecution` | The same, for an execution that a step starts |
+| `cancellationForStartedChild` | The cancellation request that a new child receives from its caller, if any |
+| `claimExecution`, `isExecutionClaimable`, `nextClaimAt` | A claimed state and its lease, whether a state can be claimed, and when |
+| `renewExecutionLease`, `releaseExecutionLease`, `acknowledgeExecution` | The state after each fenced write, or `lost` |
+| `isLeaseCurrent(state, lease)` | Whether a fenced write may go ahead |
+| `requestExecutionWake` | The state after a wake |
+| `prepareExecutionCancel`, `requestExecutionCancellation`, `propagatedCancellation` | The checked request, the state after a cancel, and the request that children receive |
+| `markCancellationDelivered`, `toExecutionCancellation` | The state after `recordCancellation`, and the request that a delivery carries |
+| `prepareExecutionListRequest`, `matchesExecutionListRequest`, `toExecutionListPage` | The checked request, whether a state matches it, and the page |
+| `executionStatusAt(state, now)` | The status at `now`. A live lease makes it `running` |
+| `unacknowledgedDeliveryCountAt(state, now)` | The deliveries in a row that ended without an outcome |
+| `redeliveryDelay(count)` | The delay before the next claim, in milliseconds |
+| `toExecutionRecord` | The record that `get` returns |
+| `executionNotFound`, `executionIdConflict` | The errors for a missing ID and an ID in use |
 
-`runner.run(event, { lease, signal, cancellation?, logger? })` runs the delivery under `lease`, the `ExecutionLease` the dispatcher claimed. Every step write carries it. The method resolves with an outcome for everything workflow code can cause, and rejects only with an `InfrastructureError`:
+| Constant | Value |
+| --- | --- |
+| `DEFAULT_LEASE_DURATION` | `30000` |
+| `REDELIVERY_DELAY_BASE` | `1000` |
+| `REDELIVERY_DELAY_MAX` | `300000` |
+| `DEFAULT_EXECUTION_LIST_LIMIT` | `50` |
+| `MAX_EXECUTION_LIST_LIMIT` | `1000` |
+
+`encodeExecutionEvent`, `decodeExecutionEvent`, `encodeExecutionOutcome` and `decodeExecutionOutcome` convert an event and an outcome to the strings that a runtime stores. `encodeExecutionEvent` throws `ExecutionEventEncodingError` for a value that is not durable.
+
+## Effect helpers
+
+See [Effect client](../runtime-authors/effect-client.md).
+
+| Helper | Returns |
+| --- | --- |
+| `prepareEffectBegin`, `createEffectState`, `matchEffectBegin` | The checked request, a new `pending` state, and the answer from an existing state |
+| `prepareEffectSettle`, `settleEffect` | The checked request, and the new state with the result and the `wake` flag |
+| `prepareEffectWatch` | The checked request |
+| `toEffectRecord` | The record that `getEffect` returns |
+| `validateEffectRequest` | A message that names the first invalid value of a `begin` request, if any |
+| `effectNotFound` | An `EffectClientInvariantError` for a missing effect |
+
+## Join and store helpers
+
+| Helper | Returns | Page |
+| --- | --- | --- |
+| `readJoinTarget(state)` | The answer to `join` from the target's state | [Join client](../runtime-authors/join-client.md) |
+| `storePathsIntersect(readPaths, changedPaths)` | Whether a read path and a changed path start one with the other | [Store client](../runtime-authors/store-client.md#waiters) |
+| `diffStorePaths(previous, next)` | The paths that differ between two states | |
+| `encodeStoreValue`, `decodeStoreValue` | A store state as a string, and back | |
+| `cloneStoreState` | A copy of a state, as the codec would read it back | |
+| `validateStoreState` | The state that the schema returns. Throws `StoreValidationError` or `WorkflowValueError` | [Store client](../runtime-authors/store-client.md#errors) |
+
+`CasStoreClient` calls the other store exports, such as `trackStoreSelector`, `trackStoreUpdater` and `isStoreSelectorMatch`. A runtime that extends `CasStoreClient` does not call them.
+
+## Running workflows
+
+| Export | Does |
+| --- | --- |
+| `WorkflowRunner` | Runs one delivery. See below |
+| `ExecutionDispatcher` | Claims due executions and passes them to an invoker. See [Running workflows](./durable.md#running-workflows) |
+| `WorkflowInvoker` | The type of an invoker |
+| `WorkerExitedError` | The error with which an invoker rejects when its worker exits before replying |
+
+`runner.run(event, { lease, signal, cancellation? })` runs one delivery and resolves with a `WorkflowRunOutcome`:
 
 ```ts
 type WorkflowRunOutcome =
   | { status: "completed"; result: unknown }
-  | { status: "suspended"; wakeAt?: number } // wakeAt: when a delay, retry or timed wait's deadline elapses
+  | { status: "suspended"; wakeAt?: number }
   | { status: "failed"; error: Error }
-  | { status: "cancelled" }; // the delivery carried a cancellation and workflow code threw WorkflowCancelledError
+  | { status: "cancelled" };
 ```
 
-An event whose `workflowId` has no registered workflow resolves as `failed`. A store wait resolves as `suspended` without `wakeAt`, because a store commit wakes it. A timed `when` resolves as `suspended` with `wakeAt` set to its recorded deadline, after it has recorded the deadline with the unfinished step and registered its waiter. A `step.effect` whose outcome is uncertain resolves as `suspended` with `wakeAt` set to now plus its `retryIn`, after it has watched the effect and recorded the unfinished step. On attempt number `maxAttempts`, it records a `WorkflowEffectError` with code `EFFECT_OUTCOME_UNKNOWN` instead.
+`run` rejects with an `InfrastructureError` when the delivery ends without an outcome, for example after a `LeaseLostError`. See [Failed deliveries](../manual/error-reference.md#failed-deliveries).
 
-Two step-write results also reject with an `InfrastructureError`, and both end the delivery without an outcome:
+An invoker has a `deliver(event, options)` method with the same arguments and result as `run`. **The dispatcher handles a rejection by its kind:**
 
-- The write returns `lost` because another claim has taken over. The cause is a `LeaseLostError`.
-- The step is already recorded with a different value. The cause is a `StepConflictError`. The record stands, the delivery ends as a retry, and the next delivery replays the recorded value.
-
-`cancellation` is the request on the record when the dispatcher claimed the execution. If it has no `deliveredAt`, the runner delivers it at the first unfinished step: a step with no record, an unfinished record (a store, join or effect wait, or a retry backoff), or a `step.delay` whose `wakeAt` has not passed. It calls `HeapClient.recordCancellation` with a done `step-cancelled` record for that step, and then throws the recorded `WorkflowCancelledError` into workflow code without running the step. A delay's record is already done, so its cancellation is written as the step's next attempt. `recordCancellation` returning `lost`, or a different record at the same attempt, ends the delivery with an `InfrastructureError` as for a step write. Replay throws a recorded `step-cancelled` record at its step whatever `cancellation` holds. The run resolves `cancelled` when `cancellation` is present and workflow code throws `WorkflowCancelledError`, and `failed` when it throws one without a request. See [Cancellation](../manual/cancellation.md).
-
-`step.effect` also ends a delivery with an `InfrastructureError`, whose cause is an `EffectDeliveryError`, when it records no step: `EFFECT_CLIENT_UNAVAILABLE` when an `EffectClient` call throws, `EFFECT_RUNTIME_INVARIANT` when it throws `EffectClientInvariantError` (or an error with that `code`) or answers with a malformed response, and `EFFECT_HANDLER_INVALID` when `lookup` or `perform` answers with a malformed response or a value that is not durable, or when `failsOn` throws. The runner never calls `lookup` or `perform` once the delivery's `signal` has aborted.
-
-## `ExecutionRecord`
-
-The durable record of one execution. See [Execution records](../manual/workflows.md#execution-records).
-
-```ts
-type ExecutionStatus =
-  | "admitted"
-  | "running"
-  | "suspended"
-  | "completed"
-  | "failed"
-  | "cancelled";
-
-type ExecutionOutcome =
-  | { status: "completed"; result: unknown }
-  | { status: "failed"; error: Error }
-  | { status: "cancelled"; reason?: string; source?: string };
-
-interface ExecutionRecord {
-  executionId: string;
-  workflowId: string;
-  params: EventParams;
-  context: EventContext; // a ReadonlyMap
-  status: ExecutionStatus;
-  outcome?: ExecutionOutcome; // present only when completed, failed or cancelled
-  admittedAt: number;
-  updatedAt: number;
-  unacknowledgedDeliveryCount: number; // consecutive deliveries that ended without an acknowledgement
-  parent?: ExecutionParent; // present only on executions admitted by `start`
-  cancellation?: ExecutionCancellation; // present once `cancel` has recorded a request
-}
-
-type ExecutionParent = { executionId: string; stepKey: string; detached: boolean };
-
-type ExecutionCancellation = {
-  reason?: string;
-  source?: string; // the execution where the cancellation began, when it was propagated
-  forced: boolean;
-  requestedAt: number;
-  deliveredAt?: number; // set when the throw into workflow code is recorded
-};
-```
-
-`parent` names the execution and step that started this one with [`step.start`](../manual/steps.md#stepstart) or [`step.call`](../manual/steps.md#stepcall). Execution views carry it too. It is set when the target is admitted and never changes. `detached` is `true` when the caller passed `{ detached: true }`, and such a target receives no cancellation propagated from its parent. An execution admitted through `admit`, such as a trigger, has no parent.
-
-`cancellation` is set by the first `cancel` request and stays whatever the outcome. `reason` and `source` never change once recorded, `forced` can only become `true`, and `deliveredAt` is set once. See [Cancellation](../manual/cancellation.md).
-
-`running` means the execution has a live lease. When the lease ends without a terminal acknowledgement, the status returns to `suspended` if an earlier delivery was acknowledged as suspended, and to `admitted` otherwise. Operators can read `unacknowledgedDeliveryCount` to find executions that keep failing.
-
-## `ExecutionClient` (interface)
-
-Admits executions, lists them, holds their pending wakes, leases due executions to dispatchers, and records delivery outcomes.
-
-```ts
-interface ExecutionClient {
-  admit(request: {
-    executionId?: string;
-    workflowId: string;
-    params: EventParams;
-    context: EventContext;
-    idempotent?: boolean;
-  }): Promise<
-    | { status: "accepted"; executionId: string }
-    | { status: "existing"; executionId: string } // an idempotent repeat; nothing was admitted
-    | { status: "rejected"; code: ExecutionAdmissionErrorCode; message: string }
-  >;
-
-  get(executionId: string): Promise<ExecutionRecord | undefined>;
-
-  list(request?: {
-    workflowId?: string;
-    status?: ExecutionStatus;
-    cursor?: string;
-    limit?: number; // default 50, at most 1000
-  }): Promise<{ executions: ExecutionRecord[]; cursor?: string }>;
-
-  start(request: {
-    requestId: { executionId: string; stepKey: string }; // the calling execution and its step
-    workflowId: string;
-    params?: DurableObject;
-    detached?: boolean; // default false; compared on a repeat
-  }): Promise<
-    | { status: "accepted"; executionId: string }
-    | { status: "rejected"; code: WorkflowStartErrorCode; message: string }
-  >;
-
-  cancel(request: {
-    executionId: string;
-    reason?: string;
-    force?: boolean; // records cancelled at once, without running workflow code
-  }): Promise<
-    | { status: "requested" } // recorded; the execution is not terminal
-    | ExecutionOutcome // the execution is terminal: a forced cancel's outcome, or the one it had
-    | { status: "rejected"; code: "EXECUTION_NOT_FOUND"; message: string }
-  >;
-
-  requestWake(request: { executionId: string; wakeAt: number }): Promise<
-    | { status: "requested" }
-    | { status: "ignored" } // the execution is terminal
-    | { status: "rejected"; code: "EXECUTION_NOT_FOUND"; message: string }
-  >;
-
-  claimDue(request: {
-    limit: number;
-    duration: number;
-    filter?: { executionIds?: string[] };
-  }): Promise<ExecutionLease[]>;
-
-  renew(request: {
-    lease: ExecutionLease;
-    duration: number;
-  }): Promise<{ status: "renewed"; lease: ExecutionLease } | LeaseLost>;
-
-  release(request: { lease: ExecutionLease }): Promise<{ status: "released" } | LeaseLost>;
-
-  acknowledge(request: {
-    lease: ExecutionLease;
-    outcome: WorkflowRunOutcome;
-  }): Promise<{ status: "suspended" } | ExecutionOutcome | LeaseLost>;
-}
-
-type ExecutionLease = { executionId: string; token: number; expiresAt: number };
-type LeaseLost = { status: "lost" };
-
-type ExecutionAdmissionErrorCode =
-  | "EXECUTION_ID_CONFLICT"
-  | "INVALID_EXECUTION_EVENT"
-  | "EXECUTION_REQUEST_MISMATCH"
-  | "IDEMPOTENT_TRIGGER_REQUIRES_ID";
-```
-
-| Method        | Contract                                                                                                                                                                  |
-| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `admit`       | Creates the record as `admitted` and makes it due now, all-or-nothing, and assigns it the next admission sequence number. Reserves a supplied ID unchanged or chooses one. Rejects a used ID with `EXECUTION_ID_CONFLICT`, and `params` or `context` values that `durableValueCodec` cannot encode, `context` keys that are not strings, or an `idempotent` value that is not a boolean, with `INVALID_EXECUTION_EVENT`. With `idempotent: true`, it requires an `executionId` (`IDEMPOTENT_TRIGGER_REQUIRES_ID`), and a used ID returns `existing` if the record's `workflowId` and canonical `params` match, whatever its status, and `EXECUTION_REQUEST_MISMATCH` otherwise. `context` is not compared, and the existing record is never changed. Of two concurrent idempotent admissions with the same request, one is `accepted` and the other `existing` |
-| `list`        | Pages through records, newest first by admission sequence. The sequence increases with every admission, including targets of `start`, across every client sharing the backend, whatever their clocks. `status` is matched at the runtime clock's current time. A cursor resumes after the last execution of its page, so paging never returns an execution twice, and executions admitted after the first page do not appear on later ones. Cursors are opaque. An invalid filter, `limit` or `cursor` throws `ExecutionListRequestError` (`INVALID_LIST_REQUEST`); a `limit` above 1000 is lowered to 1000 |
-| `start`       | Admits a target execution on behalf of the step named by `requestId`, idempotently by that ID. A new start admits the target due now, with the caller's `context` and `parent` set to `requestId`, and records the start request, all-or-nothing. A repeated request ID returns the first target's ID if its `workflowId`, canonical `params` and `detached` match, and `START_REQUEST_MISMATCH` otherwise, whatever the target's status. A target that is not detached, started by a caller whose cancellation request has no `deliveredAt`, is admitted with the propagated request; when that request is forced, the target is admitted `cancelled`. Missing `params` and `{}` do not match. An empty `workflowId`, or `params` that are not a plain object or that `durableValueCodec` cannot encode, return `INVALID_START_PARAMETERS` and admit nothing |
-| `cancel`      | Records a cancellation request and propagates it to every non-terminal child whose `parent` is not detached, and recursively to their children, all-or-nothing. A terminal child is skipped, and so are its descendants. A propagated request carries the same `force`, the first `reason`, and as `source` the execution where the cancellation began. A graceful request makes the execution due now; the redelivery delay still applies. A forced request records `cancelled`, clears the pending wake, deletes the store, effect and join waiters the execution holds, requests a wake for every joiner of the execution, and ends any live lease by issuing a higher token. A repeat keeps the first `reason`, `source` and `requestedAt`; a forced request after a graceful one sets `forced`. A terminal execution is not changed and its outcome is returned. An unknown ID is `EXECUTION_NOT_FOUND`. An invalid request throws a `TypeError` and changes nothing |
-| `requestWake` | Carries wakes from outside a delivery, such as a store commit. Pending wakes merge into one due time: the earliest                                                       |
-| `claimDue`    | Leases up to `limit` executions that are due at or before the runtime clock and have no live lease, earliest due first. Each lease lasts `duration` ms and carries a token greater than every earlier token for that execution. An execution has at most one live lease at a time, across every client sharing the backend. With `filter.executionIds`, only executions with those IDs are claimed, in the same atomic claim, and an empty list claims nothing |
-| `renew`       | Extends the lease to `duration` ms from now. Returns `lost` once a higher token has been issued or the lease has ended. An expired lease that nobody has claimed again is still current |
-| `release`     | Ends the lease without an outcome. The delivery counts as unacknowledged, so the execution is claimable again after the redelivery delay |
-| `acknowledge` | Records the outcome and ends the lease, clearing the wakes the delivery covered. The next due time is the earlier of the outcome's `wakeAt` and any wake requested after the claim. A stale lease returns `lost` and changes nothing |
-
-`renew`, `release`, `acknowledge` and `HeapClient.writeStep` are fenced: the adapter checks the lease's token and makes the write in one atomic step, and accepts the write only if the token is current. Clocks decide only when an execution becomes claimable again; tokens decide whose writes count. A holder that receives `lost` must stop, without acknowledging. `HeapClient.recordCancellation` is fenced too. `start` is not fenced: it is idempotent by its request ID, so a stale holder that calls it receives the same target and starts nothing new. `cancel` is not fenced either: it is not part of a delivery, and needs no lease.
-
-A lease ends without an acknowledgement when it is released, or when it expires and another claim takes over. Each such delivery adds one to `unacknowledgedDeliveryCount`, and any acknowledgement resets it to zero. While it is above zero, the execution waits a redelivery delay after the delivery ended before it can be claimed. The delay starts at 1 second and doubles with each unacknowledged delivery, up to 5 minutes (`redeliveryDelay(n)`).
-
-`ExecutionAdmissionError` (`code: ExecutionAdmissionErrorCode`) is what the SDKs throw for a rejected admission. `WorkflowCancelledError` (`reason?`, `source?`) is what the runner throws into workflow code when it delivers a cancellation. `WorkflowStartError` (`code: "INVALID_START_PARAMETERS" | "START_REQUEST_MISMATCH"`) is what `step.start` throws to workflow code for a rejected start; the rejection is recorded as the step's result, so replay throws the same class and code. `InfrastructureError` wraps a runtime failure; `InfrastructureError.is(err)` recognises one even when several copies of `@notation/durable/runtime` are loaded. `isLeaseLost(value)` recognises a `LeaseLost` result.
-
-Runtime adapter authors can import the storage-neutral state machine that `SqliteRuntime` and `MemoryRuntime` share: `prepareExecutionAdmission`, `createExecutionState`, `prepareExecutionStart`, `matchStartRequest`, `createStartedExecution`, `requestExecutionWake`, `claimExecution`, `renewExecutionLease`, `releaseExecutionLease`, `acknowledgeExecution`, `isLeaseCurrent`, `nextClaimAt`, `isExecutionClaimable`, `toExecutionRecord`, and the event and outcome codecs. An adapter persists `ExecutionState` however it likes and applies each transition inside one atomic write. A fenced heap write checks `isLeaseCurrent` in the same write. For `admit`, an adapter validates the request with `prepareExecutionAdmission`, and when the ID is in use answers with `matchExecutionAdmission` in the same atomic step as its insert. For `list`, an adapter assigns each new execution an admission sequence greater than that of every execution in the backend, in the same atomic write as its insert, validates the request and decodes its cursor with `prepareExecutionListRequest`, fetches up to `limit + 1` matching executions below the cursor's sequence (`matchesExecutionListRequest` applies the filters to an `ExecutionState`), and builds the page with `toExecutionListPage`, whose cursor is the last execution's admission sequence as a decimal string. For `start`, an adapter validates the request with `prepareExecutionStart`, looks up the request ID, answers a recorded request with `matchStartRequest`, and otherwise inserts the target and the `StartRequestState` from `createStartedExecution` in one atomic write, choosing another ID if the target's is in use. For `JoinClient.join`, an adapter reads the target's state and answers with `readJoinTarget` in one atomic step, and registers the waiter only when the answer is `waiting`. In the atomic write of an acknowledgement that changes the record to a terminal status, it requests a wake for the joiner of every join waiter on the execution and keeps the waiters. `acknowledgeExecution` returns the same state object when the lease is lost or the record is already terminal, so a changed state with a terminal status identifies that acknowledgement. For `cancel`, an adapter validates the request with `prepareExecutionCancel`, and in one atomic write applies `requestExecutionCancellation` to the target; when the result's `propagate` is true, it applies `propagatedCancellation(state)` to each non-terminal child that is not detached, and repeats for their children. When a result's `terminal` is true, the same write deletes the store, effect and join waiters that execution holds and requests a wake for its joiners. `createStartedExecution` applies `cancellationForStartedChild` itself. For `HeapClient.recordCancellation`, an adapter checks the lease, applies `markCancellationDelivered`, writes the step records and deletes those steps' waiters in one atomic write, and writes nothing if any step already has a different record. `toExecutionCancellation` turns the stored request into the record's `cancellation`. `DEFAULT_LEASE_DURATION` (30 seconds), `REDELIVERY_DELAY_BASE`, `REDELIVERY_DELAY_MAX`, `DEFAULT_EXECUTION_LIST_LIMIT` (50) and `MAX_EXECUTION_LIST_LIMIT` (1000) are the defaults.
-
-## `durableValueCodec`
-
-The one codec for every durable value. It validates values, encodes them as canonical JSON and decodes them back unchanged. Execution `params`, `context` and outcomes are stored with it, and `ExecutionClient.start` compares params by their canonical encoding.
-
-```ts
-type DurableValue =
-  | null | boolean | number | string | undefined | Error
-  | DurableValue[] | DurableObject;
-type DurableObject = { [key: string]: DurableValue };
-
-type DurableValueEncoding =
-  | { status: "encoded"; canonical: string }
-  | { status: "invalid"; message: string };
-type DurableDecoding =
-  | { status: "decoded"; value: DurableValue }
-  | { status: "invalid"; message: string };
-
-const durableValueCodec: {
-  encode(value: unknown): DurableValueEncoding;
-  decode(canonical: string): DurableDecoding;
-};
-
-// Compile-time check for a recorded value; accepts interfaces.
-type Durable<T> = /* T, or never where T holds a function */;
-// unknown when T is durable, otherwise Otherwise. Intersected with a
-// parameter, it checks T without changing how T is inferred.
-type IfDurable<T, Otherwise> = [T] extends [Durable<T>] ? unknown : Otherwise;
-```
-
-`encode` accepts `null`, booleans, finite numbers, strings, `bigint`s, `undefined`, errors, valid `Date`s, `Map`s and `Set`s of durable values, arrays with no missing items, and plain objects (the default prototype or `null`) whose own properties are enumerable data properties with string keys. It rejects functions, symbols, `NaN` and infinities, invalid `Date`s, class instances, subclasses of `Array`, `Date`, `Map` and `Set` or ones with own properties, accessors, symbol or non-enumerable properties, missing array items and reference cycles, and returns a message naming the path of the first invalid value. Neither method throws for an invalid input.
-
-The canonical string sorts object keys and writes `-0` as `0`, so two values that differ only in key order encode to the same string. Map entries and set values keep their insertion order, so two maps or sets that differ only in order encode to different strings. Values JSON cannot hold are tagged objects with a `$type` key:
-
-| Value | Encoding |
+| `deliver` rejects with | The dispatcher |
 | --- | --- |
-| `undefined` | `{"$type":"undefined"}` |
-| A `bigint` | `{"$type":"bigint","value":"123"}` |
-| A `Date` | `{"$type":"date","value":"2026-10-29T12:00:00.000Z"}` |
-| A `Map` | `{"$type":"map","entries":[[key, value], ...]}` |
-| A `Set` | `{"$type":"set","values":[...]}` |
-| A plain object with its own `$type` key | `{"$type":"object","value":{...}}` |
-| An error | `{"$type":"error","name":...,"message":...,"stack"?,"code"?,"cause"?,"errors"?,"fields"?}` |
+| `WorkerExitedError` | Leaves the lease to expire, because the worker's last writes may still be in progress |
+| Any other error | Releases the lease |
 
-So `{ a: undefined }` and `{}` stay distinct, and only a tagged value decodes as `undefined`, a built-in type or an error: an error-shaped plain object stays a plain object.
+Either way, the execution is delivered again after the redelivery delay. An invoker also has `workflowEndEmitter`, a deprecated `EventEmitter` on which the dispatcher reports outcomes.
 
-An error keeps its `name`, `message`, a string `stack` and `code`, its own `cause` (encoded recursively), a non-enumerable `errors` array such as `AggregateError`'s, and its own enumerable properties whose values are durable, under `fields`. Properties that are not durable are left out rather than rejecting the error. `encodeThrownValue(value)` encodes a thrown value as thrown when it is durable, and as `Error(String(value))` otherwise.
+## Durable values
 
-`decode` revives an error as the class registered under its `name` with `registerErrorClass(name, errorClass)`, setting its prototype and fields without calling the constructor, and as an `Error` with the same name, message, code, cause and fields when no class is registered. Registration is per process. `TypeError`, `RangeError`, `SyntaxError`, `ReferenceError`, `EvalError`, `URIError`, `AggregateError`, `WorkflowStartError`, `WorkflowJoinError`, `WorkflowCancelledError`, `WorkflowRaceError`, `WorkflowValueError`, `WorkflowEffectError`, `EffectDeliveryError`, `EffectClientInvariantError` and `StoreValidationError` are registered by default, and `@notation/durable` registers `RetryableError`.
+| Export | Does |
+| --- | --- |
+| `durableValueCodec` | Encodes a durable value as a string with `encode`, and reads it back with `decode` |
+| `decodeParsedValue(parsed)` | Decodes an encoding that is already parsed from JSON |
+| `encodeThrownValue(value)` | Encodes a thrown value. A value that is not durable is encoded as `Error(String(value))` |
+| `DurableValueError` | Thrown by `decode` for an invalid encoding |
 
-`WorkflowValueError` (`code: "INVALID_STEP_VALUE" | "STEP_SCHEMA_INVALID"`, `stepKey`) reports a value the codec or a step's schema rejects. A completed outcome whose result the codec rejects is recorded as `failed` with `INVALID_STEP_VALUE` and `stepKey` `WORKFLOW_RESULT_STEP_KEY` (`"$$workflow-result$$"`).
+See [Step values](../manual/step-values.md) for which values are durable.
 
-## `ExecutionDispatcher`
+## Observation
 
-The only component that delivers executions. It leases due executions, reads each event from its record, passes it to `invoker.deliver` with the lease, and acknowledges the outcome under that lease. A terminal execution that is claimed again returns its recorded outcome without running workflow code.
+| Export | Returns |
+| --- | --- |
+| `createExecutionObserver(executions, { pollInterval?, notifier? })` | An `ExecutionObserver` over an execution client |
+| `createExecutionControl(executions)` | An `ExecutionControl` over an execution client |
+| `toExecutionView(record)` | The view of a record |
+| `isTerminalExecutionView(view)` | Whether a view has ended |
 
-- **Concurrency.** It runs up to `concurrency` deliveries at once, and claims new executions as slots free up without waiting for earlier deliveries to reach an outcome. Several dispatchers, in one process or several, can share one backend: each execution has at most one live lease.
-- **Renewal.** It renews each lease every `renewInterval` while the delivery runs, so a slow delivery keeps its lease. If a renewal returns `lost`, it stops renewing, aborts the delivery's `signal`, and neither acknowledges nor releases.
-- **Abandonment.** If an aborted delivery has not settled `abortGracePeriod` after the abort, the dispatcher stops waiting for it and frees its slot. This covers in-process invokers, which cannot stop a step function that is already running. The abandoned delivery may keep running, but its signal and stale token block every write it attempts, and its late outcome or rejection is logged and ignored. The worker invoker kills its worker on abort, so its deliveries settle at once.
-- **Filtering.** With `filter.executionIds`, it claims only those executions. The filter is passed to `claimDue`, so other executions in the backend are never claimed and gain no redelivery delay. Use it for a process that should run only the executions it started, such as a CLI command that runs one execution to completion.
-- **Rejections.** A delivery that rejects is not acknowledged. If the worker exited before replying (`WorkerExitedError`), the dispatcher leaves the lease to expire. Any other rejection is a retry reply, and the dispatcher releases the lease. Either way the execution is delivered again after the redelivery delay.
-- **Backend errors.** If reading the record, acknowledging or releasing throws, the dispatcher logs the error and leaves the lease to expire rather than trying to release it. This is intended: expiry is safe, it counts as an unacknowledged delivery, so the execution is delivered again after the redelivery delay, and the backend that just threw may be unreachable anyway.
+The local SDK is built from the first two.
 
-```ts
-import { ExecutionDispatcher } from "@notation/durable/runtime";
+## Errors
 
-const dispatcher = new ExecutionDispatcher(runtime, { invoker, logger });
-dispatcher.start();
-```
+The runtime entry point exports the error classes of [`@notation/durable`](./durable.md#errors), except `RetryableError` and `HttpRouteError`. It also exports these:
 
-| Option          | Type              | Default              | Description                                         |
-| --------------- | ----------------- | -------------------- | --------------------------------------------------- |
-| `invoker`       | `WorkflowInvoker` | –                    | Runs each delivery                                  |
-| `logger`        | `Logger`          | –                    | Pino logger                                         |
-| `concurrency`   | `number`          | `10`                 | The maximum number of deliveries this dispatcher runs at once |
-| `pollInterval`  | `number`          | `10`                 | Milliseconds between claims when nothing was due    |
-| `keepAlive`     | `boolean`         | `true`               | Whether the dispatcher's timers keep the process alive |
-| `leaseDuration` | `number`          | `30_000`             | Milliseconds each lease lasts unless renewed        |
-| `renewInterval` | `number`          | `leaseDuration / 3`  | Milliseconds between renewals; must be shorter than `leaseDuration` |
-| `abortGracePeriod` | `number`       | `1_000`              | Milliseconds to wait for a delivery after aborting it before abandoning it and freeing its slot |
-| `filter`        | `{ executionIds?: string[] }` | –        | Claims only executions with these IDs; an empty list throws a `RangeError`. When absent, any execution whose due time has passed is claimed |
+| Export | Is |
+| --- | --- |
+| `InfrastructureError` | Ends a delivery without an outcome. Copies its cause's `code` |
+| `LeaseLostError` | The cause when a fenced write returns `lost` |
+| `StepConflictError` | The cause when a step is already recorded with a different value |
+| `LeaseLost`, `isLeaseLost` | The `{ status: "lost" }` result of a fenced write, and its check |
 
-| Method    | Behavior                                                                                   |
-| --------- | ------------------------------------------------------------------------------------------ |
-| `start()` | Starts the claim loop                                                                      |
-| `stop()`  | Stops claiming and waits for in-flight deliveries to settle                                |
-| `tick()`  | Claims once, up to the free slots, and starts those deliveries; resolves with the number claimed, without waiting |
-| `drain()` | Waits for every delivery started so far to settle                                          |
-
-## `createExecutionObserver`
-
-`createExecutionObserver(executions, { pollInterval?, notifier? })` returns an `ExecutionObserver` that reads through `executions.get` and `executions.list`. The local SDK and the HTTP routes build theirs with it.
-
-```ts
-interface ExecutionObserver {
-  poll(executionId: string): Promise<ExecutionView | undefined>;
-  wait(
-    executionId: string,
-    options?: { timeout?: number; signal?: AbortSignal }
-  ): Promise<WaitResult | undefined>;
-  list(request?: ExecutionListRequest): Promise<ExecutionViewPage>;
-}
-```
-
-- `poll` returns the record's view, or `undefined` when no record exists.
-- `wait` reads the record, and then reads it again every `pollInterval` ms (default `25`) until it is terminal or `timeout` passes. It resolves with the terminal view, with `{ status: "timed-out", execution }`, or with `undefined` at once for an unknown ID. When `signal` aborts, it stops reading and rejects with the signal's reason. A negative `timeout` throws a `RangeError`. `isDuration(value)` is the check it applies to `timeout`: a number that is not `NaN` and not negative. `isPositiveInterval(value)` is the check it applies to `pollInterval`, and `createRoutes` to `maxWait`: a finite number greater than zero. `createExecutionObserver` throws a `RangeError` for a `pollInterval` that is not a finite number greater than zero, because a `pollInterval` of `0` reads the record continuously.
-- `list` returns `executions.list`'s page with each record turned into a view.
-- `notifier` is an optional fast path, such as the invoker's `workflowEndEmitter`: an event for the execution ID makes `wait` read the record early. An event that arrives while a read is in progress makes the next read start as soon as that read returns. No result depends on it. Each open wait adds one listener for its execution ID and removes it when it settles. An `EventEmitter` prints `MaxListenersExceededWarning` when more than 10 waits on one ID are open at once; raise its limit with `setMaxListeners` if you expect more.
-
-The views leave out `params`, `context`, lease and wake state and `unacknowledgedDeliveryCount`. `toExecutionView(record)` builds one, and `isTerminalExecutionView(view)` recognises a completed, failed or cancelled view. See [Execution views](../manual/sdk-local.md#execution-views) for the types.
-
-## `createExecutionControl`
-
-`createExecutionControl(executions)` returns an `ExecutionControl` that cancels through `executions.cancel` and builds its result from `executions.get`. The local SDK and the `/cancel` route build theirs with it.
-
-```ts
-interface ExecutionControl {
-  cancel(
-    executionId: string,
-    options?: { reason?: string; force?: boolean }
-  ): Promise<CancelResult | undefined>;
-}
-
-type CancelResult =
-  | { status: "requested"; execution: ActiveExecutionView }
-  | TerminalExecutionView;
-```
-
-After the request is recorded, `cancel` reads the record once. It resolves with `requested` and the view at that read, or with the terminal view when the execution is terminal at that read, and with `undefined` for an unknown ID. It throws `ExecutionCancelRequestError`, a `TypeError`, for an empty ID, a `reason` that is not a string or a `force` that is not a boolean, before it calls `executions.cancel`.
-
-## `HeapClient` (abstract class)
-
-Persistence layer for step results, indexed by `(executionId, stepKey)`.
-
-```ts
-abstract readStep(params: {
-  executionId: string;
-  stepKey: string;
-}): Promise<HeapRecord | null>;
-
-abstract writeStep(params: {
-  lease: ExecutionLease;
-  stepKey: string;
-  stepAttempt: number;
-  done: boolean;
-  stepResponseJson: string;
-  deleteWaitersOf?: readonly string[];
-}): Promise<HeapRecord | LeaseLost>;
-
-abstract recordCancellation(params: {
-  lease: ExecutionLease;
-  steps: readonly { stepKey: string; stepAttempt: number; stepResponseJson: string }[];
-}): Promise<(HeapRecord | null)[] | LeaseLost>;
-```
-
-`readStep` returns the latest attempt. `writeStep` is fenced by `lease`: if the lease is not current, nothing changes and it returns `lost`. A `done` record deletes the step's store, effect and join waiters in the same write, and also deletes the waiters of every step named in `deleteWaitersOf`. The driver passes `deleteWaitersOf` when it records a `step.all` or `step.race` decision, with the steps that its abandoned branches reached, so their waiters go in the same write. `deleteWaitersOf` is ignored for a record that is not done or already exists. Records are keyed by execution, step key and attempt, and never change once written. Rewriting an existing record succeeds without changing it and resolves with the record as stored, so the caller can compare it with the value it wrote.
-
-`recordCancellation` records the delivery of the execution's cancellation request, fenced by `lease`, all-or-nothing. It writes each step's `done` record, deletes those steps' store, effect and join waiters, and sets the request's `deliveredAt`. An existing record at a step's attempt that is identical to the one requested is kept, as in `writeStep`. If any existing record differs, or is not done, the write changes nothing: no records, no waiter deletions and no `deliveredAt`. Either way the results list the records as stored, in the order of `steps`, with `null` for a step that has no record. The driver compares them with the records it wrote and ends the delivery with a `StepConflictError` on a difference. It throws if the execution has no request recorded. Waiters registered after it, by cleanup steps, wake the execution as usual.
-
-## `HeapRecord`
-
-```ts
-type HeapRecord = {
-  stepResponseJson: string;
-  meta: { attempt: number; done: boolean };
-};
-```
-
-## `JoinClient` (interface)
-
-Holds the join waiters of [`step.join`](../manual/steps.md#stepjoin) and [`step.call`](../manual/steps.md#stepcall). A waiter is keyed by target, joining execution and step key.
-
-```ts
-interface JoinClient {
-  join(waiter: JoinWaiter): Promise<JoinResult>;
-}
-
-type JoinWaiter = {
-  targetExecutionId: string; // the execution being joined
-  executionId: string; // the joining execution
-  stepKey: string;
-};
-
-type JoinResult =
-  | { status: "terminal"; outcome: ExecutionOutcome } // completed, failed or cancelled; no waiter was registered
-  | { status: "waiting" } // the waiter is registered
-  | { status: "not-found" }; // no execution has the target ID; no waiter was registered
-```
-
-`join` reads the target's record and, if the target is not terminal, registers the waiter, in one atomic step. Repeating it keeps one registration.
-
-The client and the other clients keep this contract together:
-
-- A terminal `ExecutionClient.acknowledge` requests a wake for the joiner of every waiter on its execution, in the same atomic write as the outcome. It does not delete the waiters.
-- Because `join` reads and registers atomically, every waiter on a terminal target has a pending or delivered wake for its joiner. A waiter registered as the target becomes terminal is still woken.
-- A forced `ExecutionClient.cancel` requests a wake for the joiner of every waiter on the cancelled execution, in the same atomic write as its `cancelled` outcome. It deletes the join waiters the cancelled execution holds as a joiner, and keeps the waiters on it.
-- A `done` heap write, and `HeapClient.recordCancellation`, delete the step's join waiters in the same write. No other method deletes a waiter, except a forced cancel of the joiner.
-
-Registration is not fenced. A stale holder's registration causes at most one extra delivery of the joiner and does not change any outcome.
-
-A waiter can stay registered for good when no step result follows it: a stale holder registers after the step was recorded, or a deploy removes a join step that was still waiting. Its only effect is one extra delivery of the joiner when the target finishes. Nothing removes such waiters.
-
-## `StoreClient` (abstract class)
-
-Persistence layer for [durable stores](../manual/stores.md). An implementation
-owns store state and versions, waiters created by `when`/`take`, an applied-steps
-ledger, and the wakes a commit requests from the runtime's `ExecutionClient`. The ledger records each committed workflow update by
-`(executionId, stepKey)` so replay can return the result without applying the
-update again.
-
-A `StoreDefinition` is `{ name, schema, initial }`, made by
-`defineStore(name, schema, { initial: (id) => state })`. There is no creation
-operation: every operation below except `listStores`, `deleteStore` and
-`registerWaiter` first creates a missing store from `definition.initial(id)`, in
-the same atomic write as the operation.
-
-```ts
-abstract getStore(params: {
-  definition: StoreDefinition;
-  id: string;
-}): Promise<StoreSnapshot>;
-
-abstract updateStore(params: {
-  definition: StoreDefinition;
-  id: string;
-  updater: (draft: Draft) => void | State;
-  stepId?: StoreStepId; // identifies the workflow step; keys the applied-steps ledger
-}): Promise<StoreUpdateResult>;
-
-abstract updateStoreFrom(params: {
-  definition: StoreDefinition;
-  id: string;
-  snapshot: StoreSnapshot;
-  updater: (draft: Draft) => void | State;
-  stepId?: StoreStepId;
-}): Promise<StoreUpdateFromResult>;
-
-abstract listStores(definition: StoreDefinition): Promise<string[]>;
-abstract deleteStore(params: { definition: StoreDefinition; id: string }): Promise<void>;
-abstract deleteStoreFrom(params): Promise<StoreDeleteFromResult>;
-
-abstract takeFromStore(params): Promise<StoreTakeResult>;
-
-abstract registerWaiter(waiter: StoreWaiter): Promise<void>;
-```
-
-The base class also provides `storeClient.store(definition, id)`, the external read/write handle described in [External Store Access](../manual/store-external.md). Its `get`, `update`, `updateFrom` and `deleteFrom` create a missing store in the same way.
-
-An implementation must uphold these contracts:
-
-- Every store instance has a UUID instance ID; `(definition.name, id)` remains the unique logical lookup key.
-- An operation on a missing store evaluates `initial(id)` only then, and creates the store with the operation as one write: version 0 for `getStore`, version 1 with the operation's state for a mutation. Concurrent operations on a missing store record exactly one initial state; a failing `initial` or operation creates nothing. A store deleted between operations is created again by the next one.
-- An unmatched take on a missing store still creates it, and a conditional update or delete on a missing store creates it and returns a conflict, so `StoreDeleteFromResult` has no not-found outcome.
-- Each update atomically writes the state, increments the version by one, and records its workflow-step result when a `stepId` is present.
-- Snapshot-based updates and deletions compare both the instance ID and version.
-- When `stepId` is provided and the ledger already holds that step, the implementation returns the recorded result and does not run the updater or `initial`, even if the store has since been deleted.
-- `registerWaiter` compares the store's current instance and version with the waiter; if either has moved on, it wakes the waiter immediately rather than leaving it to sleep through a write that already happened.
-- A commit that satisfies a waiter requests a wake for the waiter's `executionId`. Once the commit is durable, that wake is durable too. A waiter carries no copy of the workflow event.
-- A waiter stays registered until the heap write that records its step's result deletes it.
-- Schema failures throw `StoreValidationError`. A state, initial state or take selection that is not a durable value throws `WorkflowValueError` (`INVALID_STEP_VALUE`) before anything commits; `validateStoreState` makes this check after the schema. Workflow code can catch these two; any other error a client throws is treated as an infrastructure error and abandons the delivery.
-
-## `CasStoreClient` (abstract class)
-
-Base class for connectors that support compare-and-swap (CAS). It implements
-`getStore`, `updateStore`, `updateStoreFrom`, `takeFromStore` and
-`deleteStoreFrom`, including missing-store creation; a connector supplies reads,
-inserts, ledger lookup and the atomic commits:
-
-```ts
-abstract readStore(params): Promise<StoreSnapshot<unknown> | undefined>;
-abstract insertStore(params: {
-  definition: StoreDefinition;
-  id: string;
-  snapshot: StoreSnapshot<unknown>;
-}): Promise<StoreSnapshot<unknown>>;
-abstract getAppliedStoreStep(params): Promise<{ result: unknown } | undefined>;
-
-abstract commitStoreMutation(mutation: StoreMutation): Promise<StoreMutationCommitResult>;
-abstract commitStoreDeletion(deletion: StoreDeletion): Promise<StoreMutationCommitResult>;
-
-type StoreMutationCommitResult =
-  | { status: "committed" }
-  | { status: "already-applied"; result: unknown }
-  | { status: "conflict"; snapshot: StoreSnapshot<unknown> }
-  | { status: "missing" };
-
-createInstanceId(): string; // crypto.randomUUID() unless overridden
-```
-
-`readStore` never creates a store. `insertStore` inserts a version-zero snapshot
-unless the store exists, and returns the store's snapshot either way.
-`commitStoreMutation` checks the applied-step ledger first, compares the
-expected instance ID and version, and atomically writes the next state, version,
-step result, and the wakes for any waiters the commit satisfies. When
-`mutation.expected.created` is true, the expected snapshot is an initial state
-from `initial`, and the commit inserts the store, failing with a conflict if it
-exists by then. On conflict it returns the current snapshot so the base class can
-recompute the update; on `missing` the base class reads again and creates the
-store. `commitStoreDeletion` does the same for a conditional delete.
-Application callbacks, including `initial`, run outside the connector's
-transaction and may run more than once.
-
-## `WorkflowInvoker` (type)
-
-```ts
-type WorkflowInvoker = {
-  /** @deprecated The execution record is the source of truth for outcomes. */
-  workflowEndEmitter: EventEmitter;
-  deliver(
-    event: WorkflowEvent,
-    options: {
-      lease: ExecutionLease;
-      signal: AbortSignal;
-      cancellation?: ExecutionCancellation; // the record's request when the delivery was dispatched
-    }
-  ): Promise<WorkflowRunOutcome>;
-};
-```
-
-The dispatcher passes the record's `cancellation` to `deliver`, and an invoker must pass it on to `WorkflowRunner.run`. An invoker that drops it runs the delivery as if no request were recorded.
-
-`deliver` runs one delivery under `lease` and resolves with its outcome. Once `signal` aborts, the delivery runs no more workflow code and makes no more fenced writes, and rejects with an `InfrastructureError` whose cause is the signal's reason. An invoker that can stop a running step function should, and reject at once: the worker invoker kills its worker. It rejects, without an outcome, when the delivery hits an infrastructure error or the worker exits before replying. A worker exit rejects with a `WorkerExitedError`, and the dispatcher leaves the lease to expire. The dispatcher treats every other rejection as a retry reply and releases the lease. The dispatcher still emits terminal outcomes on `workflowEndEmitter` as an in-process fast path, which the local SDK and the HTTP routes use to read the record early; no guarantee depends on it.
-
-## Step response classes
-
-| Class             | Type string          | Description                                         |
-| ----------------- | -------------------- | --------------------------------------------------- |
-| `StepKey`         | `"step-key"`         | Cache key for the current step                      |
-| `StepCacheCheck`  | `"cache-check"`      | Signals the runner to look up cached state          |
-| `StepResult`      | `"step-result"`      | Wraps a successful step return value                |
-| `StepError`       | `"step-error"`       | Wraps a caught error with optional retry policy     |
-| `StepDelay`       | `"step-delay"`       | Carries a `wakeAt` timestamp                        |
-| `StepEffectWait`  | `"effect-wait"`      | An uncertain `step.effect`, recorded unfinished, with its `wakeAt` |
-| `StepStoreWait`   | `"store-wait"`       | A store wait, recorded unfinished. A timed `when` sets `wakeAt` to its deadline |
-| `StepJoinWait`    | `"join-wait"`        | An unresolved `step.join` or `step.call`, recorded unfinished. A timed join sets `wakeAt` to its deadline |
-| `StepInvalid`     | `"step-invalid"`     | Protocol violation (e.g., missing `yield*`)         |
-| `WorkflowResult`  | `"workflow-result"`  | Wraps the workflow's return value                   |
-| `WorkflowDelay`   | `"workflow-delay"`   | No longer emitted by `WorkflowRunner`               |
-| `WorkflowRestart` | `"workflow-restart"` | Signals the runtime to re-invoke                    |
-
-## Event types
-
-```ts
-type TriggerEvent<WorkflowId, Params> = {
-  workflowId: WorkflowId;
-  params: Params;
-  context?: Record<string, any>;
-} & (
-  | { executionId?: string; idempotent?: false }
-  | { executionId: string; idempotent: true }
-);
-
-type TriggerAck = {
-  executionId: string;
-  status: "accepted" | "existing";
-};
-
-type ExecutionEvent<Params> = {
-  workflowId: string;
-  executionId: string;
-  params: Params;
-  context?: Record<string, any>;
-};
-
-type WorkflowEvent<Params, Context> = {
-  workflowId: string;
-  executionId: string;
-  params: Params;
-  context: Context;
-};
-```
-
-## Middleware types
-
-```ts
-type MiddlewareNext = () => Promise<Response>;
-
-type MiddlewareFunction = (
-  req: Request,
-  event: MiddlewareEvent,
-  next: MiddlewareNext,
-  logger: Logger,
-) => Promise<Response>;
-```
+See [Errors in a failed delivery](../manual/error-reference.md#errors-in-a-failed-delivery).
