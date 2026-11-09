@@ -57,7 +57,7 @@ pnpm install
 pok typecheck
 ```
 
-This checks every private package and `test/` as one TypeScript program.
+This runs two TypeScript programs. The first checks the private packages with Node types only, so Bun-only APIs fail outside `sqlite-runtime/src/bun.ts`. The second checks `test/` with Node and Bun types.
 
 ### Build
 
@@ -70,7 +70,9 @@ This runs the `build` script of each published package, then type-checks `exampl
 Each published package has a `tsup.config.ts` that bundles the source of the private packages it ships:
 
 - `@notation/durable` bundles `sdk`, `core`, `http-server`, `worker-invoker` and `sqlite-runtime`. Each export path is one tsup entry. Code shared between entries goes into shared chunks, so every export path uses the same classes.
-- `@notation/durable-conformance` bundles `runtime-conformance`. Its `@durable/core` imports resolve to `src/runtime.ts`, which re-exports `@notation/durable/runtime`. The suites then use the classes in the user's copy of `@notation/durable`. This package builds after `@notation/durable`, because its declarations import the built `@notation/durable`.
+- `@notation/durable-conformance` bundles `runtime-conformance`. A `paths` entry in its `tsconfig.json` resolves `@durable/core` to `src/runtime.ts`, which re-exports `@notation/durable/runtime`. The suites then use the classes in the user's copy of `@notation/durable`. This package builds after `@notation/durable`, because its declarations import the built `@notation/durable`.
+
+Both builds fail if bundled code imports a third-party package that the published `package.json` does not declare (`scripts/declared-imports.ts`).
 
 Tests import the private packages. The examples import the published packages. Code that mixes the two loads two copies of the core classes.
 
@@ -83,9 +85,9 @@ pok test conformance
 
 `pok test all` runs every suite in sequence.
 
-Local development runs on Bun. Some tests start child processes that import the private packages, and only Bun can run that TypeScript source directly.
+Local development runs on Bun. Some tests start child processes that import the private packages, and Node cannot resolve the extensionless imports in their source. CI also runs the suite under Node, with `NODE_OPTIONS=--import tsx` so that the suite and its child processes load the source through tsx.
 
-`pok test conformance` builds nothing itself. Run `pok build` first. It packs both published packages, installs them in an empty project and runs every conformance suite under Node against the published SQLite runtime. This is the test of the packages under Node.
+`pok test conformance` builds nothing itself. Run `pok build` first. It packs both published packages, installs them in an empty project and runs every conformance suite under Node against the published SQLite runtime. It covers `@notation/durable/runtime`, `@notation/durable/sqlite/node` and `@notation/durable-conformance` as installed from the tarballs.
 
 ### Dev Workflow
 

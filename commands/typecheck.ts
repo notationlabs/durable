@@ -4,5 +4,6 @@ export const command = defineCommand({
   label: "Type-check the workspace",
   run: async (r) => {
     await r.exec("pnpm exec tsc -p .");
+    await r.exec("pnpm exec tsc -p test");
   },
 });

@@ -39,6 +39,9 @@ importers:
       pokit:
         specifier: ^0.5.1
         version: 0.5.1
+      tsx:
+        specifier: ^4.23.15
+        version: 4.23.15
       typescript:
         specifier: ^5.9.2
         version: 5.9.2
@@ -6340,7 +6343,6 @@ snapshots:
       esbuild: 0.28.2
     optionalDependencies:
       fsevents: 2.3.3
-    optional: true
 
   type-fest@0.21.3: {}
 

@@ -1,9 +1,14 @@
 {
   "extends": "./tsconfig.base.json",
   "compilerOptions": {
-    "types": ["node", "bun"]
+    // Only bun.ts and the tests get Bun types (test/tsconfig.json), so Bun-only
+    // APIs in the Node-facing packages fail here.
+    "types": ["node"]
   },
-  "include": ["packages/*/src/**/*.ts", "test/**/*.ts"],
-  // Its source imports the built @notation/durable, so tsup checks it during the build.
-  "exclude": ["packages/durable-conformance"]
+  "include": ["packages/*/src/**/*.ts"],
+  "exclude": [
+    "packages/sqlite-runtime/src/bun.ts",
+    // Its source imports the built @notation/durable, so tsup checks it during the build.
+    "packages/durable-conformance"
+  ]
 }

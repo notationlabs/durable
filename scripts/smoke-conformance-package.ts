@@ -3,10 +3,6 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-// Installs the packed @notation/durable and @notation/durable-conformance
-// tarballs into an empty project and runs every conformance suite against the
-// published SQLite runtime. This checks that the assembled packages resolve
-// without the private workspace packages.
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const directory = await mkdtemp(join(tmpdir(), "durable-conformance-"));
 
@@ -30,6 +26,8 @@ async function tarball(prefix: string) {
   return `file:./${name}`;
 }
 
+// Installs the packed tarballs into an empty project, so the suites resolve
+// without the private workspace packages.
 try {
   for (const packageDirectory of ["durable", "durable-conformance"]) {
     run([

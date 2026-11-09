@@ -1,8 +1,8 @@
 import { defineConfig } from "@pokit/core";
 import { release } from "pok-plugins";
 
-/** Builds both published packages in dependency order; identical across packages, so it runs once. */
-const BUILD = 'pnpm --filter "./packages/*" run build';
+/** Builds both published packages and checks the examples; identical across packages, so it runs once. */
+const BUILD = "pnpm exec pok build";
 
 const published = (dir: string) => ({ file: `packages/${dir}/package.json`, build: BUILD });
 const versionOnly = (file: string) => ({ file, publish: false as const });

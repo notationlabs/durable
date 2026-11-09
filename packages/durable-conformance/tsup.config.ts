@@ -1,5 +1,6 @@
 import { resolve } from "node:path";
 import { defineConfig } from "tsup";
+import { declaredImportsOnly } from "../../scripts/declared-imports";
 
 const here = import.meta.dirname;
 
@@ -9,9 +10,6 @@ export default defineConfig({
   platform: "node",
   target: "node22",
   dts: true,
-  sourcemap: true,
   clean: true,
-  esbuildOptions(options) {
-    options.alias = { "@durable/core": resolve(here, "src/runtime.ts") };
-  },
+  esbuildPlugins: [declaredImportsOnly(here)],
 });

@@ -3,6 +3,9 @@
   "compilerOptions": {
     "types": ["node"],
     "paths": {
+      // The suites import @durable/core. This file re-exports
+      // @notation/durable/runtime, so the published suites use the classes in
+      // the user's copy of @notation/durable.
       "@durable/core": ["./src/runtime.ts"]
     }
   },
