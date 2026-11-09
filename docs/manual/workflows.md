@@ -1,126 +1,104 @@
-# Defining Workflows
+# Defining workflows
 
-A workflow is an async generator function that yields steps. The `workflow()` factory wraps that generator into a `WorkflowGenerator`.
-
-## Basic definition
+A workflow is an async generator function wrapped with `workflow()`. This page uses a workflow that sends an invoice to a customer.
 
 ```ts
 import { workflow } from "@notation/durable";
 
-const myWorkflow = workflow(async function* (step, event, logger) {
-  const a = yield* step.run(() => 1);
-  const b = yield* step.run(() => a + 1);
-  return b;
+type Params = {
+  invoiceId: string;
+  email: string;
+};
+
+type Result = {
+  sentTo: string;
+};
+
+export const sendInvoice = workflow<Params, Result>(async function* (step, event, logger) {
+  const { invoiceId, email } = event.params;
+
+  const pdf = yield* step.run("render-pdf", async () => {
+    return await invoices.renderPdf(invoiceId);
+  });
+
+  yield* step.run("send-email", async () => {
+    await mailer.send({ to: email, attachment: pdf.url });
+  });
+
+  logger.info({ invoiceId }, "Invoice sent");
+
+  return { sentTo: email };
 });
 ```
 
-The generator function receives three arguments:
+## Arguments
 
-| Argument | Type                             | Description                                                   |
-| -------- | -------------------------------- | ------------------------------------------------------------- |
-| `step`   | `StepRunner`                     | Exposes `run`, `delay`, `poll`, `store`, `start` and `effect` |
-| `event`  | `WorkflowEvent<Params, Context>` | Contains `workflowId`, `executionId`, `params`, and `context` |
-| `logger` | `Logger` (Pino)                  | Structured logger scoped to the execution                     |
+The function receives three arguments:
 
-`workflow` and `createWorkflow` are aliases. Both return a `WorkflowGenerator`.
+| Argument | Contains |
+| --- | --- |
+| `step` | The step functions: `run`, `delay`, `poll` and the others in this manual |
+| `event` | The workflow ID, the execution ID, the params and the context |
+| `logger` | The `pino` logger that the worker was created with |
 
-## Type parameters
+Each step is called with `yield*`. A plain `yield` is not a step: it fails the execution with the error `Step runners must yield a StepKey object`.
 
-`workflow()` accepts two type parameters: the input params and the return type.
+## Types
+
+`workflow` takes three optional type arguments:
+
+| Type argument | Default | Describes |
+| --- | --- | --- |
+| `Params` | any object, or no params | `event.params` |
+| `Result` | any durable value | The value the workflow returns |
+| `Context` | `ReadonlyMap<any, any>` | `event.context` |
+
+When the workflow is registered in a router, these types reach the SDK. TypeScript then checks the params at every call that starts the workflow, and types the result that the SDK returns.
+
+Params and the result must be durable values, such as plain objects, strings and dates. [Step values](./step-values.md) lists them.
+
+## Event
+
+| Field | Type | Contains |
+| --- | --- | --- |
+| `workflowId` | `string` | The ID the workflow has in the router |
+| `executionId` | `string` | The ID of this execution |
+| `params` | `Params` | The params the execution was started with |
+| `context` | `ReadonlyMap` | Extra values the caller attached to the execution |
+
+The caller passes `context` as a plain object, and the workflow reads it as a map:
 
 ```ts
-const processOrder = workflow<{ orderId: string }, boolean>(async function* (step, event) {
-  const order = yield* step.run(() => fetchOrder(event.params.orderId));
-  return yield* step.run(() => processPayment(order));
+await sdk.trigger({
+  workflowId: "send-invoice",
+  params: { invoiceId: "inv-42", email: "ada@example.com" },
+  context: { requestedBy: "user-7" },
 });
 ```
 
-These types carry through to the SDK when the workflow is registered in a router, so `workflowId`, `params`, and the return type are all enforced at the call site.
-
-## Execution model
-
-Every time the runtime invokes a workflow, the generator replays from the beginning. 
-
-Steps that have already completed return their cached result from the heap with no re-execution and no side effects. 
-
-When the generator reaches a step that has not yet run, it executes the function, persists the result to the heap, and advances. 
-
-If the generator hits a `delay` or a retryable error, it yields control back to the runtime. The delivery ends as `suspended` with the time the paused step needs (`wakeAt`), the execution record becomes due at that time, and the process terminates.
-
-On the next invocation the same replay happens: cached steps resolve instantly, and the generator picks up where it left off. This means a workflow can span minutes, hours, or days while the process that runs it is ephemeral.
-
 ```ts
-const w = workflow(async function* (step) {
-  // Execution 1: runs, caches result
-  // Execution 2: replays from cache
-  const a = yield* step.run(() => expensiveComputation());
-
-  // Execution 1: suspends here, due again in 5s
-  // Execution 2: elapsed, continues
-  yield* step.delay(5000);
-
-  // Execution 2: runs, caches result
-  const b = yield* step.run(() => useResult(a));
-
-  return b;
-});
+const requestedBy = event.context.get("requestedBy");
 ```
 
-## Execution records
+HTTP middleware can also set context values, such as the ID of the user who made the request. See [HTTP server](./http-server.md).
 
-Each trigger creates one execution, and the runtime keeps one durable `ExecutionRecord` for it. Admission writes the record with the event (`workflowId`, `params`, `context`) once, and every delivery reads the event back from it.
+## Router
 
-```ts
-interface ExecutionRecord {
-  executionId: string;
-  workflowId: string;
-  params: EventParams;
-  context: EventContext;
-  status: "admitted" | "running" | "suspended" | "completed" | "failed" | "cancelled";
-  outcome?:
-    | { status: "completed"; result: unknown }
-    | { status: "failed"; error: Error }
-    | { status: "cancelled"; reason?: string; source?: string };
-  admittedAt: number;
-  updatedAt: number;
-  unacknowledgedDeliveryCount: number; // consecutive deliveries that ended without an outcome
-  parent?: { executionId: string; stepKey: string; detached: boolean }; // set when step.start or step.call admitted it
-  cancellation?: ExecutionCancellation; // set when cancel recorded a request
-}
-```
-
-| Status      | Meaning                                                              |
-| ----------- | -------------------------------------------------------------------- |
-| `admitted`  | No delivery has been acknowledged yet                                |
-| `running`   | A dispatcher holds a live lease on the execution and is delivering it |
-| `suspended` | The latest delivery paused on a delay, retry, store wait, effect wait or join |
-| `completed` | The workflow returned. `outcome.result` holds the return value       |
-| `failed`    | Workflow code threw an uncaught error. `outcome.error` holds it      |
-| `cancelled` | The workflow let a delivered `WorkflowCancelledError` escape, or a forced cancel ended it. `outcome.reason` and `outcome.source` hold the request's |
-
-`completed`, `failed` and `cancelled` are terminal and permanent. A finished execution never runs workflow code again: a later delivery returns the recorded outcome.
-
-An execution started by another workflow with [`step.start`](./steps.md#stepstart) or [`step.call`](./steps.md#stepcall) records the caller's execution ID and step key as `parent`, and whether the child was started with `detached: true`. The link never changes, and executions created by a trigger have none.
-
-`cancellation` holds the request that [`cancel`](./cancellation.md) recorded, with its `reason`, `source`, `forced`, `requestedAt` and, once the workflow has received it, `deliveredAt`. It stays on the record whatever the outcome.
-
-**Execution IDs are unique for the lifetime of the runtime.** A trigger may supply its own `executionId`, and the runtime reserves it unchanged; otherwise the runtime chooses one. Reusing an ID that was ever admitted, including one whose execution failed, is rejected with `EXECUTION_ID_CONFLICT`. An [idempotent trigger](./sdk-local.md#idempotent-trigger) that repeats the same request returns the existing execution instead, and admits nothing. This matters because the ID is how a replay finds its own recorded steps, so a reused ID would replay another execution's results.
-
-A record is `running` while a dispatcher holds a lease on it, and otherwise changes status only when a delivery is acknowledged with an outcome. If a delivery hits an infrastructure error (the database throws, the worker exits), it ends without an outcome: the record returns to its earlier status, `unacknowledgedDeliveryCount` goes up by one, and the execution is delivered again after a redelivery delay. The delay starts at 1 second and doubles with each consecutive unacknowledged delivery, and any acknowledgement resets the count. Such errors never reach workflow code; see [Steps](./steps.md#errors).
-
-## Registering workflows
-
-A router maps string IDs to workflow generators:
+A router gives each workflow an ID:
 
 ```ts
 import { createWorkflowRouter } from "@notation/durable";
 
-const router = createWorkflowRouter({
-  "process-order": processOrder,
+export const router = createWorkflowRouter({
+  "send-invoice": sendInvoice,
   "send-reminder": sendReminder,
 });
 
 export type Router = typeof router;
 ```
 
-Exporting the `Router` type and passing it to the SDK factory gives you type-safe `workflowId` and `params` at every call site.
+The worker uses the router to find the workflow for each execution. The SDK uses the `Router` type to check workflow IDs and params.
+
+The SDK accepts an execution for any workflow ID it is given, including one that the router does not have. That execution fails when a worker runs it, with the error `No workflow registered for "<id>"`.
+
+`createWorkflow` is another name for `workflow`.
