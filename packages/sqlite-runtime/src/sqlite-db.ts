@@ -34,11 +34,35 @@ export function createSqliteDriver<Driver extends SqliteDriver>(
   mkdirSync(dirname(mergedOpts.path), { recursive: true });
 
   const db = create(mergedOpts.path);
+  db.run(`PRAGMA busy_timeout = ${BUSY_TIMEOUT}`);
   if (mergedOpts.wal) {
-    db.run("PRAGMA journal_mode = WAL");
+    enableWal(db);
   }
-  db.run("PRAGMA busy_timeout = 5000");
   return db;
+}
+
+const BUSY_TIMEOUT = 5_000;
+
+// When two processes open a new file at once, SQLite can return SQLITE_BUSY
+// for the switch to WAL without calling the busy handler, so it is retried
+// here for as long as the busy timeout.
+function enableWal(db: SqliteDriver) {
+  const deadline = Date.now() + BUSY_TIMEOUT;
+  for (;;) {
+    try {
+      db.run("PRAGMA journal_mode = WAL");
+      return;
+    } catch (error) {
+      if (!isBusy(error) || Date.now() > deadline) throw error;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+    }
+  }
+}
+
+// bun:sqlite sets `errno`, and node:sqlite sets `errcode`.
+function isBusy(error: unknown) {
+  const { errno, errcode } = (error ?? {}) as { errno?: unknown; errcode?: unknown };
+  return errno === 5 || errcode === 5;
 }
 
 /** The native prepared-statement shape connectors adapt to SqliteStatement. */

@@ -67,6 +67,7 @@
 
 ### Fixed
 
+- `createSqliteDb` sets `busy_timeout` before it switches the file to WAL, and retries the switch while SQLite reports `SQLITE_BUSY`, for up to 5 seconds. A process that opened a file while another process was opening it, such as a second server or a worker, used to throw `database is locked` at once.
 - A `when` selector that throws records the error as the step's outcome, as `select` and `take` already did. The error used to escape the step unrecorded, so a workflow that caught it failed with `Workflow yielded an invalid step` or `Cannot record a step-key step response`.
 
 ## 0.6.1 - 2026-10-29
