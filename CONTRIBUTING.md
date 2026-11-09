@@ -23,15 +23,15 @@ By contributing, you affirm that you have the right to submit your contributions
 
 Each folder in `packages/` is a private workspace package named `@durable/<folder>`. Packages import each other only through these names, which keeps the boundaries between them. The private packages are not built. Their `exports` point at their TypeScript source.
 
-- `packages/core` – Base types and runtime abstractions (scheduler, heap, steps)
-- `packages/sdk` – Main SDK: workflow API, local/HTTP client
+- `packages/core` – The runtime contracts, the state helpers, `WorkflowRunner` and `ExecutionDispatcher`
+- `packages/sdk` – The workflow API, the step runner, and the local and HTTP SDKs
 - `packages/http-server` – HTTP route handlers and middleware
-- `packages/sqlite-runtime` – SQLite-backed heap, timers, task queue, event loop
-- `packages/worker-invoker` – Subprocess-based step invoker and worker
+- `packages/sqlite-runtime` – `SqliteRuntime`, with the Bun and Node drivers
+- `packages/worker-invoker` – The invoker that runs each delivery in a worker process, and the worker
 - `packages/runtime-conformance` – Qualification suites for runtimes
-- `packages/test-runtime` – In‑memory scheduler, heap, event loop (for tests)
-- `packages/test-invoker` – Minimal invoker to run workflows in tests
-- `packages/test-utils` – Internal test utilities (see note below)
+- `packages/test-runtime` – `MemoryRuntime`, which keeps its records in memory
+- `packages/test-invoker` – An invoker that runs deliveries in the current process
+- `packages/test-utils` – `createTestSdk`, and the repository's test helpers
 - `packages/durable` – The published `@notation/durable` package, bundled from the packages above
 - `packages/durable-conformance` – The published `@notation/durable-conformance` package, bundled from `runtime-conformance`
 - `examples/` – Workflow and runtime examples (HTTP server, local execution)
@@ -69,7 +69,7 @@ This runs the `build` script of each published package, then type-checks `exampl
 
 Each published package has a `tsup.config.ts` that bundles the source of the private packages it ships:
 
-- `@notation/durable` bundles `sdk`, `core`, `http-server`, `worker-invoker` and `sqlite-runtime`. Each export path is one tsup entry. Code shared between entries goes into shared chunks, so every export path uses the same classes.
+- `@notation/durable` bundles `sdk`, `core`, `http-server`, `worker-invoker`, `sqlite-runtime`, and for `/testing`, `test-utils`, `test-runtime` and `test-invoker`. Each export path is one tsup entry. Code shared between entries goes into shared chunks, so every export path uses the same classes.
 - `@notation/durable-conformance` bundles `runtime-conformance`. A `paths` entry in its `tsconfig.json` resolves `@durable/core` to `src/runtime.ts`, which re-exports `@notation/durable/runtime`. The suites then use the classes in the user's copy of `@notation/durable`. This package builds after `@notation/durable`, because its declarations import the built `@notation/durable`.
 
 Both builds fail if bundled code imports a third-party package that the published `package.json` does not declare (`scripts/declared-imports.ts`).
@@ -101,7 +101,7 @@ Run `pok` with no arguments for the full command menu.
 
 ### Documentation
 
-`docs/` holds the Markdown, published at notation.dev/engine. `docs/site.ts`
+`docs/` holds the Markdown, published at notation.dev/durable. `docs/site.ts`
 declares the sidebar.
 
 ### Examples
@@ -123,10 +123,6 @@ Releases use the pok-plugins `release()` flow configured in `pok.config.ts`.
 - Release: `pok publish` (installs and rebuilds first)
 
 Every manifest is versioned in lockstep. Only `@notation/durable` and `@notation/durable-conformance` are published.
-
-### Internal Packages
-
-`@durable/test-utils` is intended for this repo’s tests and development. It wires an in‑memory runtime for `triggerAndWait` in tests. Application users should prefer the SQLite runtime for local running.
 
 ### Coding Guidelines
 
