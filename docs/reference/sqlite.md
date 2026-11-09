@@ -1,88 +1,85 @@
 # @notation/durable/sqlite
 
-`SqliteRuntime`: a driver-agnostic SQLite implementation of the `Runtime` contract, with execution records, the heap, and durable stores in one database. Bun and Node connector entry points provide the native database driver.
+`SqliteRuntime` keeps every record in one SQLite file. Several processes can open the same file. See [Running a server](../manual/running-a-server.md) for how to run it.
 
-See [Running a server](../manual/running-a-server.md), [Bun](../manual/bun.md) and [Node](../manual/node.md).
+The runtime has three entry points:
 
-## Install
+| Entry point | Exports |
+| --- | --- |
+| `@notation/durable/sqlite/bun` | The exports of `/sqlite`, and `createSqliteDb` and `BunSqliteDriver` for `bun:sqlite` |
+| `@notation/durable/sqlite/node` | The exports of `/sqlite`, and `createSqliteDb` and `NodeSqliteDriver` for `node:sqlite` |
+| `@notation/durable/sqlite` | `SqliteRuntime`, its client classes and the driver types |
 
-```sh
-@pm.add("@notation/durable")
+```ts [src/durable/runtime.ts]
+import { SqliteRuntime, createSqliteDb } from "@notation/durable/sqlite/bun";
+
+export const runtime = new SqliteRuntime(createSqliteDb({ path: "./.db/durable.sqlite" }));
 ```
 
-The entry point is part of the `@notation/durable` package.
+## `createSqliteDb(options?)`
 
-## `createSqliteDb({ path })`
+Opens the file, and returns a `SqliteDriver`. It creates the file and its directory if they do not exist.
 
-Creates and returns a `SqliteDriver` at the given file path. Tables are created automatically on first use. Use the `/bun` connector with Bun or the `/node` connector with Node.
+| Option | Default | Does |
+| --- | --- | --- |
+| `path` | `"./.db/durable.sqlite"` | The database file |
+| `wal` | `true` | Puts the database in WAL mode |
 
-```ts
-import { createSqliteDb } from "@notation/durable/sqlite/bun";
-
-const db = createSqliteDb({ path: "./.db/local.sqlite" });
-```
-
-The Node connector has the same API:
-
-```ts
-import { createSqliteDb } from "@notation/durable/sqlite/node";
-
-const db = createSqliteDb({ path: "./.db/local.sqlite" });
-```
+Each connection waits up to 5 seconds for another process's lock before it fails.
 
 ## `SqliteRuntime`
 
-```ts
-import { SqliteRuntime, createSqliteDb } from "@notation/durable/sqlite/bun";
+`new SqliteRuntime(db, { clock? })` creates the tables and indexes that do not exist yet, and returns the runtime. `clock` defaults to `Date.now`.
 
-const runtime = new SqliteRuntime(createSqliteDb({ path: "./.db/local.sqlite" }));
+| Client | Class | Tables |
+| --- | --- | --- |
+| `executions` | `SqliteExecutionClient` | `executions`, `start_requests` |
+| `heap` | `SqliteHeapClient` | `step_responses` |
+| `stores` | `SqliteStoreClient` | `stores`, `store_waiters`, `store_applied_steps` |
+| `effects` | `SqliteEffectClient` | `effects`, `effect_conflicts`, `effect_waiters` |
+| `joins` | `SqliteJoinClient` | `join_waiters` |
+
+**Every write is one `IMMEDIATE` transaction**, so processes that share the file take turns. Writes that must happen together, such as a store update and the wakes of its waiters, are in the same transaction. See [Writes that go together](../runtime-authors/runtimes.md#writes-that-go-together).
+
+Create the client classes through `SqliteRuntime`, so that they share one database and one clock.
+
+## Listing executions
+
+`list` returns executions newest first, by the `rowid` of the `executions` table. SQLite assigns the `rowid` under the write lock, so a later admission always has a higher one, whatever the clocks of the processes.
+
+The indexes on `workflow_id` and `status` serve a `list` filtered by either. No index serves `status: "running"`, because an execution is running only while its lease has not expired. That `list` reads the table from the newest row until it fills the page.
+
+**`VACUUM` can renumber the `rowid`s.** A cursor from before a `VACUUM` can then skip or repeat executions. Start again from the first page after a `VACUUM`.
+
+## Upgrades
+
+`SqliteRuntime` adds missing columns when it opens a file that an earlier version created. It adds them under the write lock, so processes that open the file at once add each column once.
+
+**Every process that shares a file must run a version with the feature before any workflow uses it:**
+
+| Feature | A process on an earlier version |
+| --- | --- |
+| `step.join` and `step.call` | Ends executions without waking the executions that wait for them |
+| `cancel` | Runs deliveries without the cancellation request, and starts children without passing the request on |
+
+## Other drivers
+
+`SqliteRuntime` takes any object that implements `SqliteDriver`:
+
+```ts
+interface SqliteDriver {
+  run(sql: string): void;
+  query<Row>(sql: string): SqliteStatement<Row>;
+  close(): void;
+}
+
+interface SqliteStatement<Row> {
+  get(parameters?: SqliteParameters): Row | undefined;
+  all(parameters?: SqliteParameters): Row[];
+  run(parameters?: SqliteParameters): { changes: number | bigint };
+}
 ```
 
-| Option              | Type           | Default      | Description                                                              |
-| ------------------- | -------------- | ------------ | ------------------------------------------------------------------------ |
-| `clock`             | `() => number` | `Date.now`   | Time source for every client operation and for delay and retry wake times |
+`SqliteParameters` maps names with a `$` prefix, such as `$executionId`, to values. The runtime passes exactly the names that the SQL uses.
 
-The runtime exposes five clients that share the database:
-
-| Client               | Class                   | Tables                                   |
-| -------------------- | ----------------------- | ---------------------------------------- |
-| `runtime.executions` | `SqliteExecutionClient` | `executions`, `start_requests`           |
-| `runtime.joins`      | `SqliteJoinClient`      | `join_waiters`                           |
-| `runtime.effects`    | `SqliteEffectClient`    | `effects`, `effect_conflicts`, `effect_waiters` |
-| `runtime.heap`       | `SqliteHeapClient`      | `step_responses`                         |
-| `runtime.stores`     | `SqliteStoreClient`     | `stores`, `store_waiters`, `store_applied_steps` |
-
-Keeping them in one database lets every guarantee that spans clients hold in a single SQLite transaction:
-
-- A store commit and the wakes for the waiters it satisfies commit together.
-- An effect settlement and the wakes for its waiters commit together.
-- A terminal acknowledgement and the wakes for the join waiters on that execution commit together. The waiters stay in `join_waiters`.
-- A join reads the target's record and registers its waiter in one transaction, so a waiter registered as the target becomes terminal is still woken.
-- The heap write that records a step's result deletes that step's store, effect and join waiters.
-- Admission inserts the record already due, so the record and its first wake commit together.
-- `list` orders executions by the `rowid` of the `executions` table. SQLite assigns the `rowid` when the row is inserted, one more than the largest `rowid` in the table. The insert holds the write lock, so two processes never assign the same number, and a later admission always has a larger one, whatever the processes' clocks.
-- An idempotent admission reads an existing record in the same transaction as its insert, so of two concurrent repeats one is accepted and the other sees its record.
-- A new `start` inserts the target, already due and with its parent link, and the start request in one transaction. The request is looked up in the same transaction, so concurrent starts with one request ID admit one target.
-- `cancel` records the request on the execution and on every non-terminal, attached descendant in one transaction. A forced cancel's `cancelled` outcome, the deletion of the waiters the execution holds, and the wakes for its join waiters commit in the same transaction.
-- `recordCancellation` checks the lease, writes the step records, deletes those steps' store, effect and join waiters, and sets `cancellation_delivered_at` in one transaction.
-
-`SqliteRuntime` creates indexes on `executions(workflow_id)` and `executions(status)` when it opens the file, so a `list` filtered by `workflowId` or by a status other than `running` reads only the matching rows. Each index entry carries the `rowid`, so the matching rows are already in `list` order. No index serves `list({ status: "running" })`. Whether an execution is running depends on whether its lease has expired, which `list` decides from `lease_expires_at` and the current time, so SQLite reads the table in `rowid` order, newest first, and checks each row until it has filled the page. When a large table has few running executions, one page can read most of the table. Executions from earlier versions already have a `rowid` in insertion order, so they need no migration.
-
-`VACUUM` may renumber the `rowid`s of the `executions` table, because the table has no `INTEGER PRIMARY KEY`. A `list` cursor obtained before a `VACUUM` may then skip or repeat executions. Start paging again from the first page after a `VACUUM`.
-
-Cancellation adds columns to two tables. `executions` gains `parent_detached` (`INTEGER NOT NULL DEFAULT 0`) and the request's `cancellation_reason`, `cancellation_source`, `cancellation_forced`, `cancellation_requested_at` and `cancellation_delivered_at`; `cancellation_requested_at` is `NULL` when no request is recorded. `start_requests` gains `detached` (`INTEGER NOT NULL DEFAULT 0`). An index on `executions(parent_execution_id)` finds an execution's children. `SqliteRuntime` adds the columns and the index when it opens a database created before cancellation, under the write lock, so processes that open the file together add each column once. Existing rows read as attached children and as requests that were not detached, with no cancellation request.
-
-A row in `join_waiters` can stay for good when no step result follows it: a stale holder registers after the step was recorded, or a deploy removes a join step that was still waiting. Its only effect is one extra delivery of the joiner when the target finishes. The runtime does not remove such rows.
-
-Every process that shares one database must run a version with join support before any workflow uses `step.join` or `step.call`. A process on an earlier version acknowledges a terminal outcome without waking the join waiters on that execution, so their joiners wait until their deadline, or for good when they have none.
-
-Every process that shares one database must also run a version with cancellation support before anyone calls `cancel`. A worker on an earlier version does not receive the request with its delivery, so it runs the workflow as if no request were recorded. A process on an earlier version that starts a child does not propagate the parent's pending request to it, and one that acknowledges a delivery or updates a row leaves the cancellation columns as they are.
-
-Every write runs as one synchronous `IMMEDIATE` transaction. Separate processes that open the same file, such as the app and its worker subprocesses, therefore serialize on SQLite's lock and see the same execution records.
-
-Updaters must be synchronous, deterministic, and side-effect-free. They run
-against a snapshot outside the SQLite transaction; if the conditional commit
-loses a version race, the base store client runs the updater again against the
-latest snapshot.
-
-`SqliteExecutionClient`, `SqliteEffectClient`, `SqliteHeapClient`, `SqliteJoinClient`, and `SqliteStoreClient` remain exported for adapter tests. Construct them through `SqliteRuntime` in applications, so the store client requests wakes from the same execution client and clock.
+**The driver must be synchronous.** `SqliteRuntime` runs each transaction as synchronous calls, so that no other code runs inside it. `createSqliteDb` returns a `BunSqliteDriver` from `/sqlite/bun`, and a `NodeSqliteDriver` from `/sqlite/node`.
