@@ -1,60 +1,77 @@
 # Retries
 
-Durable implements structured retries through `RetryableError`. Throwing this error inside a `step.run` tells the runtime to re-execute the step according to the supplied retry policy, including maximum attempt count and retry interval.
-
-## Basic retry
+A step that calls an unreliable service can ask Durable to run it again later. The step function throws `RetryableError`, and Durable runs the function again on a schedule. This page uses a workflow that copies a customer's details to a CRM, whose API sometimes responds with `503 Service Unavailable`.
 
 ```ts
-import { RetryableError } from "@notation/durable";
+import { RetryableError, workflow } from "@notation/durable";
 
-yield* step.run(async () => {
-  const res = await fetch("https://api.example.com/charge");
-  if (!res.ok) {
-    throw new RetryableError("Payment failed", {
-      maxAttempts: 5,
-      retryInterval: 2000,
-    });
-  }
-  return res.json();
+export const syncContact = workflow<{ customerId: string }>(async function* (step, event) {
+  const { customerId } = event.params;
+
+  const customer = yield* step.run("load-customer", async () => {
+    return await db.customers.find(customerId);
+  });
+
+  yield* step.run("push-to-crm", async () => {
+    const response = await crm.upsertContact(customer);
+
+    if (response.status === 503) {
+      throw new RetryableError("CRM unavailable", {
+        maxAttempts: 5,
+        retryInterval: 60_000,
+      });
+    }
+  });
 });
 ```
 
-| Option          | Type     | Description                                                           |
-| --------------- | -------- | --------------------------------------------------------------------- |
-| `maxAttempts`   | `number` | Total number of times the step executes (including the first attempt) |
-| `retryInterval` | `number` | Milliseconds between retry attempts                                   |
+| Option | Meaning |
+| --- | --- |
+| `maxAttempts` | The most times to run the step function, including the first. A positive integer |
+| `retryInterval` | Milliseconds between attempts. A finite number that is not negative |
 
-## How retries work
+The `RetryableError` constructor throws a `RangeError` if either option is out of range.
 
-When a step throws a `RetryableError`, the runtime caches the error with `done: false`, marking the step as incomplete. The delivery ends as `suspended` with `wakeAt` set `retryInterval` milliseconds later, so the execution record becomes due again at that time, and the worker process terminates. On the next invocation, the runtime replays all cached steps until it reaches the incomplete one, clears the cached error, and re-executes the step function. This cycle repeats until the function either succeeds or exhausts `maxAttempts`. Inside a [`step.all` or `step.race`](./concurrent-steps.md) branch, another branch's waiter can wake the execution before the retry is due. The record holds the time the retry is due, so that delivery suspends the step again until then and does not use an attempt.
+## How a retry runs
 
-Once all attempts are spent, the runtime throws the error into the workflow generator. You can catch it with a standard `try/catch` and run compensating logic:
+When `push-to-crm` throws `RetryableError`, Durable records the failed attempt and ends the delivery. The execution's status becomes `suspended`, as it does at a delay. No process waits for the interval to pass.
+
+After `retryInterval` milliseconds, the dispatcher starts a new delivery. `load-customer` returns its record, and `push-to-crm` calls its function again. This repeats until the function returns or the attempts run out.
+
+The interval is the same between every pair of attempts. Durable does not add backoff or jitter.
+
+## When the attempts run out
+
+When the last attempt throws `RetryableError`, the step throws that error into the workflow. The workflow can catch it:
 
 ```ts
 try {
-  yield* step.run(async () => {
-    throw new RetryableError("flaky", { maxAttempts: 3, retryInterval: 1000 });
+  yield* step.run("push-to-crm", async () => {
+    // as above
   });
 } catch (err) {
-  // all 3 attempts failed
-  yield* step.run(() => markAsFailed());
+  yield* step.run("flag-for-review", async () => {
+    await db.customers.flagSyncFailed(customerId);
+  });
 }
 ```
 
-## Non-retryable errors
+If the workflow does not catch it, the execution fails. See [Errors](./errors.md).
 
-Not every failure warrants a retry. Any error that is not a `RetryableError` completes the step immediately with that error, without suspending. The runtime stores the error and throws it into the workflow. If the workflow does not catch it, the execution record becomes `failed` with that error as its outcome.
+## Errors that are not retried
 
-```ts
-yield* step.run(() => {
-  throw new Error("fatal"); // no retry, thrown immediately
-});
-```
-
-## Retry via polling
-
-For cases where a step needs to wait on an external condition rather than recover from a failure, `step.poll` wraps the retry mechanism in a predicate loop. It evaluates a function at a fixed interval and completes when the function returns `true`. If the function returns `false`, the poll throws a `RetryableError` internally with the configured policy. If it throws a regular error, the step fails without retrying.
+Any other error ends the step at once. The step records the error and throws it into the workflow, without running the function again:
 
 ```ts
-yield* step.poll({ retryInterval: 1000, maxAttempts: 10 }, () => isReady());
+if (response.status === 400) {
+  throw new Error("CRM rejected the contact");
+}
 ```
+
+**Each attempt takes its policy from the error it throws.** Durable does not remember the options of an earlier `RetryableError`. If the first attempt throws `RetryableError` with `maxAttempts: 5`, and the second throws a plain `Error`, the step throws the plain `Error` after two attempts.
+
+## Where `RetryableError` applies
+
+Only `step.run` and `step.poll` retry on `RetryableError`. `step.poll` uses it to check its condition again, and throws it when the checks run out. See [Steps](./steps.md#steppoll).
+
+Thrown anywhere else, such as in workflow code outside a step, `RetryableError` is an ordinary error. [External effects](./effects.md) have their own options for trying again.
