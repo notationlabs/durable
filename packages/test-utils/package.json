@@ -8,9 +8,9 @@
   },
   "dependencies": {
     "@durable/core": "workspace:*",
+    "@durable/sdk": "workspace:*",
     "@durable/test-invoker": "workspace:*",
     "@durable/test-runtime": "workspace:*",
-    "pino": "^9.9.0",
-    "@durable/sdk": "workspace:*"
+    "pino": "^9.14.0"
   }
 }

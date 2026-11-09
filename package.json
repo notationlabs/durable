@@ -10,16 +10,16 @@
   "devDependencies": {
     "@pokit/core": "^1.0.1",
     "@pokit/terminal": "^1.0.1",
-    "@types/bun": "^1.3.14",
-    "@types/inquirer": "^9.0.9",
-    "@types/node": "^22.18.0",
-    "concurrently": "^9.2.1",
-    "inquirer": "^9.3.7",
+    "@types/bun": "^1.4.4",
+    "@types/inquirer": "^9.0.10",
+    "@types/node": "^22.20.5",
+    "concurrently": "^9.2.5",
+    "inquirer": "^9.3.8",
     "pok-plugins": "github:djgrant/pok-plugins",
     "pokit": "^0.5.1",
     "tsx": "^4.23.15",
-    "typescript": "^5.9.2",
-    "vitest": "^3.2.4"
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.12"
   },
   "packageManager": "pnpm@11.17.0"
 }
