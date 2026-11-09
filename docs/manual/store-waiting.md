@@ -1,141 +1,137 @@
-# Waiting on State
+# Waiting on state
 
-Two primitives suspend a workflow until a store reaches some condition: `when` observes, `take` consumes. Neither polls. The delivery ends as `suspended`, and a relevant write makes the execution due again.
+A workflow can pause until a store's state meets a condition. `when` waits and returns a value from the state. `take` waits and also changes the state, so that only one workflow receives each value.
 
-## `store.when`
-
-`when` waits once for a condition and returns the selected value. It does not mutate the store.
+This page uses the `Conversation` store from [Stores](./stores.md), and a workflow that answers each message the user sends. The workflow closes the conversation after 30 minutes without a message.
 
 ```ts
-const message = yield* store.when((s) =>
-  s.messages.find((m) => !m.processed)
-);
-```
+import { workflow } from "@notation/durable";
+import { Conversation } from "./conversation";
 
-If the selector already returns a truthy value, the workflow continues immediately. Otherwise the execution suspends. On a missing store, `when` first creates it from the definition's `initial`, and the selector runs against that state. When a later write touches something the selector read, the workflow replays and the selector re-evaluates.
+export const answerMessages = workflow<{ conversationId: string }>(async function* (step, event) {
+  const conversation = step.store(Conversation, { id: event.params.conversationId });
 
-Inside a loop, pass an explicit key – the same call site is reached more than once, so the call-site key collides:
+  for (let turn = 0; ; turn++) {
+    const waited = yield* conversation.when(
+      `wait:${turn}`,
+      (state) => state.inbox.length > 0,
+      { deadline: Date.now() + 30 * MINUTE }
+    );
 
-```ts
-const message = yield* store.when(`next-message:${turn}`, (s) =>
-  s.messages.find((m) => !m.processed)
-);
-```
+    if (waited.status === "timed-out") {
+      yield* conversation.update("close", (draft) => {
+        draft.status = "closed";
+      });
+      return;
+    }
 
-## Waiting with a deadline
-
-Pass `{ deadline }` to wait for the condition or for a time, whichever comes first. The deadline is an absolute timestamp in milliseconds. The step compares it with the runtime clock, which is `Date.now()` by default. Workflow code cannot read the runtime clock, so a runtime created with its own `clock` must keep that clock in step with `Date.now()`, as tests do when they fake both. Otherwise the comparison mixes two clocks. The timed form always takes an explicit key:
-
-```ts
-const approval = step.store(ApprovalStore, { id: orderId });
-
-const result = yield* approval.when(
-  `decision:${orderId}`,
-  (state) => state.decision,
-  { deadline: Date.now() + 24 * 60 * 60 * 1000 }
-);
-
-if (result.status === "timed-out") {
-  yield* step.run(`cancel:${orderId}`, () => cancelOrder(orderId));
-} else {
-  // result.value is the decision
-}
-```
-
-The timed form returns a `TimedWhenResult<R>`:
-
-```ts
-type TimedWhenResult<R> =
-  | { status: "matched"; value: NonNullable<R> }
-  | { status: "timed-out" };
-```
-
-The form without a deadline does not change, and returns the selected value. In the timed form, `deadline` is required and must be a finite number. A workflow whose deadline is optional therefore needs two call sites, one for each form, and must handle both return types:
-
-```ts
-const decision = deadline === undefined
-  ? yield* approval.when(`decision:${orderId}`, (state) => state.decision)
-  : yield* approval.when(`decision:${orderId}`, (state) => state.decision, { deadline });
-```
-
-The step records the first result it finds: `matched` if the selector matches, otherwise `timed-out` once the deadline has passed. The rules are:
-
-- **The first evaluation records the deadline.** The step is recorded unfinished with the deadline as its wake time, as `step.delay` records its wake time. Later evaluations use the recorded deadline and ignore the argument. So a deadline computed from `Date.now()` does not move when the workflow replays. If the unfinished record has no deadline, because an earlier version of the workflow used the same key without one, the step uses the argument and records it.
-- **The selector runs first.** Each evaluation runs the selector before it compares the deadline with the clock. A match returns `matched`, even when the deadline has already passed. Without a match, a deadline that has passed returns `timed-out`.
-- **Only the first recorded result counts.** Once the step records `timed-out`, a later matching update cannot replace it, and replay returns `timed-out`. The same holds for `matched`.
-- **A commit that does not match changes nothing.** The commit makes the execution due, the selector runs again, and the step suspends again with the recorded deadline as `wakeAt`.
-- **The deadline never ends the wait early.** The step does not time out before the deadline. The runtime makes the execution due at the deadline, but it does not promise to deliver it at that exact moment.
-- **Recording the result removes both wakes.** The write that records the result deletes the waiter. The deadline wake needs no removal: once the step has a result, the delivery no longer reports the deadline as its wake time, and acknowledging that delivery drops the old wake.
-
-An unresolved evaluation takes these steps in order, as a `when` or `take` without a deadline does:
-
-1. It records the unfinished step with the deadline.
-2. It registers the waiter.
-3. It ends the delivery as `suspended` with `wakeAt` set to the deadline.
-
-If the worker crashes before the delivery is acknowledged, the execution is delivered again. The redelivery reads the recorded deadline if step 1 completed, runs the selector again, and registers the waiter again. A worker whose lease has been taken over cannot record a result, so it cannot delete the waiter of the worker that holds the lease now.
-
-A timed `when` covers one store and one deadline. It cannot wait on several stores.
-
-## How wake-ups work
-
-The selector runs against a tracking proxy – a wrapper around the state that records which paths the selector read. If the selector does not match, the runtime stores those paths in a _waiter_: the store name and ID, the store version the selector saw, the read paths, and the waiting `executionId` and step key. The waiter carries no copy of the workflow event.
-
-When an update later writes to an overlapping path, the runtime requests a wake for the waiter's execution in the same transaction as the write. So once the write is durable, the wake is durable too, and a crash cannot commit one without the other. Appending to `messages` wakes a selector that read `s.messages`; replacing `profile` wakes a selector that read `s.profile.name`. A write to `status` does not wake a selector that only read `messages`.
-
-Why does this matter? Because the selector itself is never serialised. The recorded paths are only a wake-up filter – on wake, the workflow replays and the selector re-runs against the real committed state. If a wake turns out to be spurious, the selector re-evaluates to falsy and the execution suspends again.
-
-Two more rules follow from waking the execution rather than queueing a copy of its event:
-
-- **Waiters persist until their step finishes.** The runtime deletes a waiter in the same write that records its step's result, not when the wake fires. If the delivery that a wake starts crashes before the step finishes, the waiter is still registered, so a later matching write still wakes the execution.
-- **Many wakes collapse into one delivery.** Wakes are state on the execution record, so ten writes that satisfy the same waiter before the dispatcher claims it produce one delivery, not ten. A store wake and a pending `step.delay` for the same execution also merge, and the execution is delivered at the earlier time.
-
-Selectors must be synchronous and pure: no network, no timers, no mutation (the proxy throws if you try). The selected value is recorded as the step result, so it must be a durable value (see [Step values](./steps.md#step-values)); otherwise the step throws `WorkflowValueError` (`INVALID_STEP_VALUE`).
-
-## `store.take`
-
-`when` observes; it does not claim. If two executions both `when` on the same unprocessed message, both receive it. For mailboxes and queues where exactly one consumer should win each item, use `take`:
-
-```ts
-const msg = yield* store.take(
-  `next:${turn}`,
-  (s) => s.messages.find((m) => !m.processed),
-  (draft, msg) => {
-    draft.messages.find((m) => m.id === msg.id)!.processed = true;
-  }
-);
-```
-
-The selector and the claim run inside the _same_ store transaction, committing as one version bump. When two workers race, one commits its claim first. The other's selector then re-evaluates against the claimed state, finds the message already processed, and moves on – so both workers cannot receive the same message.
-
-`take` requires an explicit key, and the claim mutation follows the same rules as an updater.
-
-## Example: an agent loop
-
-```ts
-export const agent = workflow(async function* (step, event) {
-  const store = step.store(AgentStore, { id: event.params.agentId });
-
-  let turn = 0;
-
-  while (true) {
-    const msg = yield* store.take(
-      `next-message:${turn++}`,
-      (s) => s.messages.find((m) => !m.processed),
-      (draft, m) => {
-        draft.messages.find((x) => x.id === m.id)!.processed = true;
+    const message = yield* conversation.take(
+      `take:${turn}`,
+      (state) => state.inbox[0],
+      (draft) => {
+        const message = draft.inbox.shift()!;
+        draft.messages.push(message);
       }
     );
 
-    const response = yield* step.run(`llm:${msg.id}`, () =>
-      callModel(msg.content)
-    );
+    const reply = yield* step.run(`reply:${turn}`, async () => {
+      return await model.reply(message.text);
+    });
 
-    yield* store.update(`reply:${msg.id}`, (draft) => {
-      draft.messages.push(response);
+    yield* conversation.update(`save-reply:${turn}`, (draft) => {
+      draft.messages.push({ id: `${message.id}-reply`, role: "assistant", text: reply });
     });
   }
 });
 ```
 
-Between turns the workflow costs nothing – no process, no timer, no poll. A new message (from another workflow, or [written externally](./store-external.md)) wakes it.
+## `when`
+
+`when` runs a function, the selector, on the store's state. If the selector's result is a match, `when` returns it. Otherwise the workflow waits.
+
+```ts
+const firstMessage = yield* conversation.when("first-message", (state) => state.inbox[0]);
+```
+
+| The selector returns | `when` |
+| --- | --- |
+| `undefined`, `null` or `false` | Waits |
+| Any other value, including `0` and `""` | Returns the value |
+
+`when` records the value it returns, as other steps do. It does not change the store.
+
+## How a waiting workflow wakes
+
+When the selector does not match, Durable ends the delivery, and the execution's status becomes `suspended`. No process runs while the workflow waits.
+
+While the selector runs, Durable notes which parts of the state it reads. A later change to any of those parts wakes the workflow:
+
+| Selector | Change | Wakes the workflow |
+| --- | --- | --- |
+| `(state) => state.inbox.length > 0` | A message is added to `inbox` | Yes |
+| `(state) => state.inbox.length > 0` | `status` or `messages` changes | No |
+| `(state) => state.status === "closed"` | `status` changes | Yes |
+
+The woken workflow runs the selector again on the new state. If the selector still does not match, the workflow waits again.
+
+The change can come from another workflow or from code outside workflows, such as an HTTP handler. See [External store access](./store-external.md).
+
+Durable saves the change and the wake in one write, so a crash cannot keep one and lose the other. Several changes that arrive before the workflow runs lead to one delivery.
+
+## Selectors
+
+A selector must be synchronous, and must not change the state. A selector that assigns to the state throws `Store selectors must not mutate state`.
+
+The selector's result must be a [durable value](./step-values.md), because `when` records it.
+
+If the selector throws, `when` records the error and throws it into the workflow, as `step.run` does.
+
+## `take`
+
+Two workflows that wait with `when` for the same message both receive it. `take` makes sure that only one does. It takes a selector, as `when` does, and a claim function that changes the state:
+
+```ts
+const message = yield* conversation.take(
+  `take:${turn}`,
+  (state) => state.inbox[0],
+  (draft) => {
+    const message = draft.inbox.shift()!;
+    draft.messages.push(message);
+  }
+);
+```
+
+When the selector matches, Durable runs the claim function on a draft and saves the result, in one write. Here the claim moves the message from `inbox` to `messages`, so the next selector that reads `inbox[0]` sees a different message.
+
+**If two workflows take at the same moment, only one write succeeds.** The other workflow runs its selector again on the new state, and receives the next message or waits.
+
+The claim function receives the draft and the selected value. It follows the same rules as an [update function](./stores.md#updating), and it always takes a key.
+
+## Deadlines
+
+`when` takes a `deadline`, as a time in milliseconds since the Unix epoch. With a deadline, `when` returns an object that says whether the selector matched in time:
+
+```ts
+const waited = yield* conversation.when(
+  `wait:${turn}`,
+  (state) => state.inbox.length > 0,
+  { deadline: Date.now() + 30 * MINUTE }
+);
+```
+
+| `status` | Meaning |
+| --- | --- |
+| `matched` | The selector matched. `value` holds its result |
+| `timed-out` | The deadline passed first |
+
+`when` with a deadline follows these rules:
+
+- **The first delivery that waits records the deadline.** Later deliveries use the recorded deadline, so `Date.now() + 30 * MINUTE` does not move forward on each delivery.
+- **The selector runs first.** A selector that matches returns `matched`, even if the deadline has passed.
+- **The first result is final.** Once `when` records `timed-out`, a later message does not change the result.
+
+A `when` with a deadline always takes a key. `take` has no deadline, so the example waits with `when` first and then takes the message.
+
+## Step keys
+
+`when` without a deadline accepts a call without a key. Inside a loop, such as the one in the example, every step needs a key that changes on each pass. See [Step keys](./step-keys.md).
