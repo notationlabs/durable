@@ -7,6 +7,12 @@ export class RetryableError extends Error {
     message: string,
     opts: { maxAttempts: number; retryInterval: number }
   ) {
+    if (!Number.isInteger(opts.maxAttempts) || opts.maxAttempts < 1) {
+      throw new RangeError("RetryableError maxAttempts must be a positive integer");
+    }
+    if (!Number.isFinite(opts.retryInterval) || opts.retryInterval < 0) {
+      throw new RangeError("RetryableError retryInterval must be a finite number that is not negative");
+    }
     super(message);
     this.name = "RetryableError";
     this.maxAttempts = opts.maxAttempts;

@@ -123,8 +123,8 @@ export class StepError extends StepResponse {
   ) {
     super();
     this.err = err;
-    this.maxAttempts = opts?.maxAttempts ? opts.maxAttempts : 1;
-    this.retryInterval = opts?.retryInterval ? opts.retryInterval : 60000;
+    this.maxAttempts = opts?.maxAttempts ?? 1;
+    this.retryInterval = opts?.retryInterval ?? 60000;
     this.backOffStrategy = opts?.backoffStrategy
       ? opts.backoffStrategy
       : "decay";

@@ -107,3 +107,43 @@ test("retrying an error after retry interval", async () => {
   expect(executions[2]).toBeCloseTo(2, 0);
   expect(executions[3]).toBeCloseTo(3, 0);
 });
+
+test("a retryInterval of 0 retries without waiting", async () => {
+  let runs = 0;
+
+  const workflow = createWorkflow(async function* (step) {
+    return yield* step.run(async () => {
+      runs++;
+      if (runs < 3) {
+        throw new RetryableError("Step error", { maxAttempts: 3, retryInterval: 0 });
+      }
+      return runs;
+    });
+  });
+
+  const sdk = createSdk({ workflow });
+  const startedAt = Date.now();
+  await expect(sdk.triggerAndWait({ workflowId: "workflow" })).resolves.toBe(3);
+  expect(Date.now() - startedAt).toBeLessThan(10_000);
+});
+
+test("RetryableError rejects a retry policy it cannot follow", () => {
+  expect(() => new RetryableError("e", { maxAttempts: 0, retryInterval: 1 })).toThrow(RangeError);
+  expect(() => new RetryableError("e", { maxAttempts: 1.5, retryInterval: 1 })).toThrow(RangeError);
+  expect(() => new RetryableError("e", { maxAttempts: 2, retryInterval: -1 })).toThrow(RangeError);
+  expect(() => new RetryableError("e", { maxAttempts: 2, retryInterval: Infinity })).toThrow(RangeError);
+});
+
+test("workflow accepts fewer type arguments than it declares", async () => {
+  const greet = createWorkflow<{ name: string }, string>(async function* (step, event) {
+    return yield* step.run(() => `Hello, ${event.params.name}`);
+  });
+  const notify = createWorkflow<{ orderId: string }>(async function* (step, event) {
+    yield* step.run(() => event.params.orderId);
+  });
+
+  const sdk = createSdk({ greet, notify });
+  await expect(
+    sdk.triggerAndWait({ workflowId: "greet", params: { name: "World" } })
+  ).resolves.toBe("Hello, World");
+});

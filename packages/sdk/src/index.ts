@@ -9,6 +9,7 @@ export {
   ExecutionCancelRequestError,
   ExecutionDispatcher,
   ExecutionListRequestError,
+  StoreValidationError,
   WORKFLOW_RESULT_STEP_KEY,
   WorkflowCancelledError,
   WorkflowEffectError,

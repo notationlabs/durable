@@ -1,6 +1,7 @@
 import type { Logger } from "pino";
 import type {
   Durable,
+  DurableValue,
   WorkflowEvent,
   WorkflowGenerator,
   EventParams,
@@ -89,9 +90,9 @@ export type DurableWorkflowFn<Params, Result> = IfDurable<
  * control to the executor whenever a step needs async work.
  */
 export function workflow<
-  Params extends EventParams,
-  Result,
-  Context extends EventContext
+  Params extends EventParams = EventParams,
+  Result = DurableValue | void,
+  Context extends EventContext = EventContext
 >(
   workflowFn: WorkflowFn<Params, Result, Context> &
     DurableWorkflowFn<Params, Result>
