@@ -1,6 +1,6 @@
 import { beforeEach, expect, it, vi } from "vitest";
 import pino from "pino";
-import { FreezableMap, MiddlewareEvent } from "@yieldstar/core";
+import { FreezableMap, MiddlewareEvent } from "@durable/core";
 import { createMiddleware, executeMiddlewareChain } from "./middleware";
 
 const logger = pino();

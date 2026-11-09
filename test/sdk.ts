@@ -1,3 +1,3 @@
-import { createTestSdkFactory } from "@yieldstar/test-utils";
+import { createTestSdkFactory } from "@durable/test-utils";
 
 export const createSdk = createTestSdkFactory();

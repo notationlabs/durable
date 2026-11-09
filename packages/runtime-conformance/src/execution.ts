@@ -13,7 +13,7 @@ import {
   type Runtime,
   type StandardSchemaV1,
   type StoreWaiter,
-} from "@yieldstar/core";
+} from "@durable/core";
 import { describe, expect, test } from "vitest";
 
 const EXECUTION_STATUSES: readonly ExecutionStatus[] = [
@@ -83,7 +83,7 @@ function schema<T>(): StandardSchemaV1<unknown, T> {
   return {
     "~standard": {
       version: 1,
-      vendor: "yieldstar-execution-conformance",
+      vendor: "durable-execution-conformance",
       validate(value) {
         return { value: value as T };
       },

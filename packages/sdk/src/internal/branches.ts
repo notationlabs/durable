@@ -2,7 +2,7 @@ import {
   StepKey,
   StepResponse,
   type ExecutionCancellation,
-} from "@yieldstar/core";
+} from "@durable/core";
 
 /** A branch of `step.all` or `step.race`: any step generator. */
 export type Branch<T> = AsyncGenerator<StepResponse, T, any>;

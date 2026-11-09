@@ -14,7 +14,7 @@ import {
   type EffectSettleRequest,
   type EffectSettleResult,
   type EffectWatchRequest,
-} from "@yieldstar/core";
+} from "@durable/core";
 import { EffectWaitersDao } from "./dao/effect-waiters-dao";
 import { EffectsDao } from "./dao/effects-dao";
 import type { SqliteDriver } from "./sqlite-driver";

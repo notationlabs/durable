@@ -1,5 +1,5 @@
 {
-  "name": "yieldstar-examples",
+  "name": "durable-examples",
   "version": "0.9.0",
   "private": true,
   "repository": {
@@ -8,14 +8,12 @@
     "directory": "examples"
   },
   "dependencies": {
-    "@yieldstar/http-server": "workspace:*",
-    "@yieldstar/sqlite-runtime": "workspace:*",
-    "@yieldstar/test-utils": "workspace:*",
-    "@yieldstar/worker-invoker": "workspace:*",
-    "@yieldstar/core": "workspace:*",
+    "@durable/core": "workspace:*",
+    "@durable/sdk": "workspace:*",
+    "@durable/test-utils": "workspace:*",
+    "@notation/durable": "workspace:*",
     "pino": "^9.9.0",
-    "valibot": "^1.4.2",
-    "yieldstar": "workspace:*"
+    "valibot": "^1.4.2"
   },
   "devDependencies": {
     "@types/bun": "^1.2.21",

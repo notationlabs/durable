@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { WorkflowCancelledError, durableValueCodec } from "@yieldstar/core";
-import type { ObservationMiddlewareFunction, ObservationRequest } from "@yieldstar/http-server";
+import { WorkflowCancelledError, durableValueCodec } from "@durable/core";
+import type { ObservationMiddlewareFunction, ObservationRequest } from "@durable/http-server";
 import {
   admit,
   backendKinds,

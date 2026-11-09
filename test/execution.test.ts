@@ -1,6 +1,6 @@
 import { expect, test } from "vitest";
 import { setTimeout } from "node:timers/promises";
-import { createWorkflow } from "yieldstar";
+import { createWorkflow } from "@durable/sdk";
 import { createSdk } from "./sdk";
 
 test("data flow between steps", async () => {

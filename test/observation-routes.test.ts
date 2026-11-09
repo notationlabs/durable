@@ -1,12 +1,12 @@
 import { EventEmitter } from "node:events";
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { durableValueCodec, type ExecutionRecord } from "@yieldstar/core";
+import { durableValueCodec, type ExecutionRecord } from "@durable/core";
 import {
   createRoutes,
   type ObservationMiddlewareFunction,
   type ObservationRequest,
-} from "@yieldstar/http-server";
-import { MemoryRuntime } from "@yieldstar/test-runtime";
+} from "@durable/http-server";
+import { MemoryRuntime } from "@durable/test-runtime";
 import {
   CardDeclinedError,
   admit,
@@ -420,7 +420,7 @@ test("a /wait or /events request stops reading the record when the client discon
     reads = 0;
     const controller = new AbortController();
     const response = routes[route].POST(
-      new Request(`http://yieldstar.test${route}`, {
+      new Request(`http://durable.test${route}`, {
         method: "POST",
         body: JSON.stringify({ executionId: "slow" }),
         signal: controller.signal,

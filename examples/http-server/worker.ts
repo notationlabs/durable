@@ -1,6 +1,6 @@
 import pino from "pino";
-import { WorkflowRunner } from "@yieldstar/core";
-import { createWorkflowWorker } from "@yieldstar/worker-invoker";
+import { WorkflowRunner } from "@notation/durable";
+import { createWorkflowWorker } from "@notation/durable/worker";
 import { runtime, workflowRouter } from "./shared";
 
 const logger = pino();

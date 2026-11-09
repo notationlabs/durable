@@ -14,17 +14,17 @@ import {
   type TriggerAck,
   type WorkflowInvoker,
   type WorkflowRouter,
-} from "@yieldstar/core";
-import { createRoutes, type ObservationMiddlewareFunction } from "@yieldstar/http-server";
-import { createWorkflowInvoker } from "@yieldstar/test-invoker";
-import { MemoryRuntime } from "@yieldstar/test-runtime";
-import { SqliteRuntime } from "@yieldstar/sqlite-runtime";
-import { createHttpSdkFactory, createLocalSdk, registerErrorClass } from "yieldstar";
+} from "@durable/core";
+import { createRoutes, type ObservationMiddlewareFunction } from "@durable/http-server";
+import { createWorkflowInvoker } from "@durable/test-invoker";
+import { MemoryRuntime } from "@durable/test-runtime";
+import { SqliteRuntime } from "@durable/sqlite-runtime";
+import { createHttpSdkFactory, createLocalSdk, registerErrorClass } from "@durable/sdk";
 
 const { createSqliteDb } =
   "Bun" in globalThis
-    ? await import("@yieldstar/sqlite-runtime/bun")
-    : await import("@yieldstar/sqlite-runtime/node");
+    ? await import("@durable/sqlite-runtime/bun")
+    : await import("@durable/sqlite-runtime/node");
 
 export const logger = { info() {}, error() {}, warn() {} } as unknown as Logger;
 
@@ -62,7 +62,7 @@ export function openBackend(kind: BackendKind): Backend {
     const runtime = new MemoryRuntime();
     return { kind, runtime, peer: runtime, open: () => runtime };
   }
-  const dir = mkdtempSync(join(tmpdir(), "yieldstar-observation-"));
+  const dir = mkdtempSync(join(tmpdir(), "durable-observation-"));
   const path = join(dir, "executions.db");
   const dbs: ReturnType<typeof createSqliteDb>[] = [];
   const open = (options?: { clock?: () => number }) => {
@@ -121,7 +121,7 @@ export function serveRoutes(runtime: Runtime, options: SdkOptions = {}) {
     cleanups.push(() => hosts.clear());
   }
   vi.stubGlobal("fetch", routeFetch);
-  const host = `yieldstar-${++hostCount}.test`;
+  const host = `durable-${++hostCount}.test`;
   const routes = createRoutes({
     runtime,
     logger,

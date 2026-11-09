@@ -7,16 +7,18 @@ export {
   EffectDeliveryError,
   ExecutionAdmissionError,
   ExecutionCancelRequestError,
+  ExecutionDispatcher,
   ExecutionListRequestError,
   WORKFLOW_RESULT_STEP_KEY,
   WorkflowCancelledError,
   WorkflowEffectError,
   WorkflowJoinError,
   WorkflowRaceError,
+  WorkflowRunner,
   WorkflowStartError,
   WorkflowValueError,
   registerErrorClass,
-} from "@yieldstar/core";
+} from "@durable/core";
 export { createWorkflow, workflow } from "./exports/workflow";
 export type { DurableWorkflowFn, WorkflowFn } from "./exports/workflow";
 export { defineStore } from "./internal/step-runner";
@@ -77,10 +79,11 @@ export type {
   DurableObject,
   DurableValue,
   ErrorClass,
+  EventContext,
   WorkflowValueErrorCode,
   WorkflowStartErrorCode,
   WorkflowJoinErrorCode,
   EffectDeliveryErrorCode,
   EffectRecord,
   WorkflowEffectErrorCode,
-} from "@yieldstar/core";
+} from "@durable/core";

@@ -10,7 +10,7 @@ import type {
 export type SqliteDbOpts = {
   /**
    * Path to the SQLite database file
-   * @default "./.db/yieldstar.sqlite"
+   * @default "./.db/durable.sqlite"
    */
   path?: string;
   /**
@@ -22,7 +22,7 @@ export type SqliteDbOpts = {
 };
 
 const defaultOpts: Required<SqliteDbOpts> = {
-  path: "./.db/yieldstar.sqlite",
+  path: "./.db/durable.sqlite",
   wal: true,
 };
 

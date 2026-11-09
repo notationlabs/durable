@@ -1,4 +1,4 @@
-import type { JoinWaiter } from "@yieldstar/core";
+import type { JoinWaiter } from "@durable/core";
 import type { SqliteDriver } from "../sqlite-driver";
 
 class JoinWaiterRow {

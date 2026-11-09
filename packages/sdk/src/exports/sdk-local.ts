@@ -15,13 +15,13 @@ import type {
   WorkflowGeneratorReturnType,
   WorkflowInvoker,
   WorkflowRouter,
-} from "@yieldstar/core";
+} from "@durable/core";
 import {
   ExecutionAdmissionError,
   WorkflowCancelledError,
   createExecutionControl,
   createExecutionObserver,
-} from "@yieldstar/core";
+} from "@durable/core";
 
 export function createLocalSdk<W extends WorkflowRouter>(
   runtime: { executions: ExecutionClient },

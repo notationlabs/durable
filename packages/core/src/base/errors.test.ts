@@ -169,7 +169,7 @@ describe("error revival", () => {
     expect(Object.hasOwn(revived, "name")).toBe(false);
   });
 
-  test("revives the Yieldstar error classes by default", () => {
+  test("revives the Durable error classes by default", () => {
     const start = roundTrip(new WorkflowStartError("START_REQUEST_MISMATCH", "m"));
     expect(start).toBeInstanceOf(WorkflowStartError);
     expect(start.code).toBe("START_REQUEST_MISMATCH");

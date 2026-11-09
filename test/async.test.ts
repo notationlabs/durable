@@ -1,6 +1,6 @@
-import type { WorkflowFn } from "yieldstar";
+import type { WorkflowFn } from "@durable/sdk";
 import { expect, test, vi } from "vitest";
-import { createWorkflow } from "yieldstar";
+import { createWorkflow } from "@durable/sdk";
 import { EventContext } from "../packages/core/dist";
 import { createSdk } from "./sdk";
 

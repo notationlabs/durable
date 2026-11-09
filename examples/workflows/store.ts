@@ -1,5 +1,5 @@
 import * as v from "valibot";
-import { defineStore, workflow, type WorkflowEvent } from "yieldstar";
+import { defineStore, workflow, type WorkflowEvent } from "@notation/durable";
 
 type ConversationParams = {
   conversationId: string;

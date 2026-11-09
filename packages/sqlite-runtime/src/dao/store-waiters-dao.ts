@@ -1,4 +1,4 @@
-import type { StoreWaiter } from "@yieldstar/core";
+import type { StoreWaiter } from "@durable/core";
 import type { SqliteDriver } from "../sqlite-driver";
 
 export class StoreWaiterRow {

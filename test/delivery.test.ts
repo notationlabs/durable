@@ -8,11 +8,11 @@ import {
   redeliveryDelay,
   type ExecutionLease,
   type WorkflowRouter,
-} from "@yieldstar/core";
-import { createRoutes } from "@yieldstar/http-server";
-import { createWorkflowInvoker } from "@yieldstar/test-invoker";
-import { MemoryRuntime } from "@yieldstar/test-runtime";
-import { testSchema } from "@yieldstar/test-utils";
+} from "@durable/core";
+import { createRoutes } from "@durable/http-server";
+import { createWorkflowInvoker } from "@durable/test-invoker";
+import { MemoryRuntime } from "@durable/test-runtime";
+import { testSchema } from "@durable/test-utils";
 import {
   ExecutionAdmissionError,
   RetryableError,
@@ -21,7 +21,7 @@ import {
   createLocalSdk,
   defineStore,
   workflow,
-} from "yieldstar";
+} from "@durable/sdk";
 
 const logger = { info() {}, error() {}, warn() {} } as unknown as Logger;
 
@@ -434,7 +434,7 @@ test("HTTP trigger returns the accepted ID, and 409 Conflict for an ID in use", 
     return routes[path]!.POST(new Request(url, init));
   });
   dispatcher.start();
-  const http = createHttpSdkFactory<typeof router>()({ url: "http://yieldstar.test" });
+  const http = createHttpSdkFactory<typeof router>()({ url: "http://durable.test" });
 
   const execution = await http.trigger({
     workflowId: "greet",
@@ -443,7 +443,7 @@ test("HTTP trigger returns the accepted ID, and 409 Conflict for an ID in use", 
   expect(await runtime.executions.get(execution.executionId)).toBeDefined();
   await expect(execution.waitForResult()).resolves.toBe("hello world");
 
-  const response = await fetch("http://yieldstar.test/trigger", {
+  const response = await fetch("http://durable.test/trigger", {
     method: "POST",
     body: JSON.stringify({
       workflowId: "greet",

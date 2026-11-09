@@ -14,7 +14,7 @@ import {
   type StoreSnapshot,
   type StoreStepId,
   type StoreWaiter,
-} from "@yieldstar/core";
+} from "@durable/core";
 import type { MemoryExecutionClient } from "./memory-execution";
 
 type StoreRecord = {

@@ -3,7 +3,7 @@ import {
   type JoinClient,
   type JoinResult,
   type JoinWaiter,
-} from "@yieldstar/core";
+} from "@durable/core";
 import { ExecutionsDao } from "./dao/executions-dao";
 import { JoinWaitersDao } from "./dao/join-waiters-dao";
 import type { SqliteDriver } from "./sqlite-driver";

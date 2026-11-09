@@ -5,7 +5,7 @@ import {
   type HeapClient,
   type HeapRecord,
   type LeaseLost,
-} from "@yieldstar/core";
+} from "@durable/core";
 import { EffectWaitersDao } from "./dao/effect-waiters-dao";
 import { ExecutionsDao } from "./dao/executions-dao";
 import { JoinWaitersDao } from "./dao/join-waiters-dao";

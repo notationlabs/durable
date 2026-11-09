@@ -1,7 +1,7 @@
 import pino from "pino";
-import { createMiddleware, createRoutes } from "@yieldstar/http-server";
-import { ExecutionDispatcher } from "@yieldstar/core";
-import { createWorkflowInvoker } from "@yieldstar/worker-invoker";
+import { createMiddleware, createRoutes } from "@notation/durable/http";
+import { ExecutionDispatcher } from "@notation/durable";
+import { createWorkflowInvoker } from "@notation/durable/worker";
 import { runtime } from "./shared";
 
 const logger = pino();

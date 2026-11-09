@@ -1,4 +1,4 @@
-import { Runtime, type RuntimeOptions } from "@yieldstar/core";
+import { Runtime, type RuntimeOptions } from "@durable/core";
 import { MemoryEffectClient } from "./memory-effect";
 import { MemoryExecutionClient } from "./memory-execution";
 import { MemoryHeapClient } from "./memory-heap";

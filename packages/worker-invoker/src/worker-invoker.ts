@@ -4,13 +4,13 @@ import type {
   WorkflowEvent,
   WorkflowInvoker,
   WorkflowRunOutcome,
-} from "@yieldstar/core";
+} from "@durable/core";
 import {
   InfrastructureError,
   WorkerExitedError,
   durableValueCodec,
   encodeExecutionEvent,
-} from "@yieldstar/core";
+} from "@durable/core";
 import { EventEmitter } from "node:events";
 import { fork } from "node:child_process";
 import { fileURLToPath } from "node:url";

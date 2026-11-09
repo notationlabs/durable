@@ -935,7 +935,7 @@ export function diffStorePaths(previous: unknown, next: unknown): StorePath[] {
   return collapseStorePaths(paths);
 }
 
-const TRACKING_TARGET = Symbol("yieldstar.trackingTarget");
+const TRACKING_TARGET = Symbol("durable.trackingTarget");
 
 /**
  * Unwraps a tracking proxy (`trackStoreSelector` or `trackStoreUpdater`)

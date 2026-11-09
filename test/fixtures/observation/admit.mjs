@@ -1,11 +1,11 @@
 import { createInterface } from "node:readline";
-import { SqliteRuntime } from "@yieldstar/sqlite-runtime";
+import { SqliteRuntime } from "@durable/sqlite-runtime";
 
 const [dbPath, request] = process.argv.slice(2);
 const { createSqliteDb } =
   "Bun" in globalThis
-    ? await import("@yieldstar/sqlite-runtime/bun")
-    : await import("@yieldstar/sqlite-runtime/node");
+    ? await import("@durable/sqlite-runtime/bun")
+    : await import("@durable/sqlite-runtime/node");
 
 const runtime = new SqliteRuntime(createSqliteDb({ path: dbPath, wal: true }));
 const { context, ...event } = JSON.parse(request);

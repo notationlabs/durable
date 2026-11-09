@@ -1,6 +1,5 @@
 import type { Logger } from "pino";
-import type { DurableValue, WorkflowFn } from "yieldstar";
-import { workflow } from "yieldstar";
+import { workflow, type DurableValue, type WorkflowFn } from "@notation/durable";
 
 type CustomWorkflowFn<Params, Result> = (
   step: Parameters<WorkflowFn<any, Result, any>>[0],

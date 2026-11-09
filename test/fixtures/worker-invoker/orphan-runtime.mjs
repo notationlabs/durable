@@ -1,11 +1,11 @@
-import { createWorkflowInvoker } from "@yieldstar/worker-invoker";
-import { SqliteRuntime } from "@yieldstar/sqlite-runtime";
+import { createWorkflowInvoker } from "@durable/worker-invoker";
+import { SqliteRuntime } from "@durable/sqlite-runtime";
 
 const [dbPath, markerPath] = process.argv.slice(2);
 const { createSqliteDb } =
   "Bun" in globalThis
-    ? await import("@yieldstar/sqlite-runtime/bun")
-    : await import("@yieldstar/sqlite-runtime/node");
+    ? await import("@durable/sqlite-runtime/bun")
+    : await import("@durable/sqlite-runtime/node");
 
 const logger = { info() {}, error() {}, warn() {} };
 const runtime = new SqliteRuntime(createSqliteDb({ path: dbPath, wal: true }));

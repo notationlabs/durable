@@ -9,16 +9,16 @@ import {
   WorkflowRunner,
   type ExecutionLease,
   type WorkflowRouter,
-} from "@yieldstar/core";
-import { createWorkflowInvoker } from "@yieldstar/test-invoker";
-import { MemoryRuntime } from "@yieldstar/test-runtime";
+} from "@durable/core";
+import { createWorkflowInvoker } from "@durable/test-invoker";
+import { MemoryRuntime } from "@durable/test-runtime";
 import {
   WorkflowEffectError,
   registerErrorClass,
   workflow,
   type EffectDescriptor,
   type EffectLookup,
-} from "yieldstar";
+} from "@durable/sdk";
 
 afterEach(() => {
   vi.restoreAllMocks();

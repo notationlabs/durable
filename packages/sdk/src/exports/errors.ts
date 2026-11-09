@@ -1,4 +1,4 @@
-import { registerErrorClass } from "@yieldstar/core";
+import { registerErrorClass } from "@durable/core";
 
 export class RetryableError extends Error {
   maxAttempts: number;

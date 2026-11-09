@@ -1,4 +1,4 @@
-import { workflow } from "yieldstar";
+import { workflow } from "@notation/durable";
 
 export const pollingWorkflow = workflow(async function* (step, event, logger) {
   let num: number;

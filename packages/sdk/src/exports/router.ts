@@ -1,4 +1,4 @@
-import type { WorkflowRouter } from "@yieldstar/core";
+import type { WorkflowRouter } from "@durable/core";
 
 export function createWorkflowRouter<W extends WorkflowRouter>(
   workflows: W

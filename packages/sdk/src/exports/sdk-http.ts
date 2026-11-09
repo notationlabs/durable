@@ -14,7 +14,7 @@ import type {
   WaitResult,
   WorkflowGeneratorReturnType,
   WorkflowRouter,
-} from "@yieldstar/core";
+} from "@durable/core";
 import {
   ExecutionAdmissionError,
   ExecutionCancelRequestError,
@@ -23,7 +23,7 @@ import {
   durableValueCodec,
   isDuration,
   prepareExecutionCancel,
-} from "@yieldstar/core";
+} from "@durable/core";
 import { HttpRouteError } from "./errors";
 
 type TriggerResponse<W extends WorkflowRouter, K extends string & keyof W> = TriggerAck & {

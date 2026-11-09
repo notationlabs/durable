@@ -50,7 +50,7 @@ export type WorkflowInvoker = {
   deliver(event: WorkflowEvent, options: DeliveryOptions): Promise<WorkflowRunOutcome>;
 };
 
-const WORKER_EXITED = Symbol.for("yieldstar.workerExited");
+const WORKER_EXITED = Symbol.for("@notation/durable.workerExited");
 
 /**
  * Rejects a delivery whose worker exited, or was killed, before replying.

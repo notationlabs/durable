@@ -18,7 +18,7 @@ import {
   type StoreWaiter,
   type StoreMutation,
   type StoreMutationCommitResult,
-} from "@yieldstar/core";
+} from "@durable/core";
 
 class StoreRow {
   instance_id!: string;

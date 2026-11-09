@@ -1,13 +1,13 @@
 import { EventEmitter } from "node:events";
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { MemoryRuntime } from "@yieldstar/test-runtime";
-import { createRoutes } from "@yieldstar/http-server";
+import { MemoryRuntime } from "@durable/test-runtime";
+import { createRoutes } from "@durable/http-server";
 import {
   ExecutionListRequestError,
   HttpRouteError,
   createHttpSdkFactory,
   workflow,
-} from "yieldstar";
+} from "@durable/sdk";
 import {
   CardDeclinedError,
   LEASE,
@@ -352,7 +352,7 @@ describe("HTTP maxWait", () => {
     let settled = false;
     const response = Promise.resolve(
       routes["/wait"].POST(
-        new Request("http://yieldstar.test/wait", {
+        new Request("http://durable.test/wait", {
           method: "POST",
           body: JSON.stringify({ executionId: "slow", timeout: 60_000 }),
         })

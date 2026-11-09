@@ -7,14 +7,14 @@ import {
   ExecutionDispatcher,
   createExecutionObserver,
   type DispatcherOptions,
-} from "@yieldstar/core";
-import { createWorkflowInvoker } from "@yieldstar/worker-invoker";
-import { SqliteRuntime } from "@yieldstar/sqlite-runtime";
+} from "@durable/core";
+import { createWorkflowInvoker } from "@durable/worker-invoker";
+import { SqliteRuntime } from "@durable/sqlite-runtime";
 
 const { createSqliteDb } =
   "Bun" in globalThis
-    ? await import("@yieldstar/sqlite-runtime/bun")
-    : await import("@yieldstar/sqlite-runtime/node");
+    ? await import("@durable/sqlite-runtime/bun")
+    : await import("@durable/sqlite-runtime/node");
 
 const logger = { info() {}, error() {}, warn() {} } as unknown as Logger;
 const fixtures = new URL("./fixtures/worker-invoker/", import.meta.url);
@@ -30,7 +30,7 @@ afterEach(async () => {
  * each of which opens its own connection.
  */
 function setup(options: Partial<DispatcherOptions> = {}) {
-  const dir = mkdtempSync(join(tmpdir(), "yieldstar-start-"));
+  const dir = mkdtempSync(join(tmpdir(), "durable-start-"));
   const db = createSqliteDb({ path: join(dir, "shared.db"), wal: true });
   const runtime = new SqliteRuntime(db);
   const invoker = createWorkflowInvoker({

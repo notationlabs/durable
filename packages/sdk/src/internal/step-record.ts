@@ -14,7 +14,7 @@ import {
   decodeParsedValue,
   durableValueCodec,
   encodeThrownValue,
-} from "@yieldstar/core";
+} from "@durable/core";
 import { StepBranchesDecision, type BranchesDecision } from "./branches";
 
 /**

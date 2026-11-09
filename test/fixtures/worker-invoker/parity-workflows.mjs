@@ -1,4 +1,4 @@
-import { registerErrorClass, workflow } from "yieldstar";
+import { registerErrorClass, workflow } from "@durable/sdk";
 
 export class ParcelError extends Error {
   code = "PARCEL_LOST";

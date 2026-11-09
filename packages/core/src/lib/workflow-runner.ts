@@ -140,7 +140,7 @@ export class WorkflowRunner<
     }
 
     throw new Error(
-      "Workflow runner critical error. This is likely because your worklow and worker are referencing different versions of @yieldstar/core."
+      "Workflow runner critical error. This is likely because your worklow and worker are referencing different versions of @notation/durable."
     );
   }
 }

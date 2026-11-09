@@ -9,11 +9,11 @@ import {
   type ExecutionLease,
   type WorkflowEvent,
   type WorkflowRunOutcome,
-} from "@yieldstar/core";
-import { createWorkflowInvoker } from "@yieldstar/worker-invoker";
-import { createWorkflowInvoker as createTestInvoker } from "@yieldstar/test-invoker";
-import { MemoryRuntime } from "@yieldstar/test-runtime";
-import { SqliteRuntime } from "@yieldstar/sqlite-runtime";
+} from "@durable/core";
+import { createWorkflowInvoker } from "@durable/worker-invoker";
+import { createWorkflowInvoker as createTestInvoker } from "@durable/test-invoker";
+import { MemoryRuntime } from "@durable/test-runtime";
+import { SqliteRuntime } from "@durable/sqlite-runtime";
 // @ts-expect-error – plain .mjs fixture shared with the worker process
 import { ParcelError, parityRouter } from "./fixtures/worker-invoker/parity-workflows.mjs";
 // @ts-expect-error – plain .mjs fixture shared with the worker process
@@ -90,7 +90,7 @@ test("rejects when the worker process cannot spawn", { timeout: 2_000 }, async (
     deliver({
       fixture: "success.mjs",
       executionId: "worker-spawn-error",
-      execPath: "/missing/yieldstar-node",
+      execPath: "/missing/durable-node",
     })
   ).rejects.toMatchObject({ code: "ENOENT" });
 });
@@ -211,13 +211,13 @@ function normalize(outcome: WorkflowRunOutcome) {
 }
 
 test("a worker whose runtime process dies exits and makes no further fenced writes", { timeout: 10_000 }, async () => {
-  const dir = mkdtempSync(join(tmpdir(), "yieldstar-orphan-"));
+  const dir = mkdtempSync(join(tmpdir(), "durable-orphan-"));
   const dbPath = join(dir, "orphan.db");
   const markerPath = join(dir, "worker.pid");
   const parent = spawn(
     process.execPath,
     [new URL("orphan-runtime.mjs", fixtures).pathname, dbPath, markerPath],
-    { stdio: "inherit", env: { ...process.env, YIELDSTAR_ORPHAN_DB: dbPath } }
+    { stdio: "inherit", env: { ...process.env, DURABLE_ORPHAN_DB: dbPath } }
   );
   let workerPid: number | undefined;
   try {
@@ -236,8 +236,8 @@ test("a worker whose runtime process dies exits and makes no further fenced writ
 
     const { createSqliteDb } =
       "Bun" in globalThis
-        ? await import("@yieldstar/sqlite-runtime/bun")
-        : await import("@yieldstar/sqlite-runtime/node");
+        ? await import("@durable/sqlite-runtime/bun")
+        : await import("@durable/sqlite-runtime/node");
     const db = createSqliteDb({ path: dbPath, wal: true });
     try {
       const runtime = new SqliteRuntime(db);

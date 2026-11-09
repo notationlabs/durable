@@ -6,14 +6,14 @@ import type {
   WorkflowEvent,
   WorkflowRunOutcome,
   WorkflowRunner,
-} from "@yieldstar/core";
+} from "@durable/core";
 import {
   WORKFLOW_RESULT_STEP_KEY,
   WorkflowValueError,
   decodeExecutionEvent,
   durableValueCodec,
   encodeThrownValue,
-} from "@yieldstar/core";
+} from "@durable/core";
 
 let context: EventContext;
 

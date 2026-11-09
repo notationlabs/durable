@@ -43,7 +43,7 @@ import {
   WorkflowValueError,
   type WorkflowGenerator,
   type WorkflowGeneratorReturnType,
-} from "@yieldstar/core";
+} from "@durable/core";
 import { RetryableError } from "../exports/errors";
 import { getCallSiteHash } from "./utils";
 import { StepUnfinished, UnfinishedCacheCheck } from "./step-record";
@@ -54,7 +54,7 @@ import {
   workflowCallback,
   type RuntimeCallResult,
 } from "./runtime-call";
-import type { WorkflowEvent } from "@yieldstar/core";
+import type { WorkflowEvent } from "@durable/core";
 import {
   BranchesStepKey,
   StepBranches,

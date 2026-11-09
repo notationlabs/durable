@@ -1,26 +1,28 @@
 import { defineConfig } from "@pokit/core";
 import { release } from "pok-plugins";
 
-/** Bundles every package, then emits declarations; identical across packages, so it runs once. */
-const BUILD = "bun --filter '*' build && pnpm exec tsc -b";
+/** Builds the workspace and assembles the published packages; identical across packages, so it runs once. */
+const BUILD = "bun scripts/build.ts";
 
 const published = (dir: string) => ({ file: `packages/${dir}/package.json`, build: BUILD });
 const versionOnly = (file: string) => ({ file, publish: false as const });
 
 export default defineConfig({
   commandsDir: "./commands",
-  appName: "yieldstar",
+  appName: "durable",
   plugins: [
     release({
       // Lockstep: every manifest moves to the same version.
       packages: [
         versionOnly("package.json"),
-        published("core"),
-        published("http-server"),
-        published("sqlite-runtime"),
-        published("runtime-conformance"),
-        published("worker-invoker"),
-        published("yieldstar"),
+        published("durable"),
+        published("durable-conformance"),
+        versionOnly("packages/core/package.json"),
+        versionOnly("packages/http-server/package.json"),
+        versionOnly("packages/runtime-conformance/package.json"),
+        versionOnly("packages/sdk/package.json"),
+        versionOnly("packages/sqlite-runtime/package.json"),
+        versionOnly("packages/worker-invoker/package.json"),
         versionOnly("packages/test-invoker/package.json"),
         versionOnly("packages/test-runtime/package.json"),
         versionOnly("packages/test-utils/package.json"),

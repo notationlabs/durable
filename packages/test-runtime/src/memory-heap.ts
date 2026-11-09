@@ -3,7 +3,7 @@ import type {
   HeapClient,
   HeapRecord,
   LeaseLost,
-} from "@yieldstar/core";
+} from "@durable/core";
 
 export class MemoryHeapClient implements HeapClient {
   /** Each step's records, latest attempt first. */

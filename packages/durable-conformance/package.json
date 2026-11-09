@@ -1,0 +1,33 @@
+{
+  "name": "@notation/durable-conformance",
+  "version": "0.9.0",
+  "license": "MIT",
+  "author": "Daniel Grant",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/notationlabs/yieldstar.git",
+    "directory": "packages/durable-conformance"
+  },
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/runtime-conformance/index.d.ts",
+      "import": "./dist/runtime-conformance/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "peerDependencies": {
+    "@notation/durable": "workspace:^",
+    "vitest": "^3.2.4"
+  },
+  "devDependencies": {
+    "@notation/durable": "workspace:*",
+    "vitest": "^3.2.4"
+  }
+}

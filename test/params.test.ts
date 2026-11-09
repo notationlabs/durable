@@ -1,7 +1,7 @@
-import type { WorkflowFn } from "yieldstar";
+import type { WorkflowFn } from "@durable/sdk";
 import { setTimeout as sleep } from "node:timers/promises";
 import { expect, test, vi } from "vitest";
-import { workflow } from "yieldstar";
+import { workflow } from "@durable/sdk";
 import { createSdk } from "./sdk";
 
 test("passing params to a workflow", async () => {

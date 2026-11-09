@@ -1,6 +1,6 @@
-import { WorkflowRunner } from "@yieldstar/core";
-import { MemoryRuntime } from "@yieldstar/test-runtime";
-import { createWorkflowWorker } from "@yieldstar/worker-invoker";
+import { WorkflowRunner } from "@durable/core";
+import { MemoryRuntime } from "@durable/test-runtime";
+import { createWorkflowWorker } from "@durable/worker-invoker";
 import { leaseLocally } from "./lease-locally.mjs";
 import { parityRouter } from "./parity-workflows.mjs";
 

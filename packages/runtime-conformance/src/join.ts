@@ -7,7 +7,7 @@ import {
   type ExecutionLease,
   type JoinWaiter,
   type Runtime,
-} from "@yieldstar/core";
+} from "@durable/core";
 import { describe, expect, test } from "vitest";
 
 export type JoinConformanceHarnessOptions = {

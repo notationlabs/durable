@@ -1,9 +1,9 @@
 import { expect, test, vi } from "vitest";
-import type { StandardSchemaV1, StepRunner } from "yieldstar";
-import { testSchema } from "@yieldstar/test-utils";
-import { DEFAULT_LEASE_DURATION, createExecutionObserver } from "@yieldstar/core";
+import type { StandardSchemaV1, StepRunner } from "@durable/sdk";
+import { testSchema } from "@durable/test-utils";
+import { DEFAULT_LEASE_DURATION, createExecutionObserver } from "@durable/core";
 import { createSdk } from "./sdk";
-import { WORKFLOW_RESULT_STEP_KEY, defineStore, workflow } from "yieldstar";
+import { WORKFLOW_RESULT_STEP_KEY, defineStore, workflow } from "@durable/sdk";
 import { setTimeout as sleep } from "node:timers/promises";
 
 type Message = {
@@ -1069,7 +1069,7 @@ function strictSchema<T>(validator: (v: unknown) => string | undefined): Standar
   return {
     "~standard": {
       version: 1,
-      vendor: "yieldstar-test",
+      vendor: "durable-test",
       validate(value) {
         const error = validator(value);
         if (error) {

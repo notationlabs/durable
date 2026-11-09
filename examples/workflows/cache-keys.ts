@@ -1,4 +1,4 @@
-import { workflow } from "yieldstar";
+import { workflow } from "@notation/durable";
 
 let executionIdx = -1;
 

@@ -1,13 +1,13 @@
-import { ExecutionDispatcher, WorkflowRunner } from "@yieldstar/core";
-import { SqliteRuntime } from "@yieldstar/sqlite-runtime";
-import { createWorkflowInvoker } from "@yieldstar/test-invoker";
-import { workflow } from "yieldstar";
+import { ExecutionDispatcher, WorkflowRunner } from "@durable/core";
+import { SqliteRuntime } from "@durable/sqlite-runtime";
+import { createWorkflowInvoker } from "@durable/test-invoker";
+import { workflow } from "@durable/sdk";
 
 const [dbPath] = process.argv.slice(2);
 const { createSqliteDb } =
   "Bun" in globalThis
-    ? await import("@yieldstar/sqlite-runtime/bun")
-    : await import("@yieldstar/sqlite-runtime/node");
+    ? await import("@durable/sqlite-runtime/bun")
+    : await import("@durable/sqlite-runtime/node");
 
 const router = {
   "charge-order": workflow(async function* (step, event) {

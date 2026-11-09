@@ -8,7 +8,7 @@ import {
   type JoinClient,
   type StoreClient,
   type StoreWaiter,
-} from "@yieldstar/core";
+} from "@durable/core";
 
 export type RuntimeClients = {
   stores: StoreClient;

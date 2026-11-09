@@ -38,7 +38,7 @@ import {
   type ExecutionState,
   type ExecutionWakeResult,
   type WorkflowRunOutcome,
-} from "@yieldstar/core";
+} from "@durable/core";
 import { EffectWaitersDao } from "./dao/effect-waiters-dao";
 import { ExecutionsDao } from "./dao/executions-dao";
 import { JoinWaitersDao } from "./dao/join-waiters-dao";
@@ -54,7 +54,7 @@ export type SqliteExecutionClientOptions = {
 
 /**
  * Execution records in the `executions` table. Every operation loads a row,
- * applies a pure transition from @yieldstar/core and writes it back inside one
+ * applies a pure transition from the core package and writes it back inside one
  * IMMEDIATE transaction, so processes sharing the database file see the same
  * semantics as the memory runtime.
  */

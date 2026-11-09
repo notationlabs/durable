@@ -10,7 +10,7 @@ import {
   type EffectClient,
   type EffectDeliveryErrorCode,
   type EffectOutcome,
-} from "@yieldstar/core";
+} from "@durable/core";
 
 /** What `lookup` reports about an effect ID. */
 export type EffectLookup<T> =
@@ -244,7 +244,7 @@ function malformedLookup(
 }
 
 // Matches by code too, so an invariant error from another copy of
-// @yieldstar/core, or one revived without its class, is still recognised.
+// @durable/core, or one revived without its class, is still recognised.
 function isInvariantError(err: unknown) {
   return (
     err instanceof EffectClientInvariantError ||

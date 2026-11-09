@@ -4,13 +4,13 @@ import type {
   TriggerEvent,
   WorkflowGeneratorReturnType,
   EventParamsOf,
-} from "@yieldstar/core";
+} from "@durable/core";
 import type { Logger } from "pino";
 import pino from "pino";
-import { ExecutionDispatcher, WorkflowRunner } from "@yieldstar/core";
-import { createWorkflowInvoker } from "@yieldstar/test-invoker";
-import { MemoryRuntime } from "@yieldstar/test-runtime";
-import { createLocalSdk } from "yieldstar";
+import { ExecutionDispatcher, WorkflowRunner } from "@durable/core";
+import { createWorkflowInvoker } from "@durable/test-invoker";
+import { MemoryRuntime } from "@durable/test-runtime";
+import { createLocalSdk } from "@durable/sdk";
 
 export function createTestSdkFactory(params?: {
   logger?: Logger;

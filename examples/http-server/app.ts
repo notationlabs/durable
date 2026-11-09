@@ -1,4 +1,4 @@
-import { createHttpSdkFactory } from "yieldstar";
+import { createHttpSdkFactory } from "@notation/durable";
 import type { WorkflowRouter } from "./shared";
 
 export const createSdk = createHttpSdkFactory<WorkflowRouter>();

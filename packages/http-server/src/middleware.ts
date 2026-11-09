@@ -1,5 +1,5 @@
 import type { Logger } from "pino";
-import type { MiddlewareEvent, MiddlewareFunction } from "@yieldstar/core";
+import type { MiddlewareEvent, MiddlewareFunction } from "@durable/core";
 
 /**
  * Creates a middleware function that can be used with the HTTP server.

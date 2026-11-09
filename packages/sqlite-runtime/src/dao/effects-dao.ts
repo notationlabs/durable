@@ -1,4 +1,4 @@
-import type { EffectConflictState, EffectState } from "@yieldstar/core";
+import type { EffectConflictState, EffectState } from "@durable/core";
 import type { SqliteDriver } from "../sqlite-driver";
 
 class EffectRow {

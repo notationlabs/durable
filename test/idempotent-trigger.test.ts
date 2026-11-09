@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "vitest";
-import type { EventContext } from "@yieldstar/core";
-import { MemoryRuntime } from "@yieldstar/test-runtime";
-import { ExecutionAdmissionError, createLocalSdk, workflow } from "yieldstar";
+import type { EventContext } from "@durable/core";
+import { MemoryRuntime } from "@durable/test-runtime";
+import { ExecutionAdmissionError, createLocalSdk, workflow } from "@durable/sdk";
 import {
   admitFromProcesses,
   cleanup,

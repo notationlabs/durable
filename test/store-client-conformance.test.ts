@@ -1,11 +1,11 @@
-import { registerStoreClientConformance } from "@yieldstar/runtime-conformance";
-import { MemoryRuntime } from "@yieldstar/test-runtime";
-import { SqliteRuntime } from "@yieldstar/sqlite-runtime";
+import { registerStoreClientConformance } from "@durable/runtime-conformance";
+import { MemoryRuntime } from "@durable/test-runtime";
+import { SqliteRuntime } from "@durable/sqlite-runtime";
 
 const isBun = "Bun" in globalThis;
 const { createSqliteDb } = isBun
-  ? await import("@yieldstar/sqlite-runtime/bun")
-  : await import("@yieldstar/sqlite-runtime/node");
+  ? await import("@durable/sqlite-runtime/bun")
+  : await import("@durable/sqlite-runtime/node");
 
 registerStoreClientConformance({
   name: "memory",

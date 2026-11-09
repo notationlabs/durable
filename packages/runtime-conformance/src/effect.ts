@@ -8,7 +8,7 @@ import {
   type EffectBeginResult,
   type ExecutionLease,
   type Runtime,
-} from "@yieldstar/core";
+} from "@durable/core";
 import { describe, expect, test } from "vitest";
 
 export type EffectConformanceHarnessOptions = {

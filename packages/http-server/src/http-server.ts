@@ -8,7 +8,7 @@ import type {
   ExecutionRecord,
   ExecutionStatus,
   WorkflowInvoker,
-} from "@yieldstar/core";
+} from "@durable/core";
 import {
   ExecutionListRequestError,
   FreezableMap,
@@ -23,7 +23,7 @@ import {
   isPositiveInterval,
   prepareExecutionCancel,
   prepareExecutionListRequest,
-} from "@yieldstar/core";
+} from "@durable/core";
 import { executeMiddlewareChain } from "./middleware";
 
 export type RouteHandler = (request: Request) => Response | Promise<Response>;

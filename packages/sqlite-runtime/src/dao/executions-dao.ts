@@ -2,8 +2,8 @@ import type {
   ExecutionState,
   PreparedExecutionListRequest,
   SequencedExecutionState,
-} from "@yieldstar/core";
-import { nextClaimAt } from "@yieldstar/core";
+} from "@durable/core";
+import { nextClaimAt } from "@durable/core";
 import type { SqliteDriver, SqliteParameters } from "../sqlite-driver";
 import { runTransaction } from "../sqlite-transaction";
 

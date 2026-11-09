@@ -1,0 +1,55 @@
+{
+  "name": "@notation/durable",
+  "version": "0.9.0",
+  "license": "MIT",
+  "author": "Daniel Grant",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/notationlabs/yieldstar.git",
+    "directory": "packages/durable"
+  },
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/sdk/index.d.ts",
+      "import": "./dist/sdk/index.js"
+    },
+    "./runtime": {
+      "types": "./dist/core/index.d.ts",
+      "import": "./dist/core/index.js"
+    },
+    "./http": {
+      "types": "./dist/http-server/index.d.ts",
+      "import": "./dist/http-server/index.js"
+    },
+    "./worker": {
+      "types": "./dist/worker-invoker/index.d.ts",
+      "import": "./dist/worker-invoker/index.js"
+    },
+    "./sqlite": {
+      "types": "./dist/sqlite-runtime/index.d.ts",
+      "import": "./dist/sqlite-runtime/index.js"
+    },
+    "./sqlite/bun": {
+      "types": "./dist/sqlite-runtime/bun.d.ts",
+      "import": "./dist/sqlite-runtime/bun.js"
+    },
+    "./sqlite/node": {
+      "types": "./dist/sqlite-runtime/node.d.ts",
+      "import": "./dist/sqlite-runtime/node.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "dependencies": {
+    "@standard-schema/spec": "^1.1.0",
+    "nanoid": "^5.1.5",
+    "pino": "^9.9.0",
+    "uuid": "^11.1.0"
+  }
+}

@@ -1,5 +1,5 @@
 {
-  "name": "yieldstar-test",
+  "name": "durable-test",
   "version": "0.9.0",
   "private": true,
   "repository": {
@@ -9,15 +9,15 @@
   },
   "type": "module",
   "dependencies": {
-    "@yieldstar/core": "workspace:*",
-    "@yieldstar/http-server": "workspace:*",
-    "@yieldstar/sqlite-runtime": "workspace:*",
-    "@yieldstar/runtime-conformance": "workspace:*",
-    "@yieldstar/test-invoker": "workspace:*",
-    "@yieldstar/test-runtime": "workspace:*",
-    "@yieldstar/test-utils": "workspace:*",
-    "@yieldstar/worker-invoker": "workspace:*",
+    "@durable/core": "workspace:*",
+    "@durable/http-server": "workspace:*",
+    "@durable/sqlite-runtime": "workspace:*",
+    "@durable/runtime-conformance": "workspace:*",
+    "@durable/test-invoker": "workspace:*",
+    "@durable/test-runtime": "workspace:*",
+    "@durable/test-utils": "workspace:*",
+    "@durable/worker-invoker": "workspace:*",
     "pino": "^9.9.0",
-    "yieldstar": "workspace:*"
+    "@durable/sdk": "workspace:*"
   }
 }

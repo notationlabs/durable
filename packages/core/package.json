@@ -1,13 +1,7 @@
 {
-  "name": "@yieldstar/core",
+  "name": "@durable/core",
   "version": "0.9.0",
-  "license": "MIT",
-  "author": "Daniel Grant",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/notationlabs/yieldstar.git",
-    "directory": "packages/core"
-  },
+  "private": true,
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

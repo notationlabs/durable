@@ -1,4 +1,4 @@
-import type { StartRequestState } from "@yieldstar/core";
+import type { StartRequestState } from "@durable/core";
 import type { SqliteDriver } from "../sqlite-driver";
 import { runTransaction } from "../sqlite-transaction";
 

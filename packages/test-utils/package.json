@@ -1,12 +1,7 @@
 {
-  "name": "@yieldstar/test-utils",
+  "name": "@durable/test-utils",
   "version": "0.9.0",
   "private": true,
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/notationlabs/yieldstar.git",
-    "directory": "packages/test-utils"
-  },
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -14,10 +9,10 @@
     "build": "bun build src/index.ts --outfile dist/index.js --target node --packages=external"
   },
   "dependencies": {
-    "@yieldstar/core": "workspace:*",
-    "@yieldstar/test-invoker": "workspace:*",
-    "@yieldstar/test-runtime": "workspace:*",
+    "@durable/core": "workspace:*",
+    "@durable/test-invoker": "workspace:*",
+    "@durable/test-runtime": "workspace:*",
     "pino": "^9.9.0",
-    "yieldstar": "workspace:*"
+    "@durable/sdk": "workspace:*"
   }
 }

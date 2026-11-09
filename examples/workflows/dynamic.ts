@@ -1,5 +1,4 @@
-import type { EventContext } from "@yieldstar/core";
-import { workflow } from "yieldstar";
+import { workflow, type EventContext } from "@notation/durable";
 
 const workflowPlan = [
   { type: "get-number" },

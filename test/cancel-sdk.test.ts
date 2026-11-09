@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "vitest";
-import { ExecutionCancelRequestError, WorkflowCancelledError } from "yieldstar";
+import { ExecutionCancelRequestError, WorkflowCancelledError } from "@durable/sdk";
 import {
   admit,
   backendKinds,

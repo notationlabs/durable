@@ -1,7 +1,6 @@
 import pino from "pino";
-import { ExecutionDispatcher } from "@yieldstar/core";
-import { createWorkflowInvoker } from "@yieldstar/worker-invoker";
-import { createLocalSdk } from "yieldstar";
+import { ExecutionDispatcher, createLocalSdk } from "@notation/durable";
+import { createWorkflowInvoker } from "@notation/durable/worker";
 import { runtime } from "./shared";
 import type { WorkflowRouter } from "./shared";
 

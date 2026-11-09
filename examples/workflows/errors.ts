@@ -1,4 +1,4 @@
-import { workflow, RetryableError } from "yieldstar";
+import { workflow, RetryableError } from "@notation/durable";
 
 export const errorsWorkflow = workflow(async function* (step, event, logger) {
   let num = yield* step.run(() => {

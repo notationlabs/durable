@@ -44,7 +44,7 @@ import {
   type SequencedExecutionState,
   type StartRequestState,
   type WorkflowRunOutcome,
-} from "@yieldstar/core";
+} from "@durable/core";
 
 /**
  * In-memory execution records. Every operation reads, transitions and writes

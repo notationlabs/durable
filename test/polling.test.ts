@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { createWorkflow } from "yieldstar";
+import { createWorkflow } from "@durable/sdk";
 import { createSdk } from "./sdk";
 
 test("poll retries when predicate fails", async () => {

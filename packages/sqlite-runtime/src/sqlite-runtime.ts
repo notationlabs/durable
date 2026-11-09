@@ -1,4 +1,4 @@
-import { Runtime, type RuntimeOptions } from "@yieldstar/core";
+import { Runtime, type RuntimeOptions } from "@durable/core";
 import { SqliteEffectClient } from "./sqlite-effect";
 import { SqliteExecutionClient } from "./sqlite-execution";
 import { SqliteHeapClient } from "./sqlite-heap";

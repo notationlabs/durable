@@ -1,16 +1,16 @@
 import { writeFileSync } from "node:fs";
-import { WorkflowRunner } from "@yieldstar/core";
-import { SqliteRuntime } from "@yieldstar/sqlite-runtime";
-import { createWorkflowWorker } from "@yieldstar/worker-invoker";
-import { workflow } from "yieldstar";
+import { WorkflowRunner } from "@durable/core";
+import { SqliteRuntime } from "@durable/sqlite-runtime";
+import { createWorkflowWorker } from "@durable/worker-invoker";
+import { workflow } from "@durable/sdk";
 
 const { createSqliteDb } =
   "Bun" in globalThis
-    ? await import("@yieldstar/sqlite-runtime/bun")
-    : await import("@yieldstar/sqlite-runtime/node");
+    ? await import("@durable/sqlite-runtime/bun")
+    : await import("@durable/sqlite-runtime/node");
 
 const logger = { info() {}, error() {}, warn() {} };
-const dbPath = process.env.YIELDSTAR_ORPHAN_DB;
+const dbPath = process.env.DURABLE_ORPHAN_DB;
 const runtime = new SqliteRuntime(createSqliteDb({ path: dbPath, wal: true }));
 
 const router = {

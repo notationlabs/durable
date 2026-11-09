@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { getCallSiteHash } from "../packages/yieldstar/src/internal/utils";
+import { getCallSiteHash } from "../packages/sdk/src/internal/utils";
 
 // Mirrors how the step runner uses getCallSiteHash: a synchronous wrapper
 // passes itself as the frame to skip, so the first captured frame is the

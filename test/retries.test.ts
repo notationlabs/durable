@@ -1,6 +1,6 @@
 import { expect, test } from "vitest";
-import { createWorkflow, RetryableError } from "yieldstar";
-import { createTestSdkFactory } from "@yieldstar/test-utils";
+import { createWorkflow, RetryableError } from "@durable/sdk";
+import { createTestSdkFactory } from "@durable/test-utils";
 import { pino } from "pino";
 
 const logger = pino({ level: "fatal" });

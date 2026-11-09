@@ -7,7 +7,7 @@
   "include": ["src/**/*.ts"],
   "references": [
     { "path": "../core" },
-    { "path": "../yieldstar" },
+    { "path": "../sdk" },
     { "path": "../test-invoker" },
     { "path": "../test-runtime" }
   ]

@@ -398,7 +398,7 @@ export class WorkflowStartError extends Error {
   }
 }
 
-const INFRASTRUCTURE_ERROR = Symbol.for("yieldstar.infrastructureError");
+const INFRASTRUCTURE_ERROR = Symbol.for("@notation/durable.infrastructureError");
 
 /**
  * Wraps a failure of the runtime rather than of workflow code, such as a heap

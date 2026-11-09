@@ -6,7 +6,7 @@ import {
   type StoreDefinition,
   type StorePath,
   type StoreWaiter,
-} from "@yieldstar/core";
+} from "@durable/core";
 import { describe, expect, test } from "vitest";
 
 export {
@@ -73,7 +73,7 @@ function schema<T>(): StandardSchemaV1<unknown, T> {
   return {
     "~standard": {
       version: 1,
-      vendor: "yieldstar-conformance",
+      vendor: "durable-conformance",
       validate(value) {
         return { value: value as T };
       },
@@ -207,7 +207,7 @@ async function recordStep(
   }
 }
 
-/** Registers the normative YieldStar store connector qualification suite. */
+/** Registers the normative Durable store connector qualification suite. */
 export function registerStoreClientConformance({
   name,
   create,
@@ -429,7 +429,7 @@ export function registerStoreClientConformance({
       const raceSchema: StandardSchemaV1<unknown, { messages: string[] }> = {
         "~standard": {
           version: 1 as const,
-          vendor: "yieldstar-conformance",
+          vendor: "durable-conformance",
           async validate(value: unknown) {
             if (!racing) return { value: value as { messages: string[] } };
             validations++;
@@ -848,7 +848,7 @@ export function registerStoreClientConformance({
         const countedSchema: StandardSchemaV1<unknown, CreatedState> = {
           "~standard": {
             version: 1,
-            vendor: "yieldstar-conformance",
+            vendor: "durable-conformance",
             async validate(value) {
               await validate?.();
               return { value: value as CreatedState };

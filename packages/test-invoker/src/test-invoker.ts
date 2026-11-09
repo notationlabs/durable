@@ -4,7 +4,7 @@ import type {
   WorkflowEvent,
   WorkflowInvoker,
   WorkflowRunner,
-} from "@yieldstar/core";
+} from "@durable/core";
 import { EventEmitter } from "node:events";
 
 /** Runs deliveries in-process with the same `deliver` contract as the worker invoker. */

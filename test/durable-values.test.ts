@@ -5,11 +5,11 @@ import {
   ReadOnlyMap,
   StoreValidationError,
   WorkflowRunner,
-} from "@yieldstar/core";
-import { createRoutes } from "@yieldstar/http-server";
-import { createWorkflowInvoker } from "@yieldstar/test-invoker";
-import { MemoryRuntime } from "@yieldstar/test-runtime";
-import { createTestSdkFactory, testSchema } from "@yieldstar/test-utils";
+} from "@durable/core";
+import { createRoutes } from "@durable/http-server";
+import { createWorkflowInvoker } from "@durable/test-invoker";
+import { MemoryRuntime } from "@durable/test-runtime";
+import { createTestSdkFactory, testSchema } from "@durable/test-utils";
 import {
   ExecutionAdmissionError,
   RetryableError,
@@ -23,7 +23,7 @@ import {
   type StandardSchemaV1,
   type WorkflowEvent,
   type WorkflowFn,
-} from "yieldstar";
+} from "@durable/sdk";
 
 type Step = Parameters<WorkflowFn<any, any, any>>[0];
 type Observation = { value: unknown } | { thrown: unknown };
@@ -95,7 +95,7 @@ class Point {
 const isoDate: StandardSchemaV1<string, Date> = {
   "~standard": {
     version: 1,
-    vendor: "yieldstar-test",
+    vendor: "durable-test",
     validate(value) {
       if (typeof value !== "string" || Number.isNaN(Date.parse(value))) {
         return { issues: [{ message: "expected an ISO date string" }] };
@@ -783,7 +783,7 @@ describe("HTTP transport", () => {
     );
     vi.stubGlobal("fetch", fetchMock);
     dispatcher.start();
-    const http = createHttpSdkFactory<typeof router>()({ url: "http://yieldstar.test" });
+    const http = createHttpSdkFactory<typeof router>()({ url: "http://durable.test" });
     return { http, fetchMock, dispatcher, runtime };
   }
 
@@ -850,7 +850,7 @@ describe("HTTP transport", () => {
   test("the trigger route still accepts plain JSON", async () => {
     const { dispatcher, runtime } = setup();
     try {
-      const response = await fetch("http://yieldstar.test/trigger", {
+      const response = await fetch("http://durable.test/trigger", {
         method: "POST",
         body: JSON.stringify({ workflowId: "echo", params: { n: 1 }, context: { tenant: "t" } }),
       });
@@ -871,7 +871,7 @@ describe("HTTP transport", () => {
   test("an invalid trigger body is rejected with INVALID_EXECUTION_EVENT", async () => {
     const { dispatcher } = setup();
     try {
-      const response = await fetch("http://yieldstar.test/trigger", {
+      const response = await fetch("http://durable.test/trigger", {
         method: "POST",
         body: JSON.stringify({ workflowId: "echo", params: { $type: "regexp", value: "a" } }),
       });

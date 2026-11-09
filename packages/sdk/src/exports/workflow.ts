@@ -6,7 +6,7 @@ import type {
   EventParams,
   EventContext,
   IfDurable,
-} from "@yieldstar/core";
+} from "@durable/core";
 import type { StepRunner } from "../internal/step-runner";
 import { isIterable } from "../internal/utils";
 import {
@@ -58,7 +58,7 @@ import {
   WORKFLOW_RESULT_STEP_KEY,
   type ExecutionCancellation,
   type HeapRecord,
-} from "@yieldstar/core";
+} from "@durable/core";
 
 export type WorkflowFn<
   Params extends EventParams,

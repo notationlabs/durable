@@ -10,10 +10,10 @@ import {
   type ExecutionStartRequest,
   type ExecutionStartResult,
   type WorkflowRouter,
-} from "@yieldstar/core";
-import { createWorkflowInvoker } from "@yieldstar/test-invoker";
-import { MemoryRuntime } from "@yieldstar/test-runtime";
-import { WorkflowStartError, createLocalSdk, workflow } from "yieldstar";
+} from "@durable/core";
+import { createWorkflowInvoker } from "@durable/test-invoker";
+import { MemoryRuntime } from "@durable/test-runtime";
+import { WorkflowStartError, createLocalSdk, workflow } from "@durable/sdk";
 
 const logger = { info() {}, error() {}, warn() {} } as unknown as Logger;
 

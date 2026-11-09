@@ -1,6 +1,6 @@
-import type { EventContext } from "@yieldstar/core";
-import { workflow } from "yieldstar";
-import { createTestSdkFactory } from "@yieldstar/test-utils";
+import type { EventContext } from "@durable/core";
+import { workflow } from "@durable/sdk";
+import { createTestSdkFactory } from "@durable/test-utils";
 import pino from "pino";
 
 const logger = pino({ level: "info" });

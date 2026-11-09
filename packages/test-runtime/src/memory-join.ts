@@ -3,7 +3,7 @@ import {
   type JoinClient,
   type JoinResult,
   type JoinWaiter,
-} from "@yieldstar/core";
+} from "@durable/core";
 import type { MemoryExecutionClient } from "./memory-execution";
 
 /**

@@ -7,7 +7,7 @@ import {
   type Runtime,
   type StandardSchemaV1,
   type StoreWaiter,
-} from "@yieldstar/core";
+} from "@durable/core";
 import { describe, expect, test } from "vitest";
 
 export type CancellationConformanceHarnessOptions = {
@@ -63,7 +63,7 @@ function schema<T>(): StandardSchemaV1<unknown, T> {
   return {
     "~standard": {
       version: 1,
-      vendor: "yieldstar-cancellation-conformance",
+      vendor: "durable-cancellation-conformance",
       validate(value) {
         return { value: value as T };
       },

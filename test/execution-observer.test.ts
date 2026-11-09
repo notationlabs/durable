@@ -1,8 +1,8 @@
 import { EventEmitter } from "node:events";
 import { afterEach, expect, test } from "vitest";
-import { createExecutionObserver } from "@yieldstar/core";
-import { MemoryRuntime } from "@yieldstar/test-runtime";
-import { createLocalSdk } from "yieldstar";
+import { createExecutionObserver } from "@durable/core";
+import { MemoryRuntime } from "@durable/test-runtime";
+import { createLocalSdk } from "@durable/sdk";
 import { admit, cleanup, complete, elapsed, sleep } from "./observation-harness";
 
 afterEach(cleanup);

@@ -11,17 +11,17 @@ import {
   createExecutionObserver,
   redeliveryDelay,
   type WorkflowInvoker,
-} from "@yieldstar/core";
-import { createWorkflowInvoker } from "@yieldstar/test-invoker";
-import { createWorkflowInvoker as createWorkerInvoker } from "@yieldstar/worker-invoker";
-import { MemoryRuntime } from "@yieldstar/test-runtime";
-import { SqliteRuntime } from "@yieldstar/sqlite-runtime";
-import { workflow, type EffectLookup } from "yieldstar";
+} from "@durable/core";
+import { createWorkflowInvoker } from "@durable/test-invoker";
+import { createWorkflowInvoker as createWorkerInvoker } from "@durable/worker-invoker";
+import { MemoryRuntime } from "@durable/test-runtime";
+import { SqliteRuntime } from "@durable/sqlite-runtime";
+import { workflow, type EffectLookup } from "@durable/sdk";
 
 const { createSqliteDb } =
   "Bun" in globalThis
-    ? await import("@yieldstar/sqlite-runtime/bun")
-    : await import("@yieldstar/sqlite-runtime/node");
+    ? await import("@durable/sqlite-runtime/bun")
+    : await import("@durable/sqlite-runtime/node");
 
 const logger = { info() {}, error() {}, warn() {} } as unknown as Logger;
 const fixtures = new URL("./fixtures/worker-invoker/", import.meta.url);
@@ -291,7 +291,7 @@ test("a settlement wakes every watching execution, and each reads the settled re
 });
 
 test("an EffectClient failure inside a worker replies retry: deliver rejects, the lease is released, and no step result exists", { timeout: 15_000 }, async () => {
-  const dir = mkdtempSync(join(tmpdir(), "yieldstar-effect-"));
+  const dir = mkdtempSync(join(tmpdir(), "durable-effect-"));
   const db = createSqliteDb({ path: join(dir, "shared.db"), wal: true });
   const runtime = new SqliteRuntime(db);
   const errors: { err?: Error; message: string }[] = [];

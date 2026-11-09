@@ -2,14 +2,14 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test } from "vitest";
-import { registerExecutionClientConformance } from "@yieldstar/runtime-conformance";
-import { MemoryRuntime } from "@yieldstar/test-runtime";
-import { SqliteRuntime, type SqliteParameters } from "@yieldstar/sqlite-runtime";
+import { registerExecutionClientConformance } from "@durable/runtime-conformance";
+import { MemoryRuntime } from "@durable/test-runtime";
+import { SqliteRuntime, type SqliteParameters } from "@durable/sqlite-runtime";
 
 const isBun = "Bun" in globalThis;
 const { createSqliteDb } = isBun
-  ? await import("@yieldstar/sqlite-runtime/bun")
-  : await import("@yieldstar/sqlite-runtime/node");
+  ? await import("@durable/sqlite-runtime/bun")
+  : await import("@durable/sqlite-runtime/node");
 
 type SqliteDb = ReturnType<typeof createSqliteDb>;
 
@@ -54,7 +54,7 @@ registerExecutionClientConformance({
 registerExecutionClientConformance({
   name: isBun ? "sqlite-bun-file" : "sqlite-node-file",
   create(options) {
-    const dir = mkdtempSync(join(tmpdir(), "yieldstar-executions-"));
+    const dir = mkdtempSync(join(tmpdir(), "durable-executions-"));
     const path = join(dir, "executions.db");
     const dbs = [createSqliteDb({ path, wal: true })];
     const open = () => {

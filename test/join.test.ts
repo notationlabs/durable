@@ -9,22 +9,22 @@ import {
   type DurableValue,
   type ExecutionLease,
   type WorkflowEvent,
-} from "@yieldstar/core";
-import { MemoryRuntime } from "@yieldstar/test-runtime";
-import { SqliteRuntime } from "@yieldstar/sqlite-runtime";
+} from "@durable/core";
+import { MemoryRuntime } from "@durable/test-runtime";
+import { SqliteRuntime } from "@durable/sqlite-runtime";
 import {
   WorkflowJoinError,
   WorkflowStartError,
   registerErrorClass,
   workflow,
   type TimedJoinResult,
-} from "yieldstar";
+} from "@durable/sdk";
 import { cleanup, createTestSdk, sdkKinds } from "./observation-harness";
 
 const isBun = "Bun" in globalThis;
 const { createSqliteDb } = isBun
-  ? await import("@yieldstar/sqlite-runtime/bun")
-  : await import("@yieldstar/sqlite-runtime/node");
+  ? await import("@durable/sqlite-runtime/bun")
+  : await import("@durable/sqlite-runtime/node");
 
 const logger = { info() {}, error() {}, warn() {}, debug() {} } as unknown as Logger;
 

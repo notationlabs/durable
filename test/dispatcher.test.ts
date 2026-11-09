@@ -18,17 +18,17 @@ import {
   type WorkflowEvent,
   type WorkflowInvoker,
   type WorkflowRunOutcome,
-} from "@yieldstar/core";
-import { createWorkflowInvoker as createTestInvoker } from "@yieldstar/test-invoker";
-import { createWorkflowInvoker as createWorkerInvoker } from "@yieldstar/worker-invoker";
-import { MemoryRuntime } from "@yieldstar/test-runtime";
-import { SqliteRuntime } from "@yieldstar/sqlite-runtime";
-import { workflow } from "yieldstar";
+} from "@durable/core";
+import { createWorkflowInvoker as createTestInvoker } from "@durable/test-invoker";
+import { createWorkflowInvoker as createWorkerInvoker } from "@durable/worker-invoker";
+import { MemoryRuntime } from "@durable/test-runtime";
+import { SqliteRuntime } from "@durable/sqlite-runtime";
+import { workflow } from "@durable/sdk";
 
 const isBun = "Bun" in globalThis;
 const { createSqliteDb } = isBun
-  ? await import("@yieldstar/sqlite-runtime/bun")
-  : await import("@yieldstar/sqlite-runtime/node");
+  ? await import("@durable/sqlite-runtime/bun")
+  : await import("@durable/sqlite-runtime/node");
 
 const logger = { info() {}, error() {}, warn() {} } as unknown as Logger;
 const fixtures = new URL("./fixtures/worker-invoker/", import.meta.url);
@@ -229,7 +229,7 @@ function sharedBackends(): { name: string; open(): Runtime[] }[] {
     {
       name: "separate SQLite connections to one file",
       open() {
-        const dir = mkdtempSync(join(tmpdir(), "yieldstar-dispatchers-"));
+        const dir = mkdtempSync(join(tmpdir(), "durable-dispatchers-"));
         const path = join(dir, "dispatchers.db");
         const dbs = [0, 1, 2].map(() => createSqliteDb({ path, wal: true }));
         cleanups.push(() => {
@@ -577,7 +577,7 @@ test("a renewal that returns lost stops the delivery before its next step functi
 });
 
 test("a renewal that returns lost stops a worker's delivery before its next step function, with no further fenced writes", { timeout: 10_000 }, async () => {
-  const dir = mkdtempSync(join(tmpdir(), "yieldstar-lease-lost-"));
+  const dir = mkdtempSync(join(tmpdir(), "durable-lease-lost-"));
   const db = createSqliteDb({ path: join(dir, "shared.db"), wal: true });
   cleanups.push(() => {
     db.close();
@@ -757,7 +757,7 @@ for (const late of ["resolves", "rejects"] as const) {
 }
 
 test("kills a worker whose step function hangs after the lease is lost, frees its slot at once, and the hung step makes no write", { timeout: 10_000 }, async () => {
-  const dir = mkdtempSync(join(tmpdir(), "yieldstar-hung-worker-"));
+  const dir = mkdtempSync(join(tmpdir(), "durable-hung-worker-"));
   const db = createSqliteDb({ path: join(dir, "shared.db"), wal: true });
   let workerPid: number | undefined;
   cleanups.push(() => {

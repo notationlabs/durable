@@ -15,7 +15,7 @@ import {
   type EffectSettleResult,
   type EffectState,
   type EffectWatchRequest,
-} from "@yieldstar/core";
+} from "@durable/core";
 import type { MemoryExecutionClient } from "./memory-execution";
 import { deleteExecutionWaiters, waiterKey } from "./waiters";
 
