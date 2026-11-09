@@ -1,69 +1,45 @@
 # @notation/durable/worker
 
-Subprocess-based workflow invoker. Forks a new child process for each delivery of an execution and communicates via IPC.
-
-## Install
-
-```sh
-@pm.add("@notation/durable")
-```
-
-The entry point is part of the `@notation/durable` package.
-
-## `createWorkflowInvoker({ workerPath, execPath?, logger })`
-
-Creates a `WorkflowInvoker` that forks a subprocess with `node:child_process`. Each call to `deliver` runs the worker with `process.execPath` (or `execPath` when given), sends the execution event, its lease and any cancellation request via IPC as `{ event, lease, cancellation? }`, and resolves with the worker's `WorkflowRunOutcome`. An `ExecutionDispatcher` makes these calls; application code does not.
+`@notation/durable/worker` runs each delivery of an execution in a separate worker process. The server process creates the invoker, and the worker script creates the worker. The [Quick start](../manual/quickstart.md) has both files.
 
 ```ts
-import { createWorkflowInvoker } from "@notation/durable/worker";
-
-const invoker = createWorkflowInvoker({
-  workerPath: new URL("./worker.ts", import.meta.url).href,
-  logger,
-});
+import { createWorkflowInvoker, createWorkflowWorker } from "@notation/durable/worker";
 ```
 
-TypeScript worker paths require Node 22.6 or newer for built-in type stripping. Use compiled JavaScript workers on older Node versions.
+## `createWorkflowInvoker(options)`
 
-| Param        | Type     | Description                                              |
-| ------------ | -------- | -------------------------------------------------------- |
-| `workerPath` | `string` | Path or `file://` URL to the worker script               |
-| `execPath`   | `string` | Runtime binary used to fork the worker (defaults to `process.execPath`) |
-| `handshakeTimeout` | `number` | Milliseconds to wait for the worker's `ready` handshake (defaults to `5000`) |
-| `logger`     | `Logger` | Pino logger                                              |
+Returns a `WorkflowInvoker` for an `ExecutionDispatcher`. For each delivery, the invoker forks a new process that runs the worker script, sends it the event and the lease, and waits for the outcome. It kills the process after the reply.
 
-The worker sends a `ready` handshake when `listen()` starts, and the invoker holds the event back until it arrives. A worker that never handshakes — most commonly an `execPath` from a different runtime family than the parent, since Node's advanced IPC serialization is not interoperable with Bun's — is killed after `handshakeTimeout` and `deliver` rejects. Node must fork Node, and Bun must fork Bun.
+| Option | Default | Does |
+| --- | --- | --- |
+| `workerPath` | Required | The worker script, as a path or a `file:` URL |
+| `logger` | Required | A pino logger |
+| `execPath` | `process.execPath` | The executable that runs the worker script |
+| `handshakeTimeout` | `5000` | Milliseconds to wait for the worker's first message |
 
-The worker replies with one of two messages, and the child process is killed after it:
+**The worker must run on the same runtime as the server**: Node with Node, or Bun with Bun. Bun and Node send messages between processes in different formats. A worker that does not answer within `handshakeTimeout` is killed, and the delivery fails. See [Node](../manual/node.md#worker-processes) and [Bun](../manual/bun.md#worker-processes).
 
-| Message                         | `deliver`                                                                                      |
-| ------------------------------- | ---------------------------------------------------------------------------------------------- |
-| `{ status: "outcome", outcome }` | Resolves with the outcome. A `completed` result and a `failed` outcome's error are decoded with the durable value codec  |
-| `{ status: "error", error }`     | Rejects: the worker hit an infrastructure error, which is not an outcome                      |
+`deliver` rejects, and the delivery ends without an outcome, in these cases:
 
-`deliver` also rejects on a spawn error, a missing handshake, or an exit before replying. The dispatcher never acknowledges a rejected delivery, and the runtime delivers it again after the redelivery delay:
+| Case | Rejects with |
+| --- | --- |
+| The worker exits before it replies | `WorkerExitedError` |
+| The worker replies with an infrastructure error | That error |
+| The process cannot start, or does not answer in time | An `Error` |
+| The delivery's lease is lost | An `InfrastructureError`. The invoker kills the worker with `SIGKILL` first, so even a running step function stops |
 
-| Rejection                                                        | Lease                                                                     |
-| ---------------------------------------------------------------- | ------------------------------------------------------------------------- |
-| The worker exits before replying (`WorkerExitedError`)            | Left to expire, because the worker's last writes may still be landing      |
-| An `error` reply, a spawn error, or a missing handshake (a retry) | Released at once                                                          |
-
-The dispatcher renews the lease in the parent process for as long as the delivery runs. The repository's internal test invoker implements the same `deliver` contract in-process.
-
-The invoker still exposes a deprecated `workflowEndEmitter` (`EventEmitter`). The dispatcher emits terminal outcomes on it so the local SDK's `wait` and the HTTP `/wait` and `/events` routes can re-read the execution record early; the record remains the source of truth.
+See [Running workflows](./runtime.md#running-workflows) for what the dispatcher does with each.
 
 ## `createWorkflowWorker(runner, logger)`
 
-Creates a worker that listens for IPC messages in the subprocess. Call `.listen()` to start processing.
+Returns a worker for the worker script. `runner` is a `WorkflowRunner`. `listen()` tells the invoker that the worker is ready, and runs each delivery that the invoker sends with `runner.run`:
 
-```ts
-import { WorkflowRunner } from "@notation/durable";
-import { createWorkflowWorker } from "@notation/durable/worker";
-
-const runner = new WorkflowRunner(runtime, { router, logger });
+```ts [src/durable/worker.ts]
 createWorkflowWorker(runner, logger).listen();
 ```
 
-The worker listens on `process.on("message")`, converts the incoming event's context into a `ReadOnlyMap`, and passes the event, the lease and the `cancellation` to `workflowRunner.run`. The outcome, or the infrastructure error that `run` rejected with, is sent back to the parent via `process.send`. On `listen()` the worker also sends the `ready` handshake that the invoker waits for before delivering the event.
+**The worker exits as soon as its connection to the server process closes.** If the server process dies, nothing renews the delivery's lease, and another server can claim the execution. The worker exits with code `75`, `WORKER_ORPHANED_EXIT_CODE`, so that it makes no more writes.
 
-The runner makes every step write under the lease the parent sent, so a write returns `lost` once another claim has taken over. The worker also exits, with `WORKER_ORPHANED_EXIT_CODE` (75), as soon as its IPC channel closes. If the runtime process that holds the lease dies, nothing renews the lease and another runtime may claim the execution, so the worker stops at once and makes no further fenced writes.
+## `getContext()`
+
+Returns the `context` map of the event that the worker process runs, or `undefined` before the first delivery. Workflow code can read the same map as `event.context`. See [Event](../manual/workflows.md#event).
