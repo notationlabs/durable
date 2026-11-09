@@ -5,7 +5,7 @@
   "author": "Daniel Grant",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/notationlabs/yieldstar.git",
+    "url": "git+https://github.com/notationlabs/durable.git",
     "directory": "packages/durable-conformance"
   },
   "type": "module",

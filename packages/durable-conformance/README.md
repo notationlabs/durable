@@ -1,6 +1,6 @@
 # `@notation/durable-conformance`
 
-This package contains the runnable qualification suites for Durable runtimes: one for store connectors, one for the execution client, one for the effect client, one for the join client and one for cancellation. The normative protocol is documented in the [store connector conformance specification](https://github.com/notationlabs/yieldstar/blob/main/docs/store-connector-spec.md).
+This package contains the runnable qualification suites for Durable runtimes: one for store connectors, one for the execution client, one for the effect client, one for the join client and one for cancellation. The normative protocol is documented in the [store connector conformance specification](https://github.com/notationlabs/durable/blob/main/docs/store-connector-spec.md).
 
 Install it with the test runner and `@notation/durable`:
 

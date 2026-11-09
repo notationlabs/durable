@@ -25,7 +25,7 @@ For Node, change the import to `@notation/durable/sqlite/node`. No other runtime
 
 ## Delivery guarantees
 
-`SqliteRuntime` keeps execution records, step results, stores, effects and waiters in one database, so it keeps every [runtime guarantee](https://github.com/notationlabs/yieldstar/blob/main/docs/store-connector-spec.md#runtime-guarantees) in single transactions:
+`SqliteRuntime` keeps execution records, step results, stores, effects and waiters in one database, so it keeps every [runtime guarantee](https://github.com/notationlabs/durable/blob/main/docs/store-connector-spec.md#runtime-guarantees) in single transactions:
 
 | Situation                                            | Behavior                                                                                     |
 | ---------------------------------------------------- | -------------------------------------------------------------------------------------------- |

@@ -4,7 +4,7 @@
   "private": true,
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/notationlabs/yieldstar.git",
+    "url": "git+https://github.com/notationlabs/durable.git",
     "directory": "examples"
   },
   "dependencies": {

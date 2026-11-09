@@ -29,7 +29,7 @@ interface RuntimeOptions {
 }
 ```
 
-A runtime is defined by the guarantees its clients keep together, not by how many databases it uses. See [Runtime guarantees](https://github.com/notationlabs/yieldstar/blob/main/docs/store-connector-spec.md#runtime-guarantees).
+A runtime is defined by the guarantees its clients keep together, not by how many databases it uses. See [Runtime guarantees](https://github.com/notationlabs/durable/blob/main/docs/store-connector-spec.md#runtime-guarantees).
 
 ## `WorkflowRunner`
 

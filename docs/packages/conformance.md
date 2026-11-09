@@ -119,4 +119,4 @@ The cancellation workflow-driver cases, such as the step at which `WorkflowCance
 
 The suite covers the runtime adapter. The workflow-driver and delivery cases for `step.start`, `step.effect`, a timed `when`, `step.join` and `step.call` are tested in the repository rather than here (`test/start.test.ts`, `test/effect.test.ts`, `test/effect-delivery.test.ts`, `test/timed-when.test.ts` and `test/join.test.ts`). The dispatcher and worker cases, such as concurrency, releasing on a retry reply, a worker that exits without replying, and a worker whose runtime process dies, are properties of `ExecutionDispatcher` and the invoker rather than of an adapter; the repository tests them in `test/dispatcher.test.ts` and `test/worker-invoker.test.ts`.
 
-The normative contract is in the repository's [store connector conformance specification](https://github.com/notationlabs/yieldstar/blob/main/docs/store-connector-spec.md).
+The normative contract is in the repository's [store connector conformance specification](https://github.com/notationlabs/durable/blob/main/docs/store-connector-spec.md).
