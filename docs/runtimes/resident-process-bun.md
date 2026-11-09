@@ -5,7 +5,7 @@ Use the Bun connector when the application process and forked workers run under 
 ## Install
 
 ```sh
-bun add @notation/durable pino
+@pm.add("@notation/durable pino")
 ```
 
 ## Runtime

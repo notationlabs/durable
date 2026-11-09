@@ -7,7 +7,7 @@ See [Bun with SQLite](../runtimes/resident-process-bun.md) and [Node with SQLite
 ## Install
 
 ```sh
-bun add @notation/durable
+@pm.add("@notation/durable")
 ```
 
 The entry point is part of the `@notation/durable` package.

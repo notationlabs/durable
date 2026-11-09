@@ -5,7 +5,7 @@ A Durable application has three parts: **workflows** that define the work, a **w
 ## Install
 
 ```sh
-bun add @notation/durable pino
+@pm.add("@notation/durable pino")
 ```
 
 This quick start uses Bun. For Node, use the [`node:sqlite` connector guide](../runtimes/resident-process-node.md); the shared runtime APIs are identical.

@@ -9,7 +9,7 @@ Node 22.6 or newer can run TypeScript worker entry points through built-in type 
 ## Install
 
 ```sh
-pnpm add @notation/durable pino
+@pm.add("@notation/durable pino")
 ```
 
 ## Runtime

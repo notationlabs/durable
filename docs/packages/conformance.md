@@ -5,7 +5,7 @@ Vitest qualification suites for Durable runtimes. `registerStoreClientConformanc
 ## Install
 
 ```sh
-pnpm add -D @notation/durable @notation/durable-conformance vitest
+@pm.dev("@notation/durable @notation/durable-conformance vitest")
 ```
 
 ## Register the suite

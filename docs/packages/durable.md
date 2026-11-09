@@ -5,7 +5,7 @@ The package root. It exports the workflow definition API, router factory, error 
 ## Install
 
 ```sh
-bun add @notation/durable
+@pm.add("@notation/durable")
 ```
 
 ## Exports
