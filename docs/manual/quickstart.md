@@ -1,14 +1,6 @@
 # Quick start
 
-This guide builds an application that runs one workflow on Bun. The workflow builds a greeting, waits one second, then adds punctuation. For Node, see [Node](./node.md).
-
-The application has three files:
-
-| File | Contains |
-| --- | --- |
-| `shared.ts` | The workflow, and the storage that both processes open |
-| `worker.ts` | The worker process, which runs workflow code |
-| `app.ts` | The application, which starts the workflow and waits for its result |
+This guide builds a small application on Bun. When a user signs up, the application sends a welcome email, waits, and then sends a second email with tips. For Node, see [Node](./node.md).
 
 ## Install
 
@@ -16,93 +8,175 @@ The application has three files:
 @pm.add("@notation/durable pino")
 ```
 
-## 1. Define the workflow
+## Project layout
 
-```ts [shared.ts]
-import { workflow, createWorkflowRouter } from "@notation/durable";
-import { SqliteRuntime, createSqliteDb } from "@notation/durable/sqlite/bun";
+The application code knows nothing about how workflows are stored or run. That setup lives in its own folder:
 
-export const greet = workflow<{ name: string }, string>(async function* (step, event) {
-  const greeting = yield* step.run("greeting", () => `Hello, ${event.params.name}`);
-  yield* step.delay("pause", 1000);
-  return yield* step.run("punctuate", () => `${greeting}!`);
-});
-
-export const router = createWorkflowRouter({ greet });
-export type Router = typeof router;
-
-export const runtime = new SqliteRuntime(createSqliteDb({ path: "./.db/local.sqlite" }));
+```
+src/
+  email.ts              ← application code
+  workflows/
+    onboarding.ts       ← application code
+    router.ts           ← application code
+  durable/
+    runtime.ts          ← Durable setup
+    worker.ts           ← Durable setup
+    client.ts           ← Durable setup
+  main.ts               ← application entry point
 ```
 
-The two type arguments of `workflow` are the workflow's params and its result.
+## 1. Write the workflow
 
-`createWorkflowRouter` gives each workflow an ID. Here the ID of `greet` is `"greet"`. The `Router` type lets TypeScript check the ID and params wherever the workflow is started.
+`email.ts` stands in for a real email service:
 
-`SqliteRuntime` is Durable's storage, and it keeps every record in one SQLite file. `createSqliteDb` opens the file, creating it and its folder if needed, and `SqliteRuntime` creates its tables.
+```ts [src/email.ts]
+export async function sendEmail(to: string, subject: string) {
+  console.log(`Sending "${subject}" to ${to}`);
+}
+```
 
-## 2. Create the worker
+The workflow sends one email, waits, and sends another:
 
-```ts [worker.ts]
+```ts [src/workflows/onboarding.ts]
+import { workflow } from "@notation/durable";
+import { sendEmail } from "../email";
+
+type Params = {
+  email: string;
+};
+
+export const onboarding = workflow<Params, void>(async function* (step, event) {
+  const { email } = event.params;
+
+  yield* step.run("send-welcome", async () => {
+    await sendEmail(email, "Welcome to Acme");
+  });
+
+  yield* step.delay("wait", 3_000);
+
+  yield* step.run("send-tips", async () => {
+    await sendEmail(email, "Three tips for your first week");
+  });
+});
+```
+
+The type arguments of `workflow` are the workflow's params and its result. A real application would wait days rather than three seconds.
+
+The router gives each workflow an ID:
+
+```ts [src/workflows/router.ts]
+import { createWorkflowRouter } from "@notation/durable";
+import { onboarding } from "./onboarding";
+
+export const router = createWorkflowRouter({
+  onboarding,
+});
+
+export type Router = typeof router;
+```
+
+Here the ID of `onboarding` is `"onboarding"`. The `Router` type lets TypeScript check the ID and the params wherever the application starts a workflow.
+
+## 2. Set up Durable
+
+The runtime stores Durable's records in a SQLite file:
+
+```ts [src/durable/runtime.ts]
+import { SqliteRuntime, createSqliteDb } from "@notation/durable/sqlite/bun";
+
+const db = createSqliteDb({
+  path: "./.db/durable.sqlite",
+});
+
+export const runtime = new SqliteRuntime(db);
+```
+
+`createSqliteDb` creates the file if it does not exist, and `SqliteRuntime` creates its tables.
+
+The worker is a separate process that runs workflow code:
+
+```ts [src/durable/worker.ts]
 import pino from "pino";
 import { WorkflowRunner } from "@notation/durable";
 import { createWorkflowWorker } from "@notation/durable/worker";
-import { router, runtime } from "./shared";
+import { router } from "../workflows/router";
+import { runtime } from "./runtime";
 
-const logger = pino();
-const runner = new WorkflowRunner(runtime, { router, logger });
+const logger = pino({ level: "warn" });
+
+const runner = new WorkflowRunner(runtime, {
+  router,
+  logger,
+});
 
 createWorkflowWorker(runner, logger).listen();
 ```
 
-The worker runs workflow code. It opens its own `SqliteRuntime` over the same file as the application, and waits for the application to send it work.
+The client is what the application imports:
 
-## 3. Start the workflow
-
-```ts [app.ts]
+```ts [src/durable/client.ts]
 import pino from "pino";
 import { ExecutionDispatcher, createLocalSdk } from "@notation/durable";
 import { createWorkflowInvoker } from "@notation/durable/worker";
-import { runtime, type Router } from "./shared";
+import type { Router } from "../workflows/router";
+import { runtime } from "./runtime";
 
-const logger = pino();
-const workerPath = new URL("./worker.ts", import.meta.url).href;
-const invoker = createWorkflowInvoker({ workerPath, logger });
+const logger = pino({ level: "warn" });
 
-const dispatcher = new ExecutionDispatcher(runtime, { invoker, logger });
-dispatcher.start();
-
-const sdk = createLocalSdk<Router>(runtime, { invoker });
-const result = await sdk.triggerAndWait({
-  workflowId: "greet",
-  params: { name: "World" },
+const invoker = createWorkflowInvoker({
+  workerPath: new URL("./worker.ts", import.meta.url).href,
+  logger,
 });
 
-console.log(result); // "Hello, World!"
-await dispatcher.stop();
-```
+export const dispatcher = new ExecutionDispatcher(runtime, {
+  invoker,
+  logger,
+});
 
-The application uses three objects:
+export const sdk = createLocalSdk<Router>(runtime, {
+  invoker,
+});
+```
 
 | Object | Role |
 | --- | --- |
-| `invoker` | Starts a worker process from `worker.ts` each time the workflow needs to run |
+| `invoker` | Starts a worker process from `worker.ts` each time a workflow needs to run |
 | `dispatcher` | Finds workflows that are due to run, and hands each one to the invoker |
 | `sdk` | Starts workflows and reads their results |
 
-Each start of a workflow is an execution. `sdk.triggerAndWait` writes a record for a new execution of `greet`, then waits until the record holds a result. The SDK never runs workflow code itself, so a dispatcher must be running.
+## 3. Start the workflow
+
+```ts [src/main.ts]
+import { dispatcher, sdk } from "./durable/client";
+
+dispatcher.start();
+
+await sdk.triggerAndWait({
+  workflowId: "onboarding",
+  params: { email: "ada@example.com" },
+});
+
+console.log("Onboarding finished");
+
+await dispatcher.stop();
+```
+
+Each start of a workflow is an execution. `triggerAndWait` records a new execution of `onboarding` and waits until it finishes. The SDK does not run workflow code itself. The dispatcher must be running for the execution to make progress.
 
 ## 4. Run it
 
 ```sh
-bun app.ts
+bun src/main.ts
 ```
 
-The application prints `Hello, World!` after about one second. This is what happens:
+The output is:
 
-1. The dispatcher finds the new execution and starts a worker.
-2. The worker runs `greeting`, stores its result, and stops at `pause`. The invoker then stops the worker process.
-3. One second later, the dispatcher starts a new worker.
-4. The new worker replays `greeting` from its stored result, passes `pause`, runs `punctuate`, and stores the workflow's result.
-5. `triggerAndWait` reads the result and returns it.
+```
+Sending "Welcome to Acme" to ada@example.com
+Sending "Three tips for your first week" to ada@example.com
+Onboarding finished
+```
 
-The records stay in `.db/local.sqlite`.
+The second email arrives three seconds after the first. During those three seconds, no worker process is running. The dispatcher starts a new worker when the delay is over. That worker skips `send-welcome`, because its result is already recorded, and runs `send-tips`.
+
+The records stay in `.db/durable.sqlite`.
