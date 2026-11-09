@@ -7,7 +7,7 @@ A store is schema-validated state that lives outside any single workflow executi
 `defineStore` creates a store _type_, not an instance. It takes a name, any [Standard Schema](https://standardschema.dev/) – Zod, Valibot, and ArkType all work – and the state a new store starts with.
 
 ```ts
-import { defineStore } from "yieldstar";
+import { defineStore } from "@notation/durable";
 import * as v from "valibot";
 
 const ConversationStore = defineStore(

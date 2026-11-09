@@ -1,4 +1,4 @@
-# @yieldstar/sqlite-runtime
+# @notation/durable/sqlite
 
 `SqliteRuntime`: a driver-agnostic SQLite implementation of the `Runtime` contract, with execution records, the heap, and durable stores in one database. Bun and Node connector entry points provide the native database driver.
 
@@ -7,15 +7,17 @@ See [Bun with SQLite](../runtimes/resident-process-bun.md) and [Node with SQLite
 ## Install
 
 ```sh
-bun add @yieldstar/sqlite-runtime
+bun add @notation/durable
 ```
+
+The entry point is part of the `@notation/durable` package.
 
 ## `createSqliteDb({ path })`
 
 Creates and returns a `SqliteDriver` at the given file path. Tables are created automatically on first use. Use the `/bun` connector with Bun or the `/node` connector with Node.
 
 ```ts
-import { createSqliteDb } from "@yieldstar/sqlite-runtime/bun";
+import { createSqliteDb } from "@notation/durable/sqlite/bun";
 
 const db = createSqliteDb({ path: "./.db/local.sqlite" });
 ```
@@ -23,7 +25,7 @@ const db = createSqliteDb({ path: "./.db/local.sqlite" });
 The Node connector has the same API:
 
 ```ts
-import { createSqliteDb } from "@yieldstar/sqlite-runtime/node";
+import { createSqliteDb } from "@notation/durable/sqlite/node";
 
 const db = createSqliteDb({ path: "./.db/local.sqlite" });
 ```
@@ -31,7 +33,7 @@ const db = createSqliteDb({ path: "./.db/local.sqlite" });
 ## `SqliteRuntime`
 
 ```ts
-import { SqliteRuntime, createSqliteDb } from "@yieldstar/sqlite-runtime/bun";
+import { SqliteRuntime, createSqliteDb } from "@notation/durable/sqlite/bun";
 
 const runtime = new SqliteRuntime(createSqliteDb({ path: "./.db/local.sqlite" }));
 ```

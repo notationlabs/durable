@@ -4,6 +4,14 @@
 
 ### Breaking changes
 
+- YieldStar is renamed Durable. The packages publish as `@notation/durable` and `@notation/durable-conformance`, and the `yieldstar` and `@yieldstar/*` packages are no longer published. Replace the imports as follows:
+  - `yieldstar` → `@notation/durable`
+  - `@yieldstar/core` → `@notation/durable/runtime`. `ExecutionDispatcher`, `WorkflowRunner` and the `EventContext` type are also exported from `@notation/durable`.
+  - `@yieldstar/http-server` → `@notation/durable/http`
+  - `@yieldstar/worker-invoker` → `@notation/durable/worker`
+  - `@yieldstar/sqlite-runtime`, `/bun` and `/node` → `@notation/durable/sqlite`, `/sqlite/bun` and `/sqlite/node`
+  - `@yieldstar/runtime-conformance` → `@notation/durable-conformance`, which has `@notation/durable` as a peer dependency.
+- `createSqliteDb` defaults to `./.db/durable.sqlite` instead of `./.db/yieldstar.sqlite`. An application that relied on the default must pass `path: "./.db/yieldstar.sqlite"` or move the file.
 - `HeapClient.writeStep` takes an optional `deleteWaitersOf`, a list of other step keys whose store, effect and join waiters a `done` record deletes in the same write. The driver passes it when it records a `step.all` or `step.race` decision. Runtime adapters must honour it; `registerStoreClientConformance` checks it.
 - `step.delay` and `step.poll` are typed `AsyncGenerator<StepResponse, void, any>` instead of `any`. Code that used their result as a value no longer typechecks.
 - `EffectClient.settle` takes `status: "settled"` with a `result` or `status: "failed"` with an `error`. A `conflict` result, and each `EffectConflictReport`, carry `outcome` and `conflictingOutcome` instead of `result` and `conflictingResult`. `begin` can return `failed` with the stored error, and `EffectRecord.status` can be `failed`, with the error in `error`. `EffectState` and `EffectConflictState` store each side's status. Runtime adapters must store and return failed effects; `registerEffectClientConformance` checks them.

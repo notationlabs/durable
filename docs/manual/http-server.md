@@ -6,9 +6,9 @@ The HTTP server exposes a runtime's execution records through POST endpoints, so
 
 ```ts [server.ts]
 import pino from "pino";
-import { ExecutionDispatcher } from "@yieldstar/core";
-import { createRoutes } from "@yieldstar/http-server";
-import { createWorkflowInvoker } from "@yieldstar/worker-invoker";
+import { ExecutionDispatcher } from "@notation/durable";
+import { createRoutes } from "@notation/durable/http";
+import { createWorkflowInvoker } from "@notation/durable/worker";
 import { runtime } from "./shared";
 
 const logger = pino();
@@ -32,7 +32,7 @@ Bun.serve({
 ## Client
 
 ```ts
-import { createHttpSdkFactory } from "yieldstar";
+import { createHttpSdkFactory } from "@notation/durable";
 import type { Router } from "./shared";
 
 const createSdk = createHttpSdkFactory<Router>();
@@ -105,7 +105,7 @@ createRoutes({ runtime, logger, basePath: "/api/workflows" });
 Trigger middleware functions run before the execution is admitted and can inspect the request, modify the event context, or short-circuit with an early response:
 
 ```ts
-import { createMiddleware } from "@yieldstar/http-server";
+import { createMiddleware } from "@notation/durable/http";
 
 const auth = createMiddleware(async (req, event, next, logger) => {
   const token = req.headers.get("Authorization");
@@ -128,7 +128,7 @@ Trigger middleware does not run for the observation routes or `/cancel`.
 `/poll`, `/wait`, `/list` and `/events` return results and errors, which are often derived from `params`, to anyone who can call them, and `/cancel` lets anyone who can call it stop any execution. Without observation middleware, any caller that can reach the server can read and cancel every execution, and `/list` returns every execution's ID with its result or error. When `createRoutes` has trigger `middleware` but no `observationMiddleware`, it logs a warning, because a deployment that guards `/trigger` would otherwise gain open observation and cancel routes on upgrade. Pass `observationMiddleware: []` to allow every request on purpose and silence the warning. Configure observation middleware to decide who may read and cancel them:
 
 ```ts
-import type { ObservationMiddlewareFunction } from "@yieldstar/http-server";
+import type { ObservationMiddlewareFunction } from "@notation/durable/http";
 
 const tenantOnly: ObservationMiddlewareFunction = async (req, request, logger) => {
   const tenant = tenantFromToken(req.headers.get("Authorization"));

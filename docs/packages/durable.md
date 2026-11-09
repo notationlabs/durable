@@ -1,27 +1,27 @@
-# yieldstar
+# @notation/durable
 
-The main SDK package. Exports the workflow definition API, router factory, error classes, and both SDK clients.
+The package root. It exports the workflow definition API, router factory, error classes, and both SDK clients.
 
 ## Install
 
 ```sh
-bun add yieldstar
+bun add @notation/durable
 ```
 
 ## Exports
 
 ```ts
-import { workflow, createWorkflow } from "yieldstar";
-import { createWorkflowRouter } from "yieldstar";
-import { RetryableError, ExecutionAdmissionError, WorkflowStartError, WorkflowJoinError } from "yieldstar";
-import { ExecutionListRequestError, HttpRouteError } from "yieldstar";
-import { WorkflowCancelledError, ExecutionCancelRequestError } from "yieldstar";
-import { WorkflowRaceError } from "yieldstar";
-import { WorkflowValueError, registerErrorClass, WORKFLOW_RESULT_STEP_KEY } from "yieldstar";
-import { WorkflowEffectError, EffectDeliveryError, EffectClientInvariantError } from "yieldstar";
-import { defineStore } from "yieldstar";
-import { createLocalSdk } from "yieldstar";
-import { createHttpSdkFactory } from "yieldstar";
+import { workflow, createWorkflow } from "@notation/durable";
+import { createWorkflowRouter } from "@notation/durable";
+import { RetryableError, ExecutionAdmissionError, WorkflowStartError, WorkflowJoinError } from "@notation/durable";
+import { ExecutionListRequestError, HttpRouteError } from "@notation/durable";
+import { WorkflowCancelledError, ExecutionCancelRequestError } from "@notation/durable";
+import { WorkflowRaceError } from "@notation/durable";
+import { WorkflowValueError, registerErrorClass, WORKFLOW_RESULT_STEP_KEY } from "@notation/durable";
+import { WorkflowEffectError, EffectDeliveryError, EffectClientInvariantError } from "@notation/durable";
+import { defineStore } from "@notation/durable";
+import { createLocalSdk } from "@notation/durable";
+import { createHttpSdkFactory } from "@notation/durable";
 import type {
   WorkflowFn,
   StepRunner,
@@ -66,7 +66,7 @@ import type {
   EffectRecord,
   WorkflowEffectErrorCode,
   EffectDeliveryErrorCode,
-} from "yieldstar";
+} from "@notation/durable";
 ```
 
 ## `workflow(fn)` / `createWorkflow(fn)`

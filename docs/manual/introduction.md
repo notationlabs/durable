@@ -1,11 +1,11 @@
 # Introduction
 
-Yieldstar is a workflow engine that provides a durable runtime for JavaScript generator functions.
+Durable is a workflow engine that provides a durable runtime for JavaScript generator functions.
 
 Workflows are checkpointed with primitives such as `yield* step.run()` and `yield* step.delay()`. The runtime persists step results and resumes delayed, retried, or state-waiting workflows across process restarts.
 
 ```ts
-import { workflow } from "yieldstar";
+import { workflow } from "@notation/durable";
 
 const checkout = workflow(async function* (step) {
   const order = yield* step.run(() => createOrder());
@@ -18,7 +18,7 @@ const checkout = workflow(async function* (step) {
 
 ## How it compares
 
-|                       | **Yieldstar**                   | **Temporal**            | **Inngest**            | **Cloudflare Workflows**    |
+|                       | **Durable**                   | **Temporal**            | **Inngest**            | **Cloudflare Workflows**    |
 | --------------------- | ------------------------------- | ----------------------- | ---------------------- | --------------------------- |
 | **State persistence** | SQLite file                     | Temporal Server cluster | Inngest Cloud (SaaS)   | Cloudflare Durable Objects  |
 | **Infrastructure**    | Process plus a file             | Multi-service cluster   | SaaS platform          | Cloudflare Workers platform |
@@ -33,23 +33,23 @@ The execution model works by replaying the generator. When a step completes, the
 
 This differs from `await step.run()` engines such as Inngest and Cloudflare Workflows, which intercept Promises through platform-specific wrappers. 
 
-Yieldstar uses `yield*`, JavaScript's native generator delegation, as a bi-directional protocol between the workflow and the runtime. 
+Durable uses `yield*`, JavaScript's native generator delegation, as a bi-directional protocol between the workflow and the runtime. 
 
 ## Packages
 
-Yieldstar is a monorepo of composable packages:
+Durable is published as two packages. `@notation/durable` has one entry point for each part:
 
-| Package                         | Role                                                                                 |
-| ------------------------------- | ------------------------------------------------------------------------------------ |
-| `yieldstar`                     | Core SDK with `workflow`, `createWorkflowRouter`, `RetryableError`, and the local and HTTP SDKs |
-| `@yieldstar/core`               | Base types, the `Runtime` contract, `WorkflowRunner`, and `ExecutionDispatcher`      |
-| `@yieldstar/sqlite-runtime`     | `SqliteRuntime`: driver-agnostic SQLite execution records, heap, and stores           |
-| `@yieldstar/worker-invoker`     | Subprocess invoker and worker process                                                |
-| `@yieldstar/http-server`        | Runtime-neutral HTTP routes and middleware using standard `Request` and `Response`    |
-| `@yieldstar/test-runtime`       | `MemoryRuntime`, the in-memory runtime used by Yieldstar's test tooling               |
-| `@yieldstar/test-invoker`       | In-process invoker used by Yieldstar's test tooling                                   |
-| `@yieldstar/test-utils`         | Test SDK and schema helpers used internally by this repository                        |
-| `@yieldstar/runtime-conformance`  | Vitest qualification suites for third-party runtimes and store connectors            |
+| Entry point                     | Role                                                                                                                      |
+| ------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| `@notation/durable`             | SDK with `workflow`, `createWorkflowRouter`, `RetryableError`, `WorkflowRunner`, `ExecutionDispatcher`, and the local and HTTP SDKs |
+| `@notation/durable/runtime`     | Base types, the `Runtime` contract and the state helpers for runtime authors                                             |
+| `@notation/durable/sqlite`      | `SqliteRuntime`: driver-agnostic SQLite execution records, heap, and stores                                               |
+| `@notation/durable/sqlite/bun`  | `createSqliteDb` for `bun:sqlite`                                                                                         |
+| `@notation/durable/sqlite/node` | `createSqliteDb` for `node:sqlite`                                                                                        |
+| `@notation/durable/worker`      | Subprocess invoker and worker process                                                                                     |
+| `@notation/durable/http`        | Runtime-neutral HTTP routes and middleware using standard `Request` and `Response`                                        |
+
+`@notation/durable-conformance` contains the Vitest qualification suites for third-party runtimes and store connectors. It has `@notation/durable` as a peer dependency.
 
 A runtime has four clients, and a dispatcher drives them:
 

@@ -5,7 +5,7 @@ An execution ends when its workflow returns or throws. `cancel` adds a third way
 This page uses one example throughout. A shop triggers `place-order` with the execution ID `order-42`. The workflow reserves stock, starts a `fulfil-order` child that books a courier, and then waits on the payments store until the order is paid:
 
 ```ts
-import { WorkflowCancelledError, workflow } from "yieldstar";
+import { WorkflowCancelledError, workflow } from "@notation/durable";
 
 const placeOrder = workflow<{ orderId: string }>(async function* (step, event) {
   const { orderId } = event.params;

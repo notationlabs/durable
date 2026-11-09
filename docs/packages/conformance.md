@@ -1,11 +1,11 @@
-# @yieldstar/runtime-conformance
+# @notation/durable-conformance
 
-Vitest qualification suites for Yieldstar runtimes. `registerStoreClientConformance` verifies a `StoreClient`'s store lifecycle, concurrency, replay idempotency, waiter wake-up, wake collapsing, and crash-recovery behavior. `registerExecutionClientConformance` verifies a runtime's `ExecutionClient` and fenced heap writes: admission, claims, leases, fencing, acknowledgement, `start` and `list`. `registerEffectClientConformance` verifies its `EffectClient`: effect begin, settlement, conflicts and watches. `registerJoinClientConformance` verifies its `JoinClient` and the join wakes of a terminal acknowledgement. `registerCancellationClientConformance` verifies `ExecutionClient.cancel`, its propagation to descendants and `HeapClient.recordCancellation`.
+Vitest qualification suites for Durable runtimes. `registerStoreClientConformance` verifies a `StoreClient`'s store lifecycle, concurrency, replay idempotency, waiter wake-up, wake collapsing, and crash-recovery behavior. `registerExecutionClientConformance` verifies a runtime's `ExecutionClient` and fenced heap writes: admission, claims, leases, fencing, acknowledgement, `start` and `list`. `registerEffectClientConformance` verifies its `EffectClient`: effect begin, settlement, conflicts and watches. `registerJoinClientConformance` verifies its `JoinClient` and the join wakes of a terminal acknowledgement. `registerCancellationClientConformance` verifies `ExecutionClient.cancel`, its propagation to descendants and `HeapClient.recordCancellation`.
 
 ## Install
 
 ```sh
-pnpm add -D @yieldstar/core @yieldstar/runtime-conformance vitest
+pnpm add -D @notation/durable @notation/durable-conformance vitest
 ```
 
 ## Register the suite
@@ -13,7 +13,7 @@ pnpm add -D @yieldstar/core @yieldstar/runtime-conformance vitest
 Create a Vitest test file and provide a factory that creates a clean backend and returns a `Runtime` built on it. The suite observes store wakes through the runtime's `ExecutionClient`: it admits the executions that wait on stores, and a commit that satisfies a waiter must make that execution due, so `runtime.executions.claimDue()` returns it.
 
 ```ts
-import { registerStoreClientConformance } from "@yieldstar/runtime-conformance";
+import { registerStoreClientConformance } from "@notation/durable-conformance";
 import { MyRuntime } from "./my-runtime";
 
 registerStoreClientConformance({
@@ -68,7 +68,7 @@ The harness has three optional capabilities:
 - `failStartCommits` makes every new `start` on `runtime` fail after it begins writing but before it commits, and returns a function that stops the failures. It enables the case that a failed start leaves no trace; without it that case is skipped. The SQLite harness installs a temporary trigger that aborts the start-request insert.
 
 ```ts
-import { registerExecutionClientConformance } from "@yieldstar/runtime-conformance";
+import { registerExecutionClientConformance } from "@notation/durable-conformance";
 import { MyRuntime } from "./my-runtime";
 
 registerExecutionClientConformance({
@@ -91,7 +91,7 @@ registerExecutionClientConformance({
 `registerEffectClientConformance` checks a runtime's `EffectClient`: `begin` creating or reading one effect, mismatched operations and inputs, concurrent equal and different settlements and their conflict reports, failed effects and conflicts between a result and a failure, `watch` registration and immediate wakes, settlement racing `watch`, waiter deletion with the step's result and its rejection for a stale holder, value encoding, and durability across a restart. Its harness takes the same `clock`, `createPeer` and `restart` as the execution client suite, plus `failEffectWatches`, which makes every `watch` on `runtime` fail before it commits and returns a function that stops the failures. Without it the case for a failed watch is skipped; the SQLite harness installs a temporary trigger that aborts the waiter insert.
 
 ```ts
-import { registerEffectClientConformance } from "@yieldstar/runtime-conformance";
+import { registerEffectClientConformance } from "@notation/durable-conformance";
 
 registerEffectClientConformance({
   name: "my-runtime",

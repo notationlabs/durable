@@ -1,4 +1,4 @@
-## Contributing to YieldStar
+## Contributing to Durable
 
 ### Before You Start
 
@@ -21,14 +21,19 @@ By contributing, you affirm that you have the right to submit your contributions
 
 ### Repository Layout
 
+Each folder in `packages/` is a private workspace package named `@durable/<folder>`. Packages import each other only through these names, which keeps the boundaries between them.
+
 - `packages/core` – Base types and runtime abstractions (scheduler, heap, steps)
-- `packages/yieldstar` – Main SDK: workflow API, local/HTTP client
+- `packages/sdk` – Main SDK: workflow API, local/HTTP client
 - `packages/http-server` – HTTP route handlers and middleware
 - `packages/sqlite-runtime` – SQLite-backed heap, timers, task queue, event loop
 - `packages/worker-invoker` – Subprocess-based step invoker and worker
+- `packages/runtime-conformance` – Qualification suites for runtimes
 - `packages/test-runtime` – In‑memory scheduler, heap, event loop (for tests)
 - `packages/test-invoker` – Minimal invoker to run workflows in tests
 - `packages/test-utils` – Internal test utilities (see note below)
+- `packages/durable` – The published `@notation/durable` package, assembled from the packages above
+- `packages/durable-conformance` – The published `@notation/durable-conformance` package, assembled from `runtime-conformance`
 - `examples/` – Workflow and runtime examples (HTTP server, local execution)
 - `test/` – Integration tests with Vitest
 
@@ -56,13 +61,21 @@ pok dts
 
 ### Build All Packages
 
-Compile the packages and emit declarations via project references:
-
 ```
 pok build
 ```
 
-This runs each package’s `build` script (`bun build`) and then `pnpm exec tsc -b`.
+This runs `scripts/build.ts`, which takes these steps:
+
+1. Removes every package's `dist` folder.
+2. Runs each workspace package's `build` script (`bun build`).
+3. Emits declarations with `pnpm exec tsc -b`.
+4. Runs `scripts/assemble.ts`. It copies the output of the private packages into `packages/durable/dist` and `packages/durable-conformance/dist`, and rewrites their imports of `@durable/*` packages. In `@notation/durable` they become relative paths. In `@notation/durable-conformance`, `@durable/core` becomes `@notation/durable/runtime`. The script fails if the output imports a package that the published manifest does not declare.
+5. Type-checks `examples/`, which imports the published packages.
+
+Tests import the private packages. The examples import the published packages. Code that mixes the two loads two copies of the core classes.
+
+`pok test conformance` packs both published packages, installs them in an empty project and runs every conformance suite against the published SQLite runtime.
 
 ### Run Tests
 
@@ -108,11 +121,11 @@ Releases use the pok-plugins `release()` flow configured in `pok.config.ts`.
 - Package and inspect every publish target without contacting npm: `pok publish --dry-run`
 - Release: `pok publish` (installs and rebuilds first)
 
-Every manifest is versioned in lockstep; `@yieldstar/*` and the unscoped `yieldstar` package publish together.
+Every manifest is versioned in lockstep. Only `@notation/durable` and `@notation/durable-conformance` are published.
 
 ### Internal Packages
 
-`@yieldstar/test-utils` is intended for this repo’s tests and development. It wires an in‑memory runtime for `triggerAndWait` in tests. Application users should prefer the SQLite runtime for local running.
+`@durable/test-utils` is intended for this repo’s tests and development. It wires an in‑memory runtime for `triggerAndWait` in tests. Application users should prefer the SQLite runtime for local running.
 
 ### Coding Guidelines
 

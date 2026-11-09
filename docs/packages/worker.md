@@ -1,19 +1,21 @@
-# @yieldstar/worker-invoker
+# @notation/durable/worker
 
 Subprocess-based workflow invoker. Forks a new child process for each delivery of an execution and communicates via IPC.
 
 ## Install
 
 ```sh
-bun add @yieldstar/worker-invoker
+bun add @notation/durable
 ```
+
+The entry point is part of the `@notation/durable` package.
 
 ## `createWorkflowInvoker({ workerPath, execPath?, logger })`
 
 Creates a `WorkflowInvoker` that forks a subprocess with `node:child_process`. Each call to `deliver` runs the worker with `process.execPath` (or `execPath` when given), sends the execution event, its lease and any cancellation request via IPC as `{ event, lease, cancellation? }`, and resolves with the worker's `WorkflowRunOutcome`. An `ExecutionDispatcher` makes these calls; application code does not.
 
 ```ts
-import { createWorkflowInvoker } from "@yieldstar/worker-invoker";
+import { createWorkflowInvoker } from "@notation/durable/worker";
 
 const invoker = createWorkflowInvoker({
   workerPath: new URL("./worker.ts", import.meta.url).href,
@@ -46,7 +48,7 @@ The worker replies with one of two messages, and the child process is killed aft
 | The worker exits before replying (`WorkerExitedError`)            | Left to expire, because the worker's last writes may still be landing      |
 | An `error` reply, a spawn error, or a missing handshake (a retry) | Released at once                                                          |
 
-The dispatcher renews the lease in the parent process for as long as the delivery runs. `@yieldstar/test-invoker` implements the same `deliver` contract in-process.
+The dispatcher renews the lease in the parent process for as long as the delivery runs. The repository's internal test invoker implements the same `deliver` contract in-process.
 
 The invoker still exposes a deprecated `workflowEndEmitter` (`EventEmitter`). The dispatcher emits terminal outcomes on it so the local SDK's `wait` and the HTTP `/wait` and `/events` routes can re-read the execution record early; the record remains the source of truth.
 
@@ -55,8 +57,8 @@ The invoker still exposes a deprecated `workflowEndEmitter` (`EventEmitter`). Th
 Creates a worker that listens for IPC messages in the subprocess. Call `.listen()` to start processing.
 
 ```ts
-import { WorkflowRunner } from "@yieldstar/core";
-import { createWorkflowWorker } from "@yieldstar/worker-invoker";
+import { WorkflowRunner } from "@notation/durable";
+import { createWorkflowWorker } from "@notation/durable/worker";
 
 const runner = new WorkflowRunner(runtime, { router, logger });
 createWorkflowWorker(runner, logger).listen();

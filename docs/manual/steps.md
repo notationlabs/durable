@@ -96,7 +96,7 @@ An error thrown by a step function is recorded too, and replay throws it again. 
 Replay revives an error as the class registered under its `name`. A custom class must be registered for `instanceof` to hold:
 
 ```ts
-import { registerErrorClass } from "yieldstar";
+import { registerErrorClass } from "@notation/durable";
 
 class CourierError extends Error {
 code = "COURIER_DOWN";
@@ -219,7 +219,7 @@ The step reads the target's execution record:
 The step records the outcome under its key, so replay returns the result or throws the error without reading the target again. Workflow code can catch `WorkflowJoinError`, and its `code` and `executionId` are the same on replay.
 
 ```ts
-import { WorkflowJoinError } from "yieldstar";
+import { WorkflowJoinError } from "@notation/durable";
 
 try {
   const shipment = yield* step.join("ship:join", executionId);
@@ -451,7 +451,7 @@ Effect records outlive executions. Cancelling or pruning an execution with a pen
 
 ## Cache keys
 
-Yieldstar derives a cache key for each step automatically from the call site. This works for straight-line workflows, but breaks inside loops because every iteration shares the same call site and collides.
+Durable derives a cache key for each step automatically from the call site. This works for straight-line workflows, but breaks inside loops because every iteration shares the same call site and collides.
 
 To disambiguate, pass an explicit cache key as the first argument:
 

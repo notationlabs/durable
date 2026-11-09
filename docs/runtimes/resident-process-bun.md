@@ -5,13 +5,13 @@ Use the Bun connector when the application process and forked workers run under 
 ## Install
 
 ```sh
-bun add yieldstar @yieldstar/core @yieldstar/sqlite-runtime @yieldstar/worker-invoker pino
+bun add @notation/durable pino
 ```
 
 ## Runtime
 
 ```ts [shared.ts]
-import { SqliteRuntime, createSqliteDb } from "@yieldstar/sqlite-runtime/bun";
+import { SqliteRuntime, createSqliteDb } from "@notation/durable/sqlite/bun";
 
 export const db = createSqliteDb({ path: "./.db/local.sqlite" });
 export const runtime = new SqliteRuntime(db);
@@ -21,8 +21,8 @@ export const runtime = new SqliteRuntime(db);
 
 ```ts [worker.ts]
 import pino from "pino";
-import { WorkflowRunner } from "@yieldstar/core";
-import { createWorkflowWorker } from "@yieldstar/worker-invoker";
+import { WorkflowRunner } from "@notation/durable";
+import { createWorkflowWorker } from "@notation/durable/worker";
 import { router, runtime } from "./shared";
 
 const logger = pino();
@@ -35,9 +35,8 @@ createWorkflowWorker(runner, logger).listen();
 
 ```ts [app.ts]
 import pino from "pino";
-import { ExecutionDispatcher } from "@yieldstar/core";
-import { createLocalSdk } from "yieldstar";
-import { createWorkflowInvoker } from "@yieldstar/worker-invoker";
+import { ExecutionDispatcher, createLocalSdk } from "@notation/durable";
+import { createWorkflowInvoker } from "@notation/durable/worker";
 import { runtime } from "./shared";
 import type { Router } from "./shared";
 

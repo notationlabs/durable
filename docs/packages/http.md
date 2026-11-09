@@ -1,19 +1,21 @@
-# @yieldstar/http-server
+# @notation/durable/http
 
 HTTP routes and middleware for triggering workflows and reading their executions over the network. Handlers use the standard `Request` and `Response` APIs.
 
 ## Install
 
 ```sh
-bun add @yieldstar/http-server
+bun add @notation/durable
 ```
+
+The entry point is part of the `@notation/durable` package.
 
 ## `createRoutes({ runtime, invoker?, logger, middleware?, observationMiddleware?, pollInterval?, maxWait?, basePath? })`
 
 Returns route handlers for `POST /trigger`, `POST /poll`, `POST /wait`, `POST /list`, `POST /cancel` and the deprecated `POST /events`. The routes object plugs directly into `Bun.serve({ routes })` or any router that accepts `Request` to `Response` handlers.
 
 ```ts
-import { createRoutes } from "@yieldstar/http-server";
+import { createRoutes } from "@notation/durable/http";
 
 Bun.serve({
   port: 8080,
@@ -95,7 +97,7 @@ Observation middleware does not run for `/trigger`, and trigger middleware does 
 Wraps a trigger middleware function for use with `createRoutes`. Middleware receives `(req, event, next, logger)`. It runs only for `/trigger`.
 
 ```ts
-import { createMiddleware } from "@yieldstar/http-server";
+import { createMiddleware } from "@notation/durable/http";
 
 const auth = createMiddleware(async (req, event, next, logger) => {
   const token = req.headers.get("Authorization");

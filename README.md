@@ -1,4 +1,4 @@
-# YieldStar 🤘
+# Durable 🤘
 
 JavaScript-native distributed workflows.
 
@@ -7,22 +7,24 @@ Write workflows as async generator functions that yield steps. First-class primi
 ## Install
 
 ```sh
-bun add yieldstar
+bun add @notation/durable
 ```
 
-Runtime packages:
+The runtime parts are entry points of the same package:
 
-- Local execution: `@yieldstar/worker-invoker`, `@yieldstar/sqlite-runtime`
-- HTTP server: `@yieldstar/http-server`, `@yieldstar/worker-invoker`
+- Local execution: `@notation/durable/worker`, `@notation/durable/sqlite`
+- HTTP server: `@notation/durable/http`, `@notation/durable/worker`
 
-Select `@yieldstar/sqlite-runtime/bun` for `bun:sqlite` or `@yieldstar/sqlite-runtime/node` for `node:sqlite`.
+Runtime authors can check a runtime with `@notation/durable-conformance`.
+
+Select `@notation/durable/sqlite/bun` for `bun:sqlite` or `@notation/durable/sqlite/node` for `node:sqlite`.
 
 ## Quick Look
 
 Define a workflow that composes steps:
 
 ```ts
-import { workflow } from "yieldstar";
+import { workflow } from "@notation/durable";
 
 export const simple = workflow(async function* (step) {
   const n = yield* step.run(() => 1);
@@ -34,7 +36,7 @@ export const simple = workflow(async function* (step) {
 Retries are explicit and structured:
 
 ```ts
-import { RetryableError } from "yieldstar";
+import { RetryableError } from "@notation/durable";
 
 yield* step.run(async () => {
   // e.g. flaky fetch
@@ -44,7 +46,7 @@ yield* step.run(async () => {
 
 ## Learn More
 
-- Full usage, runtimes, APIs, and examples: [packages/yieldstar/README.md](packages/yieldstar/README.md)
+- Full usage, runtimes, APIs, and examples: [packages/durable/README.md](packages/durable/README.md)
 - Runtime families and connectors: [docs/runtimes/index.md](docs/runtimes/index.md)
 - Store connector specification and qualification: [docs/store-connector-spec.md](docs/store-connector-spec.md)
 

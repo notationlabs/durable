@@ -5,8 +5,7 @@
 ## Setup
 
 ```ts
-import { ExecutionDispatcher } from "@yieldstar/core";
-import { createLocalSdk } from "yieldstar";
+import { ExecutionDispatcher, createLocalSdk } from "@notation/durable";
 import type { Router } from "./shared";
 
 const sdk = createLocalSdk<Router>(runtime, { invoker });
@@ -42,7 +41,7 @@ const { executionId } = await sdk.trigger({
 | `INVALID_EXECUTION_EVENT`        | `params` or `context` are not durable values (see below), or `idempotent` is not a boolean |
 
 ```ts
-import { ExecutionAdmissionError } from "yieldstar";
+import { ExecutionAdmissionError } from "@notation/durable";
 
 try {
   await sdk.trigger({ workflowId: "process-order", executionId: "order-abc123", params });
@@ -235,7 +234,7 @@ type ExecutionViewPage = { executions: ExecutionView[]; cursor?: string };
 
 `parent` is present on executions started by [`step.start`](./steps.md#stepstart) or [`step.call`](./steps.md#stepcall), and names the caller's execution ID and step key, and whether the child was started detached. `cancellation` is present once a cancellation request is recorded (see [Requesting cancellation](./cancellation.md#requesting-cancellation)). A view leaves out `params`, `context`, lease and wake state and `unacknowledgedDeliveryCount`. Operators can read those with `runtime.executions.get`. `admittedAt` and `updatedAt` come from the clock of the process that wrote them, so use them for display only.
 
-Both the local SDK and the [HTTP SDK](./sdk-http.md) implement the `ExecutionObserver` interface (`poll`, `wait` and `list`) and the `ExecutionControl` interface (`cancel`), which `yieldstar` exports with these types. Code that only reads executions can take an `ExecutionObserver` and work with either SDK.
+Both the local SDK and the [HTTP SDK](./sdk-http.md) implement the `ExecutionObserver` interface (`poll`, `wait` and `list`) and the `ExecutionControl` interface (`cancel`), which `@notation/durable` exports with these types. Code that only reads executions can take an `ExecutionObserver` and work with either SDK.
 
 ## Trigger event shape
 

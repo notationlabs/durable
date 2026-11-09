@@ -9,13 +9,13 @@ Node 22.6 or newer can run TypeScript worker entry points through built-in type 
 ## Install
 
 ```sh
-pnpm add yieldstar @yieldstar/core @yieldstar/sqlite-runtime @yieldstar/worker-invoker pino
+pnpm add @notation/durable pino
 ```
 
 ## Runtime
 
 ```ts [shared.ts]
-import { SqliteRuntime, createSqliteDb } from "@yieldstar/sqlite-runtime/node";
+import { SqliteRuntime, createSqliteDb } from "@notation/durable/sqlite/node";
 
 export const db = createSqliteDb({ path: "./.db/local.sqlite" });
 export const runtime = new SqliteRuntime(db);
@@ -27,9 +27,8 @@ Use the same `WorkflowRunner`, `createWorkflowWorker`, `ExecutionDispatcher`, an
 
 ```ts [app.ts]
 import pino from "pino";
-import { ExecutionDispatcher } from "@yieldstar/core";
-import { createLocalSdk } from "yieldstar";
-import { createWorkflowInvoker } from "@yieldstar/worker-invoker";
+import { ExecutionDispatcher, createLocalSdk } from "@notation/durable";
+import { createWorkflowInvoker } from "@notation/durable/worker";
 import { runtime } from "./shared";
 import type { Router } from "./shared";
 

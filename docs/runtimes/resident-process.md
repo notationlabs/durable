@@ -16,12 +16,12 @@ The child process creates its own `SqliteRuntime` over the same SQLite file and 
 Import `SqliteRuntime` and `createSqliteDb` from a connector entry point. `SqliteRuntime` is also exported from the package root.
 
 ```ts
-import { SqliteRuntime, createSqliteDb } from "@yieldstar/sqlite-runtime/bun";
+import { SqliteRuntime, createSqliteDb } from "@notation/durable/sqlite/bun";
 
 const runtime = new SqliteRuntime(createSqliteDb({ path: "./.db/local.sqlite" }));
 ```
 
-For Node, change the import to `@yieldstar/sqlite-runtime/node`. No other runtime wiring changes.
+For Node, change the import to `@notation/durable/sqlite/node`. No other runtime wiring changes.
 
 ## Delivery guarantees
 
@@ -55,8 +55,8 @@ Fencing does not make `step.run` exactly-once. A frozen worker may still run a s
 
 | Host process | Connector | Native database |
 | --- | --- | --- |
-| Bun | `@yieldstar/sqlite-runtime/bun` | `bun:sqlite` `Database` |
-| Node | `@yieldstar/sqlite-runtime/node` | `node:sqlite` `DatabaseSync` |
+| Bun | `@notation/durable/sqlite/bun` | `bun:sqlite` `Database` |
+| Node | `@notation/durable/sqlite/node` | `node:sqlite` `DatabaseSync` |
 
 Both connectors implement the same synchronous `SqliteDriver` contract. Transactions use `BEGIN IMMEDIATE`, `COMMIT`, and `ROLLBACK`, and prepared statements expose `get`, `all`, and `run` with named `$parameter` bindings.
 

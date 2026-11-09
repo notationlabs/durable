@@ -5,7 +5,7 @@ A workflow is an async generator function that yields steps. The `workflow()` fa
 ## Basic definition
 
 ```ts
-import { workflow } from "yieldstar";
+import { workflow } from "@notation/durable";
 
 const myWorkflow = workflow(async function* (step, event, logger) {
   const a = yield* step.run(() => 1);
@@ -113,7 +113,7 @@ A record is `running` while a dispatcher holds a lease on it, and otherwise chan
 A router maps string IDs to workflow generators:
 
 ```ts
-import { createWorkflowRouter } from "yieldstar";
+import { createWorkflowRouter } from "@notation/durable";
 
 const router = createWorkflowRouter({
   "process-order": processOrder,

@@ -5,7 +5,7 @@
 ## Setup
 
 ```ts
-import { createHttpSdkFactory } from "yieldstar";
+import { createHttpSdkFactory } from "@notation/durable";
 import type { Router } from "./shared";
 
 const createSdk = createHttpSdkFactory<Router>();
@@ -104,7 +104,7 @@ const result = await sdk.cancel("order-42", { reason: "abandoned" });
 `HttpRouteError` is the error for a response that has no more specific error, such as an observation middleware denial. It carries the response's `status`, and its `code` when the body has one.
 
 ```ts
-import { HttpRouteError } from "yieldstar";
+import { HttpRouteError } from "@notation/durable";
 
 try {
   await sdk.poll("order-abc123");

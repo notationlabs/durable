@@ -1,34 +1,30 @@
-# YieldStar 🤘
+# Durable 🤘
 
 JavaScript‑native distributed workflows.
 
-Write workflows as async generator functions that yield steps. Use first‑class primitives for retries, delays, and polling. .
+Write workflows as async generator functions that yield steps. Use first‑class primitives for retries, delays, and polling.
 
 The resident-process runtime runs on Bun and Node with native SQLite connectors.
 
 ## Install
 
-Install the core package:
-
 ```sh
-bun add yieldstar
+bun add @notation/durable
 ```
 
-Depending on how you run workflows, also install:
+The runtime parts are entry points of the same package. Which ones you import depends on how you run workflows:
 
-- Local (recommended): `@yieldstar/worker-invoker` and `@yieldstar/sqlite-runtime`
-- HTTP server: `@yieldstar/http-server` and `@yieldstar/worker-invoker`
-
-Note: `@yieldstar/test-utils` is an internal testing helper used by this repository. For local application use, prefer the SQLite runtime.
+- Local (recommended): `@notation/durable/worker` and `@notation/durable/sqlite`
+- HTTP server: `@notation/durable/http` and `@notation/durable/worker`
 
 ## Quick Start: Local (SQLite)
 
-Run a workflow locally with persistence and timers using a subprocess worker and the SQLite runtime. The example uses the Bun connector; Node applications use `@yieldstar/sqlite-runtime/node` with otherwise identical runtime wiring.
+Run a workflow locally with persistence and timers using a subprocess worker and the SQLite runtime. The example uses the Bun connector; Node applications use `@notation/durable/sqlite/node` with otherwise identical runtime wiring.
 
 ```ts
 // shared.ts
-import { workflow, createWorkflowRouter } from "yieldstar";
-import { SqliteRuntime, createSqliteDb } from "@yieldstar/sqlite-runtime/bun";
+import { workflow, createWorkflowRouter } from "@notation/durable";
+import { SqliteRuntime, createSqliteDb } from "@notation/durable/sqlite/bun";
 
 export const simple = workflow(async function* (step, event, logger) {
   const n = yield* step.run(() => 1);
@@ -45,8 +41,8 @@ export const runtime = new SqliteRuntime(createSqliteDb({ path: "./.db/local.sql
 ```ts
 // worker.ts
 import pino from "pino";
-import { WorkflowRunner } from "@yieldstar/core";
-import { createWorkflowWorker } from "@yieldstar/worker-invoker";
+import { WorkflowRunner } from "@notation/durable";
+import { createWorkflowWorker } from "@notation/durable/worker";
 import { router, runtime } from "./shared";
 
 const logger = pino();
@@ -58,9 +54,8 @@ createWorkflowWorker(runner, logger).listen();
 ```ts
 // app.ts
 import pino from "pino";
-import { ExecutionDispatcher } from "@yieldstar/core";
-import { createWorkflowInvoker } from "@yieldstar/worker-invoker";
-import { createLocalSdk } from "yieldstar";
+import { ExecutionDispatcher, createLocalSdk } from "@notation/durable";
+import { createWorkflowInvoker } from "@notation/durable/worker";
 import { runtime, type Router } from "./shared";
 
 const logger = pino();
@@ -89,8 +84,8 @@ Use a subprocess worker to execute steps and a SQLite-backed runtime for executi
 
 ```ts
 // shared.ts
-import { workflow, createWorkflowRouter } from "yieldstar";
-import { SqliteRuntime, createSqliteDb } from "@yieldstar/sqlite-runtime/bun";
+import { workflow, createWorkflowRouter } from "@notation/durable";
+import { SqliteRuntime, createSqliteDb } from "@notation/durable/sqlite/bun";
 
 export const dynamic = workflow<{ msg: string }, void>(async function* (step, event, logger) {
   const n = yield* step.run(() => Math.random());
@@ -109,8 +104,8 @@ export const runtime = new SqliteRuntime(createSqliteDb({ path: "./.db/local.sql
 ```ts
 // worker.ts
 import pino from "pino";
-import { WorkflowRunner } from "@yieldstar/core";
-import { createWorkflowWorker } from "@yieldstar/worker-invoker";
+import { WorkflowRunner } from "@notation/durable";
+import { createWorkflowWorker } from "@notation/durable/worker";
 import { router, runtime } from "./shared";
 
 const logger = pino();
@@ -124,9 +119,8 @@ createWorkflowWorker(runner, logger).listen();
 ```ts
 // app.ts
 import pino from "pino";
-import { ExecutionDispatcher } from "@yieldstar/core";
-import { createWorkflowInvoker } from "@yieldstar/worker-invoker";
-import { createLocalSdk } from "yieldstar";
+import { ExecutionDispatcher, createLocalSdk } from "@notation/durable";
+import { createWorkflowInvoker } from "@notation/durable/worker";
 import { runtime, type Router } from "./shared";
 
 const logger = pino();
@@ -152,9 +146,9 @@ Server:
 
 ```ts
 import pino from "pino";
-import { ExecutionDispatcher } from "@yieldstar/core";
-import { createRoutes, createMiddleware } from "@yieldstar/http-server";
-import { createWorkflowInvoker } from "@yieldstar/worker-invoker";
+import { ExecutionDispatcher } from "@notation/durable";
+import { createRoutes, createMiddleware } from "@notation/durable/http";
+import { createWorkflowInvoker } from "@notation/durable/worker";
 import { runtime } from "./shared";
 
 const logger = pino();
@@ -177,7 +171,7 @@ Bun.serve({
 Client:
 
 ```ts
-import { createHttpSdkFactory } from "yieldstar";
+import { createHttpSdkFactory } from "@notation/durable";
 const createSdk = createHttpSdkFactory<{ "dynamic-workflow": any }>();
 const sdk = createSdk({ url: "http://localhost:8080" });
 
@@ -210,7 +204,7 @@ See: `test/params.test.ts`.
 Throw `RetryableError` inside `step.run` to retry the step with the configured policy.
 
 ```ts
-import { RetryableError } from "yieldstar";
+import { RetryableError } from "@notation/durable";
 
 yield* step.run(async () => {
   // e.g. flaky fetch
@@ -272,16 +266,16 @@ See: `examples/workflows/coordinator.ts`.
 
 ## API Reference
 
-Top‑level exports from `yieldstar`:
+Top‑level exports from `@notation/durable`:
 
 ```ts
-export { createLocalSdk } from "yieldstar";
-export { createHttpSdkFactory } from "yieldstar";
-export { createWorkflowRouter } from "yieldstar";
-export { RetryableError, ExecutionAdmissionError, ExecutionListRequestError, HttpRouteError } from "yieldstar";
-export { WorkflowCancelledError, ExecutionCancelRequestError } from "yieldstar";
-export { createWorkflow, workflow } from "yieldstar";
-export type { WorkflowFn } from "yieldstar";
+export { createLocalSdk } from "@notation/durable";
+export { createHttpSdkFactory } from "@notation/durable";
+export { createWorkflowRouter } from "@notation/durable";
+export { RetryableError, ExecutionAdmissionError, ExecutionListRequestError, HttpRouteError } from "@notation/durable";
+export { WorkflowCancelledError, ExecutionCancelRequestError } from "@notation/durable";
+export { createWorkflow, workflow } from "@notation/durable";
+export type { WorkflowFn } from "@notation/durable";
 ```
 
 ### `workflow(fn)` / `createWorkflow(fn)`
@@ -371,26 +365,7 @@ Use `Router` to type your SDKs so `workflowId` and `params` are enforced.
 
 ## Testing Your Workflows
 
-For repository development we use an in‑memory runtime driven by `@yieldstar/test-utils` to `triggerAndWait` in tests. This package is internal; application users should test against the same runtime they use in production where possible. Example (internal):
-
-```ts
-import { test, expect } from "vitest";
-import { createTestSdkFactory } from "@yieldstar/test-utils";
-import { createWorkflow } from "yieldstar";
-
-test("data flow between steps", async () => {
-  const w = createWorkflow(async function* (step) {
-    let n = yield* step.run(() => 1);
-    n = yield* step.run(() => n * 2);
-    return n;
-  });
-  const createSdk = createTestSdkFactory();
-  const sdk = createSdk({ workflow: w });
-  expect(await sdk.triggerAndWait({ workflowId: "workflow" })).toBe(2);
-});
-```
-
-See more examples in `test/*.test.ts`.
+Test workflows against the same runtime you use in production, with a separate SQLite file for each test. The repository's own tests in `test/*.test.ts` show more examples.
 
 ## Notes
 

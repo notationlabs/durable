@@ -2,7 +2,7 @@
 
 Status: proposal
 
-This spec adds durable, schema-validated state to YieldStar. The goal is to make long-lived agents, actors, mailboxes, shared project state, human approval workflows, and external event ingestion possible without adding separate concepts for each one.
+This spec adds durable, schema-validated state to Durable. The goal is to make long-lived agents, actors, mailboxes, shared project state, human approval workflows, and external event ingestion possible without adding separate concepts for each one.
 
 The core API should stay small:
 
@@ -42,7 +42,7 @@ References:
 - [Immer patches](https://immerjs.github.io/immer/patches/)
 - [Standard Schema](https://standardschema.dev/)
 
-The useful shape for YieldStar is:
+The useful shape for Durable is:
 
 - Run `when` selectors against a read-tracking proxy.
 - Run `update` functions against a write-recording proxy over the draft, recording the path of every write.
@@ -263,7 +263,7 @@ snapshot.state
 snapshot.version
 ```
 
-If the key is omitted, YieldStar may use the call-site hash, following the same caveats as other step helpers. Explicit keys are required when a workflow can reach the same call site more than once before yielding.
+If the key is omitted, Durable may use the call-site hash, following the same caveats as other step helpers. Explicit keys are required when a workflow can reach the same call site more than once before yielding.
 
 ## `select`
 
@@ -560,7 +560,7 @@ This is a first-class runtime feature, not only an SDK helper.
 
 Required core changes:
 
-- Add store definitions, snapshots, update results, and waiter response types to `@yieldstar/core`.
+- Add store definitions, snapshots, update results, and waiter response types to `@notation/durable/runtime`.
 - Add a `StoreClient` abstraction beside `HeapClient` and `SchedulerClient`.
 - Pass the store client into workflow generators.
 - Make `stepRunner` execution-aware so `step.store` can use `event.executionId`.

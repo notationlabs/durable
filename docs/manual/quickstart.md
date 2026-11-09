@@ -1,11 +1,11 @@
 # Quick Start
 
-A Yieldstar application has three parts: **workflows** that define the work, a **worker** that executes it, and an **app** that triggers it and runs the dispatcher that hands due executions to workers. This guide sets up all three with SQLite persistence.
+A Durable application has three parts: **workflows** that define the work, a **worker** that executes it, and an **app** that triggers it and runs the dispatcher that hands due executions to workers. This guide sets up all three with SQLite persistence.
 
 ## Install
 
 ```sh
-bun add yieldstar @yieldstar/core @yieldstar/worker-invoker @yieldstar/sqlite-runtime pino
+bun add @notation/durable pino
 ```
 
 This quick start uses Bun. For Node, use the [`node:sqlite` connector guide](../runtimes/resident-process-node.md); the shared runtime APIs are identical.
@@ -15,8 +15,8 @@ This quick start uses Bun. For Node, use the [`node:sqlite` connector guide](../
 A workflow is a generator function that yields steps. Each step is a checkpoint, the result of which is persisted by the runtime and can be retrieved if the workflow is paused or needs to be re-run.
 
 ```ts [shared.ts]
-import { workflow, createWorkflowRouter } from "yieldstar";
-import { SqliteRuntime, createSqliteDb } from "@yieldstar/sqlite-runtime/bun";
+import { workflow, createWorkflowRouter } from "@notation/durable";
+import { SqliteRuntime, createSqliteDb } from "@notation/durable/sqlite/bun";
 
 export const greet = workflow<{ name: string }, string>(async function* (step, event) {
   const greeting = yield* step.run(() => `Hello, ${event.params.name}`);
@@ -41,8 +41,8 @@ The worker is a subprocess that runs workflow deliveries in isolation. It connec
 
 ```ts [worker.ts]
 import pino from "pino";
-import { WorkflowRunner } from "@yieldstar/core";
-import { createWorkflowWorker } from "@yieldstar/worker-invoker";
+import { WorkflowRunner } from "@notation/durable";
+import { createWorkflowWorker } from "@notation/durable/worker";
 import { router, runtime } from "./shared";
 
 const logger = pino();
@@ -58,9 +58,8 @@ The app entry point creates an invoker that spawns worker subprocesses on demand
 
 ```ts [app.ts]
 import pino from "pino";
-import { ExecutionDispatcher } from "@yieldstar/core";
-import { createWorkflowInvoker } from "@yieldstar/worker-invoker";
-import { createLocalSdk } from "yieldstar";
+import { ExecutionDispatcher, createLocalSdk } from "@notation/durable";
+import { createWorkflowInvoker } from "@notation/durable/worker";
 import { runtime } from "./shared";
 import type { Router } from "./shared";
 

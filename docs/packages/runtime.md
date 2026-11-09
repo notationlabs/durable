@@ -1,12 +1,14 @@
-# @yieldstar/core
+# @notation/durable/runtime
 
-Base types, abstract classes, the `WorkflowRunner` execution engine, and the `ExecutionDispatcher`. This package defines the interfaces that runtime implementations such as `@yieldstar/sqlite-runtime` must satisfy.
+Base types, abstract classes, the `WorkflowRunner` execution engine, and the `ExecutionDispatcher`. This entry point defines the interfaces that runtime implementations such as `@notation/durable/sqlite` must satisfy.
 
 ## Install
 
 ```sh
-bun add @yieldstar/core
+bun add @notation/durable
 ```
+
+The entry point is part of the `@notation/durable` package.
 
 ## `Runtime` (abstract class)
 
@@ -34,7 +36,7 @@ A runtime is defined by the guarantees its clients keep together, not by how man
 Runs one delivery of a workflow against a runtime's heap and stores. The runner replays the generator, advances it to the next durable boundary, and resolves with a `WorkflowRunOutcome`.
 
 ```ts
-import { WorkflowRunner } from "@yieldstar/core";
+import { WorkflowRunner } from "@notation/durable/runtime";
 
 const runner = new WorkflowRunner(runtime, { router, logger });
 ```
@@ -213,7 +215,7 @@ type ExecutionAdmissionErrorCode =
 
 A lease ends without an acknowledgement when it is released, or when it expires and another claim takes over. Each such delivery adds one to `unacknowledgedDeliveryCount`, and any acknowledgement resets it to zero. While it is above zero, the execution waits a redelivery delay after the delivery ended before it can be claimed. The delay starts at 1 second and doubles with each unacknowledged delivery, up to 5 minutes (`redeliveryDelay(n)`).
 
-`ExecutionAdmissionError` (`code: ExecutionAdmissionErrorCode`) is what the SDKs throw for a rejected admission. `WorkflowCancelledError` (`reason?`, `source?`) is what the runner throws into workflow code when it delivers a cancellation. `WorkflowStartError` (`code: "INVALID_START_PARAMETERS" | "START_REQUEST_MISMATCH"`) is what `step.start` throws to workflow code for a rejected start; the rejection is recorded as the step's result, so replay throws the same class and code. `InfrastructureError` wraps a runtime failure; `InfrastructureError.is(err)` recognises one even when several copies of `@yieldstar/core` are loaded. `isLeaseLost(value)` recognises a `LeaseLost` result.
+`ExecutionAdmissionError` (`code: ExecutionAdmissionErrorCode`) is what the SDKs throw for a rejected admission. `WorkflowCancelledError` (`reason?`, `source?`) is what the runner throws into workflow code when it delivers a cancellation. `WorkflowStartError` (`code: "INVALID_START_PARAMETERS" | "START_REQUEST_MISMATCH"`) is what `step.start` throws to workflow code for a rejected start; the rejection is recorded as the step's result, so replay throws the same class and code. `InfrastructureError` wraps a runtime failure; `InfrastructureError.is(err)` recognises one even when several copies of `@notation/durable/runtime` are loaded. `isLeaseLost(value)` recognises a `LeaseLost` result.
 
 Runtime adapter authors can import the storage-neutral state machine that `SqliteRuntime` and `MemoryRuntime` share: `prepareExecutionAdmission`, `createExecutionState`, `prepareExecutionStart`, `matchStartRequest`, `createStartedExecution`, `requestExecutionWake`, `claimExecution`, `renewExecutionLease`, `releaseExecutionLease`, `acknowledgeExecution`, `isLeaseCurrent`, `nextClaimAt`, `isExecutionClaimable`, `toExecutionRecord`, and the event and outcome codecs. An adapter persists `ExecutionState` however it likes and applies each transition inside one atomic write. A fenced heap write checks `isLeaseCurrent` in the same write. For `admit`, an adapter validates the request with `prepareExecutionAdmission`, and when the ID is in use answers with `matchExecutionAdmission` in the same atomic step as its insert. For `list`, an adapter assigns each new execution an admission sequence greater than that of every execution in the backend, in the same atomic write as its insert, validates the request and decodes its cursor with `prepareExecutionListRequest`, fetches up to `limit + 1` matching executions below the cursor's sequence (`matchesExecutionListRequest` applies the filters to an `ExecutionState`), and builds the page with `toExecutionListPage`, whose cursor is the last execution's admission sequence as a decimal string. For `start`, an adapter validates the request with `prepareExecutionStart`, looks up the request ID, answers a recorded request with `matchStartRequest`, and otherwise inserts the target and the `StartRequestState` from `createStartedExecution` in one atomic write, choosing another ID if the target's is in use. For `JoinClient.join`, an adapter reads the target's state and answers with `readJoinTarget` in one atomic step, and registers the waiter only when the answer is `waiting`. In the atomic write of an acknowledgement that changes the record to a terminal status, it requests a wake for the joiner of every join waiter on the execution and keeps the waiters. `acknowledgeExecution` returns the same state object when the lease is lost or the record is already terminal, so a changed state with a terminal status identifies that acknowledgement. For `cancel`, an adapter validates the request with `prepareExecutionCancel`, and in one atomic write applies `requestExecutionCancellation` to the target; when the result's `propagate` is true, it applies `propagatedCancellation(state)` to each non-terminal child that is not detached, and repeats for their children. When a result's `terminal` is true, the same write deletes the store, effect and join waiters that execution holds and requests a wake for its joiners. `createStartedExecution` applies `cancellationForStartedChild` itself. For `HeapClient.recordCancellation`, an adapter checks the lease, applies `markCancellationDelivered`, writes the step records and deletes those steps' waiters in one atomic write, and writes nothing if any step already has a different record. `toExecutionCancellation` turns the stored request into the record's `cancellation`. `DEFAULT_LEASE_DURATION` (30 seconds), `REDELIVERY_DELAY_BASE`, `REDELIVERY_DELAY_MAX`, `DEFAULT_EXECUTION_LIST_LIMIT` (50) and `MAX_EXECUTION_LIST_LIMIT` (1000) are the defaults.
 
@@ -264,7 +266,7 @@ So `{ a: undefined }` and `{}` stay distinct, and only a tagged value decodes as
 
 An error keeps its `name`, `message`, a string `stack` and `code`, its own `cause` (encoded recursively), a non-enumerable `errors` array such as `AggregateError`'s, and its own enumerable properties whose values are durable, under `fields`. Properties that are not durable are left out rather than rejecting the error. `encodeThrownValue(value)` encodes a thrown value as thrown when it is durable, and as `Error(String(value))` otherwise.
 
-`decode` revives an error as the class registered under its `name` with `registerErrorClass(name, errorClass)`, setting its prototype and fields without calling the constructor, and as an `Error` with the same name, message, code, cause and fields when no class is registered. Registration is per process. `TypeError`, `RangeError`, `SyntaxError`, `ReferenceError`, `EvalError`, `URIError`, `AggregateError`, `WorkflowStartError`, `WorkflowJoinError`, `WorkflowCancelledError`, `WorkflowRaceError`, `WorkflowValueError`, `WorkflowEffectError`, `EffectDeliveryError`, `EffectClientInvariantError` and `StoreValidationError` are registered by default, and `yieldstar` registers `RetryableError`.
+`decode` revives an error as the class registered under its `name` with `registerErrorClass(name, errorClass)`, setting its prototype and fields without calling the constructor, and as an `Error` with the same name, message, code, cause and fields when no class is registered. Registration is per process. `TypeError`, `RangeError`, `SyntaxError`, `ReferenceError`, `EvalError`, `URIError`, `AggregateError`, `WorkflowStartError`, `WorkflowJoinError`, `WorkflowCancelledError`, `WorkflowRaceError`, `WorkflowValueError`, `WorkflowEffectError`, `EffectDeliveryError`, `EffectClientInvariantError` and `StoreValidationError` are registered by default, and `@notation/durable` registers `RetryableError`.
 
 `WorkflowValueError` (`code: "INVALID_STEP_VALUE" | "STEP_SCHEMA_INVALID"`, `stepKey`) reports a value the codec or a step's schema rejects. A completed outcome whose result the codec rejects is recorded as `failed` with `INVALID_STEP_VALUE` and `stepKey` `WORKFLOW_RESULT_STEP_KEY` (`"$$workflow-result$$"`).
 
@@ -280,7 +282,7 @@ The only component that delivers executions. It leases due executions, reads eac
 - **Backend errors.** If reading the record, acknowledging or releasing throws, the dispatcher logs the error and leaves the lease to expire rather than trying to release it. This is intended: expiry is safe, it counts as an unacknowledged delivery, so the execution is delivered again after the redelivery delay, and the backend that just threw may be unreachable anyway.
 
 ```ts
-import { ExecutionDispatcher } from "@yieldstar/core";
+import { ExecutionDispatcher } from "@notation/durable/runtime";
 
 const dispatcher = new ExecutionDispatcher(runtime, { invoker, logger });
 dispatcher.start();

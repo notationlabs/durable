@@ -7,7 +7,7 @@ Stores are not workflow-only. Any code with a `StoreClient` – an HTTP handler,
 `runtime.stores.store(definition, id)` returns a plain async handle – no workflow, no steps.
 
 ```ts
-import { SqliteRuntime } from "@yieldstar/sqlite-runtime/bun";
+import { SqliteRuntime } from "@notation/durable/sqlite/bun";
 import { ConversationStore } from "./shared";
 
 const runtime = new SqliteRuntime(db);

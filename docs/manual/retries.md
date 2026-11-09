@@ -1,11 +1,11 @@
 # Retries
 
-Yieldstar implements structured retries through `RetryableError`. Throwing this error inside a `step.run` tells the runtime to re-execute the step according to the supplied retry policy, including maximum attempt count and retry interval.
+Durable implements structured retries through `RetryableError`. Throwing this error inside a `step.run` tells the runtime to re-execute the step according to the supplied retry policy, including maximum attempt count and retry interval.
 
 ## Basic retry
 
 ```ts
-import { RetryableError } from "yieldstar";
+import { RetryableError } from "@notation/durable";
 
 yield* step.run(async () => {
   const res = await fetch("https://api.example.com/charge");
