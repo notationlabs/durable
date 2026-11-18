@@ -1,6 +1,6 @@
-# Durable
+# Notation Durable
 
-Durable is a TypeScript library for running workflows and keeping state that outlives any single process. It runs inside your application on Bun or Node, and keeps its records in a SQLite file.
+Notation Durable is a TypeScript workflow and state library that runs locally or anywhere with SQLite.
 
 ```sh
 npm install @notation/durable pino
@@ -27,7 +27,7 @@ export const onboarding = workflow<{ email: string }>(async function* (step, eve
 });
 ```
 
-The [Quick start](https://notation.dev/durable/manual/quickstart) sets up the runtime and the worker process, and starts this workflow. The [documentation](https://notation.dev/durable) covers workflows, stores, deployment and the API.
+The [Quick start](https://notation.dev/durable/core/quickstart) sets up the runtime and the worker process, and starts this workflow. The [documentation](https://notation.dev/durable) covers workflows, stores, deployment and the API.
 
 ## Packages
 

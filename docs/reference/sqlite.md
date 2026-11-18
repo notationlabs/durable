@@ -1,85 +1,174 @@
 # @notation/durable/sqlite
 
-`SqliteRuntime` keeps every record in one SQLite file. Several processes can open the same file. See [Running a server](../manual/running-a-server.md) for how to run it.
-
-The runtime has three entry points:
+`@notation/durable/sqlite` stores execution records, step records, stores, effects, and waiters in a single SQLite database file so multi-record guarantees commit atomically in synchronous `IMMEDIATE` transactions.
 
 | Entry point | Exports |
-| --- | --- |
-| `@notation/durable/sqlite/bun` | The exports of `/sqlite`, and `createSqliteDb` and `BunSqliteDriver` for `bun:sqlite` |
-| `@notation/durable/sqlite/node` | The exports of `/sqlite`, and `createSqliteDb` and `NodeSqliteDriver` for `node:sqlite` |
-| `@notation/durable/sqlite` | `SqliteRuntime`, its client classes and the driver types |
+| :--- | :--- |
+| `@notation/durable/sqlite/bun` | All `/sqlite` exports plus `createSqliteDb` and `BunSqliteDriver` |
+| `@notation/durable/sqlite/node` | All `/sqlite` exports plus `createSqliteDb` and `NodeSqliteDriver` |
+| `@notation/durable/sqlite` | `SqliteRuntime`, SQLite client classes, and driver interfaces |
 
 ```ts [src/durable/runtime.ts]
 import { SqliteRuntime, createSqliteDb } from "@notation/durable/sqlite/bun";
 
-export const runtime = new SqliteRuntime(createSqliteDb({ path: "./.db/durable.sqlite" }));
+export const runtime = new SqliteRuntime(
+  createSqliteDb({ path: "./.db/durable.sqlite" })
+);
 ```
 
-## `createSqliteDb(options?)`
+## createSqliteDb
 
-Opens the file, and returns a `SqliteDriver`. It creates the file and its directory if they do not exist.
+`createSqliteDb` is exported by `@notation/durable/sqlite/bun` and `@notation/durable/sqlite/node`. It creates any missing parent directories, opens the SQLite file, sets `PRAGMA busy_timeout = 5000`, and enables WAL mode when configured:
 
-| Option | Default | Does |
-| --- | --- | --- |
-| `path` | `"./.db/durable.sqlite"` | The database file |
-| `wal` | `true` | Puts the database in WAL mode |
+```ts [@notation/durable/sqlite/bun]
+export type SqliteDbOpts = {
+  path?: string;
+  wal?: boolean;
+};
 
-Each connection waits up to 5 seconds for another process's lock before it fails.
+export function createSqliteDb(opts?: SqliteDbOpts): BunSqliteDriver;
+```
 
-## `SqliteRuntime`
+```ts [@notation/durable/sqlite/node]
+export function createSqliteDb(opts?: SqliteDbOpts): NodeSqliteDriver;
+```
 
-`new SqliteRuntime(db, { clock? })` creates the tables and indexes that do not exist yet, and returns the runtime. `clock` defaults to `Date.now`.
+| Option | Description |
+| :--- | :--- |
+| `path` | Path to the SQLite database file |
+| `wal` | Enables Write-Ahead Logging mode when true |
 
-| Client | Class | Tables |
-| --- | --- | --- |
-| `executions` | `SqliteExecutionClient` | `executions`, `start_requests` |
-| `heap` | `SqliteHeapClient` | `step_responses` |
-| `stores` | `SqliteStoreClient` | `stores`, `store_waiters`, `store_applied_steps` |
-| `effects` | `SqliteEffectClient` | `effects`, `effect_conflicts`, `effect_waiters` |
-| `joins` | `SqliteJoinClient` | `join_waiters` |
+`path` defaults to `./.db/durable.sqlite` and `wal` defaults to true. When concurrent processes enable WAL mode on a new database simultaneously, `createSqliteDb` retries busy errors for up to 5 seconds.
 
-**Every write is one `IMMEDIATE` transaction**, so processes that share the file take turns. Writes that must happen together, such as a store update and the wakes of its waiters, are in the same transaction. See [Writes that go together](../runtime-authors/runtimes.md#writes-that-go-together).
+Keep WAL databases on a local filesystem rather than network-attached storage, and include `-wal` and `-shm` companion files in consistent backups as described in [Running a Server](../core/running-a-server.md). For table schemas and index layouts, see [SQLite Storage](../internals/sqlite-storage.md).
 
-Create the client classes through `SqliteRuntime`, so that they share one database and one clock.
+## SqliteRuntime
 
-## Listing executions
+`SqliteRuntime` extends [`Runtime`](./runtime.md#runtime) and initializes all required tables and indexes when constructed:
 
-`list` returns executions newest first, by the `rowid` of the `executions` table. SQLite assigns the `rowid` under the write lock, so a later admission always has a higher one, whatever the clocks of the processes.
+```ts [@notation/durable/sqlite]
+export type SqliteRuntimeOptions = RuntimeOptions;
 
-The indexes on `workflow_id` and `status` serve a `list` filtered by either. No index serves `status: "running"`, because an execution is running only while its lease has not expired. That `list` reads the table from the newest row until it fills the page.
+export class SqliteRuntime extends Runtime {
+  readonly clock: () => number;
+  readonly executions: SqliteExecutionClient;
+  readonly effects: SqliteEffectClient;
+  readonly heap: SqliteHeapClient;
+  readonly joins: SqliteJoinClient;
+  readonly stores: SqliteStoreClient;
 
-**`VACUUM` can renumber the `rowid`s.** A cursor from before a `VACUUM` can then skip or repeat executions. Start again from the first page after a `VACUUM`.
+  constructor(db: SqliteDriver, options?: SqliteRuntimeOptions);
+}
+```
 
-## Upgrades
+| Property | Client class |
+| :--- | :--- |
+| `clock` | Clock function used by every client |
+| `executions` | `SqliteExecutionClient` |
+| `effects` | `SqliteEffectClient` |
+| `heap` | `SqliteHeapClient` |
+| `joins` | `SqliteJoinClient` |
+| `stores` | `SqliteStoreClient` |
 
-`SqliteRuntime` adds missing columns when it opens a file that an earlier version created. It adds them under the write lock, so processes that open the file at once add each column once.
+`options.clock` defaults to `() => Date.now()`, evaluated lazily on each call so fake timers installed after construction still apply. Always construct clients through `SqliteRuntime` rather than instantiating them separately so all clients share one `SqliteDriver`, one clock, and one `SqliteExecutionClient`.
 
-**Every process that shares a file must run a version with the feature before any workflow uses it:**
+## Client classes
 
-| Feature | A process on an earlier version |
-| --- | --- |
-| `step.join` and `step.call` | Ends executions without waking the executions that wait for them |
-| `cancel` | Runs deliveries without the cancellation request, and starts children without passing the request on |
+`@notation/durable/sqlite` exports each SQLite client class and its option types:
 
-## Other drivers
+```ts [@notation/durable/sqlite]
+export type SqliteExecutionClientOptions = {
+  clock?: () => number;
+};
 
-`SqliteRuntime` takes any object that implements `SqliteDriver`:
+export class SqliteExecutionClient implements ExecutionClient {
+  constructor(db: SqliteDriver, options?: SqliteExecutionClientOptions);
+}
 
-```ts
-interface SqliteDriver {
+export class SqliteEffectClient implements EffectClient {
+  constructor(params: {
+    db: SqliteDriver;
+    executions?: SqliteExecutionClient;
+    clock?: () => number;
+  });
+}
+
+export class SqliteHeapClient implements HeapClient {
+  constructor(db: SqliteDriver, options?: { clock?: () => number });
+}
+
+export class SqliteJoinClient implements JoinClient {
+  constructor(db: SqliteDriver);
+}
+
+export class SqliteStoreClient extends CasStoreClient {
+  constructor(params: { db: SqliteDriver; executions?: SqliteExecutionClient });
+}
+```
+
+When `executions` is omitted on effect or store clients, the constructor creates an execution client automatically on the same driver.
+
+## Listing and upgrades
+
+- **Admission order and cursors** – `executions.list` orders executions newest first by SQLite `rowid`, assigned under the write lock regardless of process clock skew. Running `VACUUM` can renumber `rowid` values and invalidate active pagination cursors; restart pagination from the first page after a `VACUUM`.
+- **Filtered queries** – Filtering `executions.list` by workflow ID or non-running status uses indexes, whereas filtering by running status scans newest first because running state derives from lease expiration.
+- **Automatic schema migrations** – Opening an existing database adds any missing columns under the write lock, so concurrent processes apply each `ALTER TABLE` once.
+- **Cross-process rollouts** – Upgrade every process sharing a SQLite file to a release supporting `step.join`, `step.call`, or `cancel()` before any workflow or caller uses those features; see [Running a Server](../core/running-a-server.md).
+
+## Custom drivers
+
+`SqliteRuntime` accepts any synchronous implementation of `SqliteDriver`:
+
+```ts [@notation/durable/sqlite]
+export type SqliteParameterValue =
+  | string
+  | number
+  | bigint
+  | boolean
+  | Uint8Array
+  | null;
+
+export type SqliteParameters = Record<`$${string}`, SqliteParameterValue>;
+
+export type SqliteRunResult = {
+  changes: number | bigint;
+};
+
+export interface SqliteStatement<Row> {
+  get(parameters?: SqliteParameters): Row | undefined;
+  all(parameters?: SqliteParameters): Row[];
+  run(parameters?: SqliteParameters): SqliteRunResult;
+}
+
+export interface SqliteDriver {
   run(sql: string): void;
   query<Row>(sql: string): SqliteStatement<Row>;
   close(): void;
 }
+```
 
-interface SqliteStatement<Row> {
-  get(parameters?: SqliteParameters): Row | undefined;
-  all(parameters?: SqliteParameters): Row[];
-  run(parameters?: SqliteParameters): { changes: number | bigint };
+`@notation/durable/sqlite/bun` and `@notation/durable/sqlite/node` also export their concrete driver classes:
+
+```ts [@notation/durable/sqlite/bun]
+export class BunSqliteDriver implements SqliteDriver {
+  constructor(database: Database);
+  run(sql: string): void;
+  query<Row>(sql: string): SqliteStatement<Row>;
+  close(): void;
 }
 ```
 
-`SqliteParameters` maps names with a `$` prefix, such as `$executionId`, to values. The runtime passes exactly the names that the SQL uses.
+```ts [@notation/durable/sqlite/node]
+export class NodeSqliteDriver implements SqliteDriver {
+  constructor(database: DatabaseSync);
+  run(sql: string): void;
+  query<Row>(sql: string): SqliteStatement<Row>;
+  close(): void;
+}
+```
 
-**The driver must be synchronous.** `SqliteRuntime` runs each transaction as synchronous calls, so that no other code runs inside it. `createSqliteDb` returns a `BunSqliteDriver` from `/sqlite/bun`, and a `NodeSqliteDriver` from `/sqlite/node`.
+Custom drivers must satisfy three requirements:
+
+- **Synchronous execution** – All methods on `SqliteDriver` and `SqliteStatement` must execute synchronously so nothing awaits between `BEGIN IMMEDIATE` and `COMMIT`.
+- **Exact named parameters** – Queries bind `$`-prefixed named keys matching the SQL statement exactly, because native drivers vary on whether unused keys are ignored or throw.
+- **Undefined for missing rows** – `SqliteStatement.get` must return `undefined` rather than `null` when no row matches.

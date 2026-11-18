@@ -1,6 +1,6 @@
 # @notation/durable-conformance
 
-Vitest suites that check a [Durable](https://notation.dev/durable) runtime: its execution, heap, store, effect and join clients, and cancellation.
+Vitest suites that check a [Notation Durable](https://notation.dev/durable) runtime: its execution, heap, store, effect and join clients, and cancellation.
 
 ```sh
 npm install --save-dev @notation/durable-conformance vitest
@@ -25,7 +25,7 @@ registerExecutionClientConformance({
 });
 ```
 
-[Conformance](https://notation.dev/durable/runtime-authors/conformance) lists the five suites and the optional harness fields, with a complete example for `SqliteRuntime`. The [Runtime authors](https://notation.dev/durable/runtime-authors/runtimes) section describes the contract that the suites check.
+[Conformance](https://notation.dev/durable/authoring/conformance) lists the five suites and the optional harness fields, with a complete example for `SqliteRuntime`. The [Authoring](https://notation.dev/durable/authoring/runtimes) section describes the contract that the suites check.
 
 ## License
 
