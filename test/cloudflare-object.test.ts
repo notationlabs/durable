@@ -20,11 +20,13 @@ afterEach(() => {
 function createObject<W extends WorkflowRouter>(
   router: W,
   options?: { concurrency?: number; leaseDuration?: number },
-  fake = createFakeStorage()
+  fake = createFakeStorage(),
+  objectOptions?: Parameters<typeof createFakeObject>[2]
 ) {
   const object = createFakeObject(
     (ctx) => createWorkflowObject(ctx, { router, logger, basePath: "/durable", ...options }),
-    fake
+    fake,
+    objectOptions
   );
   stops.push(object.stop);
   const sdk = createHttpSdkFactory<W>()({
@@ -89,6 +91,65 @@ test("the alarm is set to the end of a delay that follows the first delivery", a
   expect(claimAt).toBeGreaterThan(Date.now() + 4_000);
   await expect.poll(() => fake.alarmAt).toBe(claimAt);
 });
+
+test("an alarm with more due than it can claim does not leave the next alarm late", async () => {
+  const workflow = createWorkflow(async function* (step) {
+    yield* step.run(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      return "ran";
+    });
+    yield* step.delay(300);
+    return "done";
+  });
+  const fake = createFakeStorage();
+
+  // Two executions are due when the alarm fires, and the handler can claim
+  // one. The alarm it sets for the other is at the clock, which in the handler
+  // is the handler's own scheduled time.
+  const admitting = new SqliteRuntime(createSqliteDb(fake.storage));
+  for (const executionId of ["first", "second"]) {
+    await admitting.executions.admit({
+      executionId,
+      workflowId: "workflow",
+      params: undefined,
+      context: new Map(),
+    });
+  }
+  await fake.storage.setAlarm(admitting.executions.nextClaimAt()!);
+
+  const { object, sdk } = createObject({ workflow }, { concurrency: 1 }, fake);
+  const results = await Promise.all(
+    ["first", "second"].map((id) => sdk.wait(id, { timeout: 5_000 }))
+  );
+  expect(results.map((r) => r?.status)).toEqual(["completed", "completed"]);
+  expect(object.failures).toHaveLength(0);
+}, 10_000);
+
+test("after the alarm fails, the object sets it to run again", async () => {
+  const workflow = createWorkflow(async function* (step) {
+    yield* step.delay(400);
+    return yield* step.run(() => "done");
+  });
+  // Cloudflare's six retries take 1.26 s here, and the storage fails for longer.
+  const { object, sdk } = createObject({ workflow }, undefined, undefined, { retryDelay: 20 });
+
+  const { executionId } = await sdk.trigger({ workflowId: "workflow" });
+  await expect
+    .poll(async () => (await sdk.poll(executionId))?.status, { interval: 10 })
+    .toBe("suspended");
+  object.fake.fault = new Error("storage is failing");
+  await expect.poll(() => object.alarms.length, { timeout: 2_000 }).toBeGreaterThanOrEqual(2);
+  await new Promise((resolve) => setTimeout(resolve, 1_500));
+  object.fake.fault = undefined;
+
+  expect(await sdk.wait(executionId, { timeout: 8_000 })).toMatchObject({
+    status: "completed",
+    result: "done",
+  });
+  // `alarm` did not reject, so Cloudflare's retries were never used.
+  expect(object.failures).toHaveLength(0);
+  expect(object.dropped).toBe(0);
+}, 15_000);
 
 test("a write through the local SDK wakes the object", async () => {
   const workflow = createWorkflow(async function* (step) {
