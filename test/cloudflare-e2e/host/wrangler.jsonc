@@ -1,0 +1,13 @@
+{
+  "name": "durable-host",
+  "main": "worker.ts",
+  "compatibility_date": "2026-10-15",
+  "compatibility_flags": ["nodejs_compat"],
+  "durable_objects": {
+    "bindings": [
+      { "name": "WORKFLOWS", "class_name": "Workflows" },
+      { "name": "SHORT_LEASE", "class_name": "ShortLeaseWorkflows" }
+    ]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Workflows", "ShortLeaseWorkflows"] }]
+}

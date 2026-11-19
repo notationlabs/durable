@@ -99,7 +99,15 @@ pnpm exec wrangler dev --port 8799 --var E2E_SECRET:local
 E2E_URL=http://localhost:8799 E2E_SECRET=local node --import tsx run.ts
 ```
 
-`test/cloudflare-e2e/conformance` runs the conformance suites inside workerd with `@cloudflare/vitest-plugin`, which `test/cloudflare-e2e/package.json` installs outside the pnpm workspace.
+Two more suites run inside workerd with `@cloudflare/vitest-plugin`, on real Durable Object storage and alarms. They need no Cloudflare account and no build, and CI runs them in the `workerd` job. `test/cloudflare-e2e/conformance` runs the runtime conformance suites. `test/cloudflare-e2e/host` runs the workflow object's scenarios; its alarms are the ones workerd fires. `test/cloudflare-e2e` is outside the pnpm workspace, so install it with npm first:
+
+```sh
+(cd test/cloudflare-e2e && npm install)
+node ./node_modules/vitest/vitest.mjs run --root test/cloudflare-e2e/conformance
+node ./node_modules/vitest/vitest.mjs run --root test/cloudflare-e2e/host
+```
+
+`test/cloudflare-arm-invariant.test.ts` is part of `pok test`. It runs random sequences of triggers, cancellations, alarms and evictions against the workflow object over the fake storage, and checks that the alarm covers the earliest claim time. A failure prints its seed. `ARM_SEED=<seed>` runs that sequence again, and `ARM_RUNS` sets how many sequences run from that seed.
 
 ### Dev Workflow
 
