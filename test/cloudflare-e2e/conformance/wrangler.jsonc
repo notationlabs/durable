@@ -1,0 +1,10 @@
+{
+  "name": "durable-conformance",
+  "main": "worker.ts",
+  "compatibility_date": "2026-10-15",
+  "compatibility_flags": ["nodejs_compat"],
+  "durable_objects": {
+    "bindings": [{ "name": "CONFORMANCE", "class_name": "ConformanceObject" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["ConformanceObject"] }]
+}

@@ -49,7 +49,7 @@ export default {
 {
   "name": "my-app",
   "main": "src/worker.ts",
-  "compatibility_date": "2026-11-01",
+  "compatibility_date": "2026-10-15",
   "compatibility_flags": ["nodejs_compat"],
   "durable_objects": {
     "bindings": [{ "name": "WORKFLOWS", "class_name": "Workflows" }]
@@ -104,4 +104,16 @@ If Cloudflare evicts the object during a delivery, the delivery's lease expires 
 
 - **No process isolation.** A delivery whose lease is lost cannot be killed. Its abort signal stops it before the next step, and its lease token rejects every later write.
 - **One object, one thread.** Every execution in the object shares one isolate and one database. For more throughput, route by tenant with `idFromName(tenantId)`; executions in different objects cannot join each other or share stores.
-- **Keyless steps and deploys.** A step without a key is keyed by the position of its call site in the bundled Worker. A deploy that moves that position changes the key, so an execution suspended across the deploy runs the step again. Give steps explicit keys in workflows that outlive a deploy.
+- **Long deliveries.** The object stays in memory while a step is pending, and Cloudflare bills that time. `alarm` returns after five minutes if deliveries are still in flight, because Cloudflare stops an alarm handler after 15 minutes; the deliveries carry on.
+
+## Keyless steps and deploys
+
+**Give every step an explicit key in a workflow that can be suspended across a deploy.** A step without a key is keyed by the file, line and column of its call site, and in a Worker that is a position in the bundled output. A deploy that moves the position changes the key. An execution that was suspended before the deploy then finds no record under the new key:
+
+| Step | After a deploy that moves its call site |
+| :--- | :--- |
+| Keyed `step.run("charge", …)` | Replays its recorded result |
+| Keyless `step.run(…)` | Runs again |
+| Keyless `step.delay(300_000)` | Starts a new delay of the full length |
+
+The execution does not fail and logs no error. `wrangler dev` has the same effect on every restart, because the bundle path in the call site includes a temporary directory.
