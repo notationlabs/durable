@@ -42,6 +42,10 @@
       "types": "./dist/sqlite-node.d.ts",
       "import": "./dist/sqlite-node.js"
     },
+    "./cloudflare": {
+      "types": "./dist/cloudflare.d.ts",
+      "import": "./dist/cloudflare.js"
+    },
     "./testing": {
       "types": "./dist/testing.d.ts",
       "import": "./dist/testing.js"

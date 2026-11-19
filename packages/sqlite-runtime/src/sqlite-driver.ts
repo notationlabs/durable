@@ -26,5 +26,13 @@ export interface SqliteStatement<Row> {
 export interface SqliteDriver {
   run(sql: string): void;
   query<Row>(sql: string): SqliteStatement<Row>;
+  /**
+   * Runs `fn` in one write transaction: it commits when `fn` returns and
+   * rolls back when `fn` throws. Implement it when the database does not
+   * accept `BEGIN` and `COMMIT` as statements, as Durable Object storage does
+   * not. When absent, the runtime runs `BEGIN IMMEDIATE`, `COMMIT` and
+   * `ROLLBACK` through `run`.
+   */
+  transaction?<R>(fn: () => R): R;
   close(): void;
 }
