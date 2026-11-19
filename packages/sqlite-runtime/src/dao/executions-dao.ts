@@ -177,6 +177,17 @@ export class ExecutionsDao {
       .map((row) => row.execution_id);
   }
 
+  /** The earliest `next_claim_at` of any execution, or null when none is waiting to be claimed. */
+  getEarliestClaimAt(): number | null {
+    const row = this.db
+      .query<{ next_claim_at: number | null }>(
+        `SELECT MIN(next_claim_at) AS next_claim_at FROM executions
+         WHERE next_claim_at IS NOT NULL`
+      )
+      .get();
+    return row?.next_claim_at == null ? null : Number(row.next_claim_at);
+  }
+
   /**
    * Up to `limit + 1` executions that match the request, newest first. `now`
    * is used to decide which executions are `running`. Only the conditions the

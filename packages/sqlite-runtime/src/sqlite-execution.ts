@@ -306,6 +306,17 @@ export class SqliteExecutionClient implements ExecutionClient {
   }
 
   /**
+   * The earliest time at which `claimDue` could return an execution, as a
+   * millisecond Unix timestamp, or null when no execution is waiting. It may
+   * be in the past. For an execution with a live lease it is the time the
+   * lease expires plus the redelivery delay. A host that claims on a timer
+   * instead of polling, such as a Durable Object alarm, sets the timer to it.
+   */
+  nextClaimAt(): number | null {
+    return this.executionsDao.getEarliestClaimAt();
+  }
+
+  /**
    * Applies a fenced transition in one transaction. The transition checks the
    * lease against the stored token, so the check and the write are atomic.
    */
