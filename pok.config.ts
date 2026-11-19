@@ -17,6 +17,7 @@ export default defineConfig({
         versionOnly("package.json"),
         published("durable"),
         published("durable-conformance"),
+        versionOnly("packages/cloudflare/package.json"),
         versionOnly("packages/core/package.json"),
         versionOnly("packages/http-server/package.json"),
         versionOnly("packages/runtime-conformance/package.json"),

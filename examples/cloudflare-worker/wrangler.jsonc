@@ -1,0 +1,11 @@
+{
+  "name": "durable-example",
+  "main": "worker.ts",
+  "compatibility_date": "2026-10-15",
+  // The SDK imports node:events and node:crypto.
+  "compatibility_flags": ["nodejs_compat"],
+  "durable_objects": {
+    "bindings": [{ "name": "WORKFLOWS", "class_name": "Workflows" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Workflows"] }]
+}

@@ -27,6 +27,7 @@ Each folder in `packages/` is a private workspace package named `@durable/<folde
 - `packages/sdk` – The workflow API, the step runner, and the local and HTTP SDKs
 - `packages/http-server` – HTTP route handlers and middleware
 - `packages/sqlite-runtime` – `SqliteRuntime`, with the Bun and Node drivers
+- `packages/cloudflare` – The SQLite driver for Durable Object storage, and the workflow object that claims on the object's alarm
 - `packages/worker-invoker` – The invoker that runs each delivery in a worker process, and the worker
 - `packages/runtime-conformance` – Qualification suites for runtimes
 - `packages/test-runtime` – `MemoryRuntime`, which keeps its records in memory
@@ -69,7 +70,7 @@ This runs the `build` script of each published package, then type-checks `exampl
 
 Each published package has a `tsup.config.ts` that bundles the source of the private packages it ships:
 
-- `@notation/durable` bundles `sdk`, `core`, `http-server`, `worker-invoker`, `sqlite-runtime`, and for `/testing`, `test-utils`, `test-runtime` and `test-invoker`. Each export path is one tsup entry. Code shared between entries goes into shared chunks, so every export path uses the same classes.
+- `@notation/durable` bundles `sdk`, `core`, `http-server`, `worker-invoker`, `sqlite-runtime`, `cloudflare`, and for `/testing`, `test-utils`, `test-runtime` and `test-invoker`. Each export path is one tsup entry. Code shared between entries goes into shared chunks, so every export path uses the same classes.
 - `@notation/durable-conformance` bundles `runtime-conformance`. A `paths` entry in its `tsconfig.json` resolves `@durable/core` to `src/runtime.ts`, which re-exports `@notation/durable/runtime`. The suites then use the classes in the user's copy of `@notation/durable`. This package builds after `@notation/durable`, because its declarations import the built `@notation/durable`.
 
 Both builds fail if bundled code imports a third-party package that the published `package.json` does not declare (`scripts/declared-imports.ts`).
@@ -88,6 +89,25 @@ pok test conformance
 Local development runs on Bun. Some tests start child processes that import the private packages, and Node cannot resolve the extensionless imports in their source. CI also runs the suite under Node, with `NODE_OPTIONS=--import tsx` so that the suite and its child processes load the source through tsx.
 
 `pok test conformance` builds nothing itself. Run `pok build` first. It packs both published packages, installs them in an empty project and runs every conformance suite under Node against the published SQLite runtime. It covers `@notation/durable/runtime`, `@notation/durable/sqlite/node` and `@notation/durable-conformance` as installed from the tarballs.
+
+The Cloudflare scenarios in `test/cloudflare-e2e` are not part of `pok test`. They run a test Worker on local workerd, or on a deployed Worker, against the built package:
+
+```sh
+pok build
+cd test/cloudflare-e2e
+pnpm exec wrangler dev --port 8799 --var E2E_SECRET:local
+E2E_URL=http://localhost:8799 E2E_SECRET=local node --import tsx run.ts
+```
+
+Two more suites run inside workerd with `@cloudflare/vitest-plugin`, on real Durable Object storage and alarms. They need no Cloudflare account and no build, and CI runs them in the `workerd` job. `test/cloudflare-e2e/conformance` runs the runtime conformance suites. `test/cloudflare-e2e/host` runs the workflow object's scenarios; its alarms are the ones workerd fires. `test/cloudflare-e2e` is outside the pnpm workspace, so install it with npm first:
+
+```sh
+(cd test/cloudflare-e2e && npm install)
+node ./node_modules/vitest/vitest.mjs run --root test/cloudflare-e2e/conformance
+node ./node_modules/vitest/vitest.mjs run --root test/cloudflare-e2e/host
+```
+
+`test/cloudflare-arm-invariant.test.ts` is part of `pok test`. It runs random sequences of triggers, cancellations, alarms and evictions against the workflow object over the fake storage, and checks that the alarm covers the earliest claim time. A failure prints its seed. `ARM_SEED=<seed>` runs that sequence again, and `ARM_RUNS` sets how many sequences run from that seed.
 
 ### Dev Workflow
 

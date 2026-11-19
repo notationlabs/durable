@@ -1,6 +1,6 @@
 # Architecture
 
-Notation Durable separates contracts, workflow execution, HTTP serving, worker isolation, SQLite storage, and conformance suites into nine private `@durable/*` workspace packages. At publish time, `tsup` bundles those packages into `@notation/durable` and `@notation/durable-conformance` so applications and workers share one runtime identity.
+Notation Durable separates contracts, workflow execution, HTTP serving, worker isolation, SQLite storage, Cloudflare hosting, and conformance suites into ten private `@durable/*` workspace packages. At publish time, `tsup` bundles those packages into `@notation/durable` and `@notation/durable-conformance` so applications and workers share one runtime identity.
 
 ## Workspace packages
 
@@ -12,6 +12,7 @@ flowchart TD
   PUB_DURABLE --> HTTP["@durable/http-server"]
   PUB_DURABLE --> WORKER["@durable/worker-invoker"]
   PUB_DURABLE --> SQLITE["@durable/sqlite-runtime"]
+  PUB_DURABLE --> CF["@durable/cloudflare"]
   PUB_DURABLE --> TEST_UTILS["@durable/test-utils"]
   PUB_DURABLE --> CORE["@durable/core"]
   PUB_CONF["@notation/durable-conformance"] --> CONF["@durable/runtime-conformance"]
@@ -22,6 +23,9 @@ flowchart TD
   HTTP --> CORE
   WORKER --> CORE
   SQLITE --> CORE
+  CF --> SQLITE
+  CF --> HTTP
+  CF --> CORE
   TEST_RT --> CORE
   TEST_INV --> CORE
   CONF --> CORE
@@ -34,6 +38,7 @@ flowchart TD
 | `@durable/http-server` | Framework-agnostic trigger, poll, wait, list, and cancel HTTP handlers |
 | `@durable/worker-invoker` | Child-process worker launcher, IPC protocol, and orphan exit handling |
 | `@durable/sqlite-runtime` | SQLite schema, runtime clients, and `bun:sqlite` or `node:sqlite` drivers |
+| `@durable/cloudflare` | Durable Object SQLite driver and the alarm-driven workflow object |
 | `@durable/test-runtime` | In-memory `Runtime` implementation with a controllable clock |
 | `@durable/test-invoker` | In-process `WorkflowInvoker` driving `WorkflowRunner` without spawning workers |
 | `@durable/test-utils` | Test harness combining `MemoryRuntime`, in-process invoker, and `createTestSdk` |
@@ -41,7 +46,7 @@ flowchart TD
 
 ## Published entrypoints
 
-The `@notation/durable` package compiles nine ESM entrypoints with code splitting enabled so internal workspace packages share common chunks inside one distribution. External dependencies such as Standard Schema, Pino, Vitest, and host SQLite bindings remain external imports.
+The `@notation/durable` package compiles ten ESM entrypoints with code splitting enabled so internal workspace packages share common chunks inside one distribution. External dependencies such as Standard Schema, Pino, Vitest, and host SQLite bindings remain external imports.
 
 | Entrypoint | Responsibility |
 | :--- | :--- |
@@ -53,6 +58,7 @@ The `@notation/durable` package compiles nine ESM entrypoints with code splittin
 | `@notation/durable/sqlite` | `SqliteRuntime` and SQLite client implementations for custom drivers |
 | `@notation/durable/sqlite/bun` | SQLite runtime and `createSqliteDb` backed by `bun:sqlite` |
 | `@notation/durable/sqlite/node` | SQLite runtime and `createSqliteDb` backed by `node:sqlite` |
+| `@notation/durable/cloudflare` | `createWorkflowObject` and the SQLite driver for Durable Object storage |
 | `@notation/durable/testing` | `MemoryRuntime`, in-process invoker, and `createTestSdk` |
 | `@notation/durable-conformance` | Published Vitest runtime conformance suites |
 

@@ -42,11 +42,18 @@ export function createHttpSdkFactory<W extends WorkflowRouter>() {
   return (params: {
     url: string;
     fetchOptions?: Omit<RequestInit, "body" | "method">;
+    /**
+     * Sends each request. Pass a function that calls a Durable Object stub's
+     * `fetch` to reach routes that the object serves.
+     * @default the global `fetch`
+     */
+    fetch?: (input: string, init: RequestInit) => Promise<Response>;
   }) => {
+    const send = params.fetch ?? ((input, init) => fetch(input, init));
     const post = (route: string, body: string, signal?: AbortSignal) => {
       const headers = new Headers(params.fetchOptions?.headers);
       headers.set("content-type", "application/json");
-      return fetch(`${params.url}/${route}`, {
+      return send(`${params.url}/${route}`, {
         ...params.fetchOptions,
         method: "POST",
         headers,

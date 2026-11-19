@@ -95,6 +95,25 @@ importers:
         specifier: ^11.3.0
         version: 11.3.0
 
+  packages/cloudflare:
+    dependencies:
+      '@durable/core':
+        specifier: workspace:*
+        version: link:../core
+      '@durable/http-server':
+        specifier: workspace:*
+        version: link:../http-server
+      '@durable/sqlite-runtime':
+        specifier: workspace:*
+        version: link:../sqlite-runtime
+      pino:
+        specifier: ^9.14.0
+        version: 9.14.0
+    devDependencies:
+      '@types/node':
+        specifier: ^22.20.5
+        version: 22.20.5
+
   packages/core:
     dependencies:
       '@standard-schema/spec':
@@ -268,6 +287,9 @@ importers:
 
   test:
     dependencies:
+      '@durable/cloudflare':
+        specifier: workspace:*
+        version: link:../packages/cloudflare
       '@durable/core':
         specifier: workspace:*
         version: link:../packages/core

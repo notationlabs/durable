@@ -83,6 +83,8 @@ export type SqliteExecutionClientOptions = {
 
 export class SqliteExecutionClient implements ExecutionClient {
   constructor(db: SqliteDriver, options?: SqliteExecutionClientOptions);
+  // The earliest time claimDue could return an execution, or null.
+  nextClaimAt(): number | null;
 }
 
 export class SqliteEffectClient implements EffectClient {
@@ -143,9 +145,12 @@ export interface SqliteStatement<Row> {
 export interface SqliteDriver {
   run(sql: string): void;
   query<Row>(sql: string): SqliteStatement<Row>;
+  transaction?<R>(fn: () => R): R;
   close(): void;
 }
 ```
+
+`transaction` is optional. A driver without it gets `BEGIN IMMEDIATE`, `COMMIT` and `ROLLBACK` through `run`. A driver whose database rejects those statements implements `transaction` to commit when `fn` returns and roll back when `fn` throws; the [Durable Object driver](./cloudflare.md) does.
 
 `@notation/durable/sqlite/bun` and `@notation/durable/sqlite/node` also export their concrete driver classes:
 
@@ -169,6 +174,6 @@ export class NodeSqliteDriver implements SqliteDriver {
 
 Custom drivers must satisfy three requirements:
 
-- **Synchronous execution** – All methods on `SqliteDriver` and `SqliteStatement` must execute synchronously so nothing awaits between `BEGIN IMMEDIATE` and `COMMIT`.
+- **Synchronous execution** – All methods on `SqliteDriver` and `SqliteStatement` must execute synchronously so nothing awaits between `BEGIN IMMEDIATE` and `COMMIT`, or inside `transaction`.
 - **Exact named parameters** – Queries bind `$`-prefixed named keys matching the SQL statement exactly, because native drivers vary on whether unused keys are ignored or throw.
 - **Undefined for missing rows** – `SqliteStatement.get` must return `undefined` rather than `null` when no row matches.
