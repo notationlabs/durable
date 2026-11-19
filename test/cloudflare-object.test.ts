@@ -1,0 +1,150 @@
+import pino from "pino";
+import { afterEach, expect, test } from "vitest";
+import {
+  createSqliteDb,
+  createWorkflowObject,
+  toPositionalSql,
+} from "@durable/cloudflare";
+import { SqliteRuntime } from "@durable/sqlite-runtime";
+import { createHttpSdkFactory, createLocalSdk, createWorkflow } from "@durable/sdk";
+import type { WorkflowRouter } from "@durable/core";
+import { createFakeObject, createFakeStorage } from "./durable-object-storage";
+
+const logger = pino({ level: "silent" });
+const stops: (() => void)[] = [];
+
+afterEach(() => {
+  for (const stop of stops.splice(0)) stop();
+});
+
+function createObject<W extends WorkflowRouter>(
+  router: W,
+  options?: { concurrency?: number; leaseDuration?: number },
+  fake = createFakeStorage()
+) {
+  const object = createFakeObject(
+    (ctx) => createWorkflowObject(ctx, { router, logger, basePath: "/durable", ...options }),
+    fake
+  );
+  stops.push(object.stop);
+  const sdk = createHttpSdkFactory<W>()({
+    url: "http://object/durable",
+    fetch: (input, init) => object.host.fetch(new Request(input, init)),
+  });
+  return { object, sdk };
+}
+
+test("toPositionalSql lists a repeated parameter once per use", () => {
+  expect(
+    toPositionalSql("SELECT '$x' AS a WHERE b = $now OR c = $id OR d <= $now")
+  ).toEqual({
+    sql: "SELECT '$x' AS a WHERE b = ? OR c = ? OR d <= ?",
+    names: ["$now", "$id", "$now"],
+  });
+});
+
+test("a trigger over the object's routes runs the workflow without an alarm firing late", async () => {
+  const workflow = createWorkflow(async function* (step, event: { params: { n: number } }) {
+    const doubled = yield* step.run(() => event.params.n * 2);
+    return doubled + 1;
+  });
+  const { object, sdk } = createObject({ workflow });
+
+  const execution = await sdk.trigger({ workflowId: "workflow", params: { n: 20 } });
+  expect(await execution.waitForResult()).toBe(41);
+  // Nothing is left to claim, so the alarm is deleted.
+  await expect.poll(() => object.fake.alarmAt).toBeNull();
+});
+
+test("a delay ends the pump, and the alarm resumes the workflow", async () => {
+  const workflow = createWorkflow(async function* (step) {
+    const before = yield* step.run(() => Date.now());
+    yield* step.delay(60);
+    const after = yield* step.run(() => Date.now());
+    return after - before;
+  });
+  const { object, sdk } = createObject({ workflow });
+
+  const execution = await sdk.trigger({ workflowId: "workflow" });
+  expect(await execution.waitForResult()).toBeGreaterThanOrEqual(55);
+  expect(object.alarms.length).toBeGreaterThanOrEqual(1);
+});
+
+test("a write through the local SDK wakes the object", async () => {
+  const workflow = createWorkflow(async function* (step) {
+    return yield* step.run(() => "done");
+  });
+  const { object } = createObject({ workflow });
+  const local = createLocalSdk<{ workflow: typeof workflow }>(object.host.runtime, {
+    invoker: object.host.invoker,
+  });
+
+  expect(await local.triggerAndWait({ workflowId: "workflow" })).toBe("done");
+});
+
+test("more executions than slots all run", async () => {
+  let running = 0;
+  let peak = 0;
+  const workflow = createWorkflow(async function* (step, event: { params: { n: number } }) {
+    return yield* step.run(async () => {
+      peak = Math.max(peak, ++running);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      running--;
+      return event.params.n;
+    });
+  });
+  const { sdk } = createObject({ workflow }, { concurrency: 2 });
+
+  const executions = await Promise.all(
+    [1, 2, 3, 4, 5, 6].map((n) => sdk.trigger({ workflowId: "workflow", params: { n } }))
+  );
+  const results = await Promise.all(executions.map((e) => e.waitForResult()));
+  expect(results).toEqual([1, 2, 3, 4, 5, 6]);
+  expect(peak).toBe(2);
+});
+
+test("a parent joins a child started in the same object", async () => {
+  const child = createWorkflow(async function* (step, event: { params: { n: number } }) {
+    yield* step.delay(20);
+    return event.params.n * 3;
+  });
+  const parent = createWorkflow(async function* (step) {
+    const { executionId } = yield* step.start("start-child", {
+      workflowId: "child",
+      params: { n: 7 },
+    });
+    return yield* step.join("join-child", executionId);
+  });
+  const { sdk } = createObject({ child, parent });
+
+  const execution = await sdk.trigger({ workflowId: "parent" });
+  expect(await execution.waitForResult()).toBe(21);
+});
+
+test("after an eviction during a delivery, the alarm delivers the execution again", async () => {
+  const workflow = createWorkflow(async function* (step) {
+    return yield* step.run(() => "delivered");
+  });
+  const fake = createFakeStorage();
+
+  // An object that claimed the execution and was then evicted: the lease is
+  // held, and the alarm is set to when the execution can be claimed again.
+  const evicted = new SqliteRuntime(createSqliteDb(fake.storage));
+  await evicted.executions.admit({
+    executionId: "held",
+    workflowId: "workflow",
+    params: undefined,
+    context: new Map(),
+  });
+  expect(await evicted.executions.claimDue({ limit: 1, duration: 30 })).toHaveLength(1);
+  await fake.storage.setAlarm(evicted.executions.nextClaimAt()!);
+
+  const { object, sdk } = createObject({ workflow }, undefined, fake);
+  expect(await sdk.poll("held")).toMatchObject({ status: "running" });
+
+  expect(await sdk.wait("held", { timeout: 5_000 })).toMatchObject({
+    status: "completed",
+    result: "delivered",
+  });
+  expect(object.alarms).toHaveLength(1);
+}, 10_000);
