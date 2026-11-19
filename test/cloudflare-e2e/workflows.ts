@@ -146,6 +146,17 @@ const inflight = workflow<Tagged & { ms: number }>(async function* (step, event)
   return r;
 });
 
+// Like `inflight`, but the hold starts after a delay, so the alarm handler
+// starts the delivery and is still waiting on it when the hold is long.
+const alarmHold = workflow<Tagged & { ms: number }>(async function* (step, event) {
+  yield* step.delay("before-hold", 3_000);
+  return yield* step.run("hold", async () => {
+    const attempt = bump(`${event.params.tag}:hold`);
+    await sleep(event.params.ms);
+    return { attempt, at: Date.now() };
+  });
+});
+
 export const router = createWorkflowRouter({
   steps,
   throws,
@@ -157,6 +168,7 @@ export const router = createWorkflowRouter({
   opener,
   fetcher,
   inflight,
+  alarmHold,
 });
 
 export type Router = typeof router;

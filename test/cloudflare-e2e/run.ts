@@ -280,6 +280,44 @@ const scenarios: Record<string, () => Promise<unknown>> = {
     };
   },
 
+  // A delivery started by the alarm that runs longer than the alarm handler
+  // waits. With `E2E_SAMPLE_MS` it reads the alarm time at that interval;
+  // without it, it sends no request until the hold should have ended.
+  async alarmHold() {
+    const tag = `alarmhold-${Date.now()}`;
+    const ms = Number(process.env.E2E_HOLD_MS ?? 17 * 60_000);
+    const sampleMs = Number(process.env.E2E_SAMPLE_MS ?? 0);
+    const t0 = Date.now();
+    const ack = await sdk.trigger({ workflowId: "alarmHold", params: { tag, ms } });
+    const samples: { t: number; alarm: number | null; nextClaimAt: number | null }[] = [];
+    const end = t0 + 3_000 + ms + 30_000;
+    if (sampleMs > 0) {
+      while (Date.now() < end) {
+        await sleep(sampleMs);
+        const state = await debug("/debug/state");
+        samples.push({
+          t: Date.now() - t0,
+          alarm: state.alarm && state.alarm - t0,
+          nextClaimAt: state.nextClaimAt && state.nextClaimAt - t0,
+        });
+      }
+    } else {
+      await sleep(end - Date.now());
+    }
+    const view = await sdk.poll(ack.executionId);
+    const log = await debug("/debug/log");
+    const counts = await sql("SELECT * FROM e2e_counters WHERE name LIKE ?", `${tag}:%`);
+    check(view?.status === "completed", `status ${view?.status}`);
+    return {
+      attempt: (view as any).result.attempt,
+      finishedAfterMs: (view as any).result.at - t0,
+      counts,
+      alarmValues: [...new Set(samples.map((s) => s.alarm))],
+      samples: samples.length,
+      log: log.map((l: any) => ({ t: l.at - t0, i: `${l.isolate}/${l.instance}`, e: l.event })),
+    };
+  },
+
   // A long delay that should resume from the alarm alone.
   async longDelay() {
     const tag = `long-${Date.now()}`;
