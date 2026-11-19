@@ -37,6 +37,12 @@ export type WorkflowObjectOptions<Router extends WorkflowRouter> = {
 /** The shortest wait before claiming again while deliveries are in flight. */
 const MIN_CLAIM_DELAY = 10;
 
+/**
+ * The longest `alarm` waits for deliveries. Cloudflare stops an alarm handler
+ * after 15 minutes. Deliveries still in flight carry on after it returns.
+ */
+const MAX_ALARM_WAIT = 5 * 60_000;
+
 const consoleLogger = {
   info: (...args: unknown[]) => console.log(...args),
   warn: (...args: unknown[]) => console.warn(...args),
@@ -100,23 +106,32 @@ export function createWorkflowObject<Router extends WorkflowRouter>(
   // The time the alarm is set to, null when it is deleted, and undefined when
   // unknown: after a restart, a failed write, or the alarm firing.
   let armedAt: number | null | undefined;
+  // The earliest claim time when it was last read.
+  let claimAt: number | null | undefined;
   let requested = false;
   let nudge: (() => void) | undefined;
   let pumping: Promise<void> | undefined;
 
-  // Sets the alarm to the earliest claim time when that time has changed.
-  // Returns whether it changed.
+  // Keeps the alarm at or before the earliest claim time, and returns whether
+  // that time has changed since the last call. The alarm is not moved later:
+  // each lease renewal moves the claim time later, and writing the alarm for
+  // each one costs more than letting it fire early and be set again.
   const arm = () => {
     const at = runtime.executions.nextClaimAt();
-    if (at === armedAt) return false;
-    armedAt = at;
-    const write =
-      at === null ? storage.deleteAlarm() : storage.setAlarm(Math.max(at, Date.now()));
-    write.catch((err) => {
-      armedAt = undefined;
-      logger.error({ err }, "Failed to set the Durable Object alarm");
-    });
-    return true;
+    const changed = at !== claimAt;
+    claimAt = at;
+    const covered =
+      at === null ? armedAt === null : typeof armedAt === "number" && armedAt <= at;
+    if (!covered) {
+      armedAt = at;
+      const write =
+        at === null ? storage.deleteAlarm() : storage.setAlarm(Math.max(at, Date.now()));
+      write.catch((err) => {
+        armedAt = undefined;
+        logger.error({ err }, "Failed to set the Durable Object alarm");
+      });
+    }
+    return changed;
   };
 
   const pump = () => {
@@ -184,14 +199,24 @@ export function createWorkflowObject<Router extends WorkflowRouter>(
     },
 
     /**
-     * Claims what is due and resolves when no delivery is in flight, so the
-     * object stays in memory while deliveries run. A rejection makes
-     * Cloudflare run the alarm again.
+     * Claims what is due, and resolves when no delivery is in flight or after
+     * `MAX_ALARM_WAIT`, so the object stays in memory while deliveries run. A
+     * rejection makes Cloudflare run the alarm again.
      */
     async alarm(): Promise<void> {
       // Cloudflare clears the alarm before it calls the handler.
       armedAt = undefined;
-      await pump();
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await Promise.race([
+          pump(),
+          new Promise<void>((resolve) => {
+            timer = setTimeout(resolve, MAX_ALARM_WAIT);
+          }),
+        ]);
+      } finally {
+        clearTimeout(timer);
+      }
       arm();
     },
   };

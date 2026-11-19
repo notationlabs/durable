@@ -90,6 +90,17 @@ Local development runs on Bun. Some tests start child processes that import the 
 
 `pok test conformance` builds nothing itself. Run `pok build` first. It packs both published packages, installs them in an empty project and runs every conformance suite under Node against the published SQLite runtime. It covers `@notation/durable/runtime`, `@notation/durable/sqlite/node` and `@notation/durable-conformance` as installed from the tarballs.
 
+The Cloudflare scenarios in `test/cloudflare-e2e` are not part of `pok test`. They run a test Worker on local workerd, or on a deployed Worker, against the built package:
+
+```sh
+pok build
+cd test/cloudflare-e2e
+pnpm exec wrangler dev --port 8799 --var E2E_SECRET:local
+E2E_URL=http://localhost:8799 E2E_SECRET=local node --import tsx run.ts
+```
+
+`test/cloudflare-e2e/conformance` runs the conformance suites inside workerd with `@cloudflare/vitest-plugin`, which `test/cloudflare-e2e/package.json` installs outside the pnpm workspace.
+
 ### Dev Workflow
 
 Run type checking and tests in watch mode:
