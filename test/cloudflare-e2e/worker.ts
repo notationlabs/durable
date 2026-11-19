@@ -10,7 +10,10 @@ type Storage = {
   setAlarm(at: number | Date): Promise<void>;
   deleteAlarm(): Promise<void>;
   getAlarm(): Promise<number | null>;
+  sync(): Promise<void>;
 };
+type AlarmInfo = { retryCount: number; isRetry: boolean };
+type AlarmProbe = { case: string; t: number; peek: boolean; hold: number; n: number };
 type State = {
   storage: Storage;
   waitUntil(promise: Promise<unknown>): void;
@@ -282,8 +285,28 @@ export class Probe {
         await storage.setAlarm(Date.now());
         return json({ ok: true });
       }
+      case "/probe/alarm-case": {
+        // Sets the alarm `delay` ms ahead. The alarm handler then does what
+        // `case` names on its first run, and nothing on later runs.
+        sql.exec("CREATE TABLE IF NOT EXISTS cfg (k TEXT PRIMARY KEY, v TEXT)");
+        const probe: AlarmProbe = {
+          case: url.searchParams.get("case") ?? "untouched",
+          t: Date.now() + Number(url.searchParams.get("delay") ?? 2000),
+          peek: url.searchParams.has("peek"),
+          hold: Number(url.searchParams.get("hold") ?? 0),
+          n: 0,
+        };
+        sql.exec(
+          "INSERT INTO cfg (k, v) VALUES ('probe', ?) ON CONFLICT (k) DO UPDATE SET v = excluded.v",
+          JSON.stringify(probe)
+        );
+        log(storage, this.instance, "probe-armed", probe);
+        await storage.setAlarm(probe.t);
+        return json(probe);
+      }
       case "/probe/state":
         return json({
+          now: Date.now(),
           isolateId: isolateId(),
           instance: this.instance,
           alarm: await storage.getAlarm(),
@@ -298,7 +321,101 @@ export class Probe {
     return new Response("Not found", { status: 404 });
   }
 
-  async alarm() {
+  // Returns false when no alarm probe is configured.
+  private async runAlarmProbe(info: AlarmInfo | undefined): Promise<boolean> {
+    const { storage } = this.ctx;
+    const sql = storage.sql;
+    const now = Date.now();
+    let probe: AlarmProbe | undefined;
+    try {
+      const row = sql.exec("SELECT v FROM cfg WHERE k = 'probe'").toArray()[0];
+      probe = row && JSON.parse(row.v);
+    } catch {}
+    if (!probe) return false;
+    const n = ++probe.n;
+    sql.exec("UPDATE cfg SET v = ? WHERE k = 'probe'", JSON.stringify(probe));
+    const { t } = probe;
+    const detail: Record<string, unknown> = {
+      case: probe.case,
+      n,
+      t,
+      now,
+      retryCount: info?.retryCount,
+      isRetry: info?.isRetry,
+    };
+    if (probe.peek) detail.before = await storage.getAlarm();
+    const fail = async () => {
+      log(storage, this.instance, "probe-run", detail);
+      await storage.sync();
+      throw new Error(`alarm probe ${probe.case} run ${n}`);
+    };
+    switch (probe.case) {
+      case "fail":
+        return fail();
+      case "fail-once":
+        if (n === 1) return fail();
+        break;
+      case "fail-set":
+        if (n <= 8) {
+          detail.setTo = now + 5000;
+          await storage.setAlarm(now + 5000);
+          return fail();
+        }
+        break;
+    }
+    if (n === 1) {
+      const set = async (at: number) => {
+        detail.setTo = at;
+        await storage.setAlarm(at);
+      };
+      switch (probe.case) {
+        case "same":
+          await set(t);
+          break;
+        case "same-unawaited":
+          // As the workflow object does it: not awaited, with writes after it.
+          detail.setTo = t;
+          void storage.setAlarm(t);
+          storage.transactionSync(() => log(storage, this.instance, "probe-write"));
+          break;
+        case "same-plus-1":
+          await set(t + 1);
+          break;
+        case "max-t-now":
+          await set(Math.max(t, Date.now()));
+          break;
+        case "now":
+          await set(Date.now());
+          break;
+        case "now-plus-1000":
+          await set(Date.now() + 1000);
+          break;
+        case "past":
+          await set(Date.now() - 5000);
+          break;
+        case "writes-only":
+          storage.transactionSync(() => {
+            log(storage, this.instance, "probe-write");
+            log(storage, this.instance, "probe-write");
+          });
+          await new Promise((resolve) => setTimeout(resolve, 50));
+          log(storage, this.instance, "probe-write");
+          break;
+        case "same-then-later":
+          await set(t);
+          await set(Date.now() + 2000);
+          break;
+      }
+      if (probe.peek) detail.after = await storage.getAlarm();
+      if (probe.hold) await new Promise((resolve) => setTimeout(resolve, probe.hold));
+      detail.end = Date.now();
+    }
+    log(storage, this.instance, "probe-run", detail);
+    return true;
+  }
+
+  async alarm(info?: AlarmInfo) {
+    if (await this.runAlarmProbe(info)) return;
     const { storage } = this.ctx;
     const sql = storage.sql;
     log(storage, this.instance, "alarm-start");

@@ -49,6 +49,13 @@ const MAX_ALARM_WAIT = 5 * 60_000;
  */
 const ALARM_MARGIN = 1_000;
 
+/**
+ * The wait before the alarm runs again after `alarm` fails. Each failure in a
+ * row doubles the wait, up to `MAX_ALARM_RETRY_DELAY`.
+ */
+const ALARM_RETRY_DELAY = 500;
+const MAX_ALARM_RETRY_DELAY = 60_000;
+
 const consoleLogger = {
   info: (...args: unknown[]) => console.log(...args),
   warn: (...args: unknown[]) => console.warn(...args),
@@ -112,6 +119,9 @@ export function createWorkflowObject<Router extends WorkflowRouter>(
   // The time the alarm is set to, null when it is deleted, and undefined when
   // unknown: after a restart, a failed write, or the alarm firing.
   let armedAt: number | null | undefined;
+  // After `alarm` fails, the alarm is not set earlier than this.
+  let retryAt = 0;
+  let alarmFailures = 0;
   // The earliest claim time when it was last read.
   let claimAt: number | null | undefined;
   let requested = false;
@@ -122,8 +132,10 @@ export function createWorkflowObject<Router extends WorkflowRouter>(
   // has changed since the last call. An alarm that is already set, earlier
   // than the claim time and still ahead of the clock is left alone: each lease
   // renewal moves the claim time later, and the alarm sets itself again when
-  // it fires. An alarm at or behind the clock is always written, because one
-  // set inside the alarm handler to the handler's own time did not fire.
+  // it fires. An alarm at or behind the clock is always written, and never at
+  // the clock itself: on Cloudflare an alarm set inside the alarm handler to
+  // the handler's own scheduled time fires up to a minute late, and the clock
+  // in the handler often reads that time. One millisecond later fires on time.
   const arm = () => {
     const at = runtime.executions.nextClaimAt();
     const changed = at !== claimAt;
@@ -137,7 +149,9 @@ export function createWorkflowObject<Router extends WorkflowRouter>(
     if (!covered) {
       armedAt = at;
       const write =
-        at === null ? storage.deleteAlarm() : storage.setAlarm(Math.max(at, Date.now()));
+        at === null
+          ? storage.deleteAlarm()
+          : storage.setAlarm(Math.max(at, Date.now() + 1, retryAt));
       write.catch((err) => {
         armedAt = undefined;
         logger.error({ err }, "Failed to set the Durable Object alarm");
@@ -176,6 +190,9 @@ export function createWorkflowObject<Router extends WorkflowRouter>(
       });
       clearTimeout(timer);
       nudge = undefined;
+      // Claim again after every wait. A delivery that settles frees a slot,
+      // and an execution that was due with every slot busy is still due.
+      requested = true;
     }
   };
 
@@ -212,8 +229,11 @@ export function createWorkflowObject<Router extends WorkflowRouter>(
 
     /**
      * Claims what is due, and resolves when no delivery is in flight or after
-     * `MAX_ALARM_WAIT`, so the object stays in memory while deliveries run. A
-     * rejection makes Cloudflare run the alarm again.
+     * `MAX_ALARM_WAIT`, so the object stays in memory while deliveries run.
+     *
+     * Cloudflare runs a rejected alarm handler again six times and then drops
+     * the alarm. So a failure here is logged and the alarm is set to a later
+     * time, and `alarm` rejects only if that write fails too.
      */
     async alarm(): Promise<void> {
       // Cloudflare clears the alarm before it calls the handler.
@@ -226,10 +246,22 @@ export function createWorkflowObject<Router extends WorkflowRouter>(
             timer = setTimeout(resolve, MAX_ALARM_WAIT);
           }),
         ]);
+        retryAt = 0;
+        alarmFailures = 0;
+        arm();
+      } catch (err) {
+        const delay = Math.min(
+          MAX_ALARM_RETRY_DELAY,
+          ALARM_RETRY_DELAY * 2 ** alarmFailures++
+        );
+        logger.error({ err, delay }, "The alarm failed, and is set to run again");
+        retryAt = Date.now() + delay;
+        // Unknown, so that the next write sets the alarm from the claim time.
+        armedAt = undefined;
+        await storage.setAlarm(retryAt);
       } finally {
         clearTimeout(timer);
       }
-      arm();
     },
   };
 }

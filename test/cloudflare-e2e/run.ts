@@ -367,6 +367,123 @@ const scenarios: Record<string, () => Promise<unknown>> = {
   },
 };
 
+async function probe(name: string, path: string): Promise<any> {
+  const url = new URL(base + path);
+  url.searchParams.set("object", name);
+  const res = await originalFetch(url, { headers });
+  const text = await res.text();
+  try {
+    return JSON.parse(text);
+  } catch {
+    return { status: res.status, text: text.slice(0, 200) };
+  }
+}
+
+// A new Worker version takes time to reach every location, and until it does
+// some requests fail, so arming is retried until the object confirms it.
+async function armProbe(name: string, query: string) {
+  for (let attempt = 0; attempt < 10; attempt++) {
+    const armed = await probe(name, `/probe/alarm-case?${query}`);
+    if (typeof armed.t === "number") return;
+    await sleep(1000);
+  }
+  throw new Error(`could not arm ${name}`);
+}
+
+// The alarm handler runs of one probe object. `ms` counts from the first run.
+async function probeRuns(name: string) {
+  const state = await probe(name, "/probe/state");
+  const runs = (state.log ?? [])
+    .filter((row: any) => row.event === "probe-run")
+    .map((row: any) => JSON.parse(row.detail));
+  const first = runs[0]?.now;
+  return {
+    object: name.slice(object.length + 1),
+    armed: (state.log ?? []).some((row: any) => row.event === "probe-armed"),
+    readAtMs: first === undefined ? null : state.now - first,
+    alarm: state.alarm === null || first === undefined ? state.alarm : { msAfterFirstRun: state.alarm - first },
+    runs: runs.map((run: any) => ({
+      n: run.n,
+      ms: run.now - first,
+      retryCount: run.retryCount,
+      isRetry: run.isRetry,
+      ...(run.n === 1 && { firstRunMsAfterT: run.now - run.t }),
+      ...(run.setTo !== undefined && { setToMsAfterT: run.setTo - run.t, setToMsAfterNow: run.setTo - run.now }),
+      ...("before" in run && { getAlarmBefore: run.before === null ? null : run.before - run.t }),
+      ...("after" in run && { getAlarmAfterMsAfterT: run.after === null ? null : run.after - run.t }),
+      ...(run.end !== undefined && { handlerMs: run.end - run.now }),
+    })),
+  };
+}
+
+Object.assign(scenarios, {
+  // What an alarm does after its handler sets it, or leaves it, on the first
+  // run. Each case runs on fresh objects.
+  async "alarm-set"() {
+    const cases = [
+      "untouched",
+      "untouched&peek",
+      "writes-only",
+      "same",
+      "same&peek",
+      "same-unawaited",
+      "same&hold=3000",
+      "same-plus-1",
+      "max-t-now",
+      "now",
+      "now&peek",
+      "now&hold=3000",
+      "now-plus-1000",
+      "now-plus-1000&hold=3000",
+      "past",
+      "past&peek",
+      "same-then-later",
+    ];
+    const repeats = Number(process.env.E2E_REPEATS ?? 3);
+    const names: string[] = [];
+    for (const c of cases) {
+      for (let i = 0; i < repeats; i++) {
+        const name = `${object}-${c.replace(/[&=]/g, "-")}-${i}`;
+        names.push(name);
+        await armProbe(name, `case=${c}`);
+      }
+    }
+    await sleep(25_000);
+    const early = await Promise.all(names.map(probeRuns));
+    await sleep(Number(process.env.E2E_SETTLE_MS ?? 60_000));
+    const late = await Promise.all(names.map(probeRuns));
+    return { early, late };
+  },
+
+  // How Cloudflare runs an alarm handler again after it throws. `fail-0` is
+  // read only at the end, in case reading an object changes what happens.
+  async "alarm-fail"() {
+    const waitMs = Number(process.env.E2E_FAIL_WAIT_MS ?? 10 * 60_000);
+    const untouched = [`${object}-fail-0`];
+    const sampled = [
+      `${object}-fail-1`,
+      `${object}-fail-2`,
+      `${object}-fail-once-0`,
+      `${object}-fail-set-0`,
+    ];
+    for (const name of [...untouched, ...sampled]) {
+      const c = name.slice(object.length + 1).replace(/-\d$/, "");
+      await armProbe(name, `case=${c}&peek`);
+    }
+    const samples: unknown[] = [];
+    for (let i = 0; i < 3; i++) {
+      await sleep(waitMs / 3);
+      samples.push(await Promise.all(sampled.map(probeRuns)));
+    }
+    const final = await Promise.all([...untouched, ...sampled].map(probeRuns));
+    // An alarm set after the retries have stopped.
+    await armProbe(`${object}-fail-1`, "case=untouched&peek&delay=1000");
+    await sleep(8_000);
+    const afterNewAlarm = await probeRuns(`${object}-fail-1`);
+    return { samples, final, afterNewAlarm };
+  },
+});
+
 const quick = ["steps", "throws", "children", "concurrency", "cancellation", "store", "fetch", "idempotent"];
 const names = process.argv.slice(2).length ? process.argv.slice(2) : quick;
 let failed = 0;

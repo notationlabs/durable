@@ -100,6 +100,8 @@ The object does not poll. It claims executions at three moments:
 
 If Cloudflare evicts the object during a delivery, the delivery's lease expires and the alarm delivers the execution again after the [redelivery delay](../internals/leases-and-dispatcher.md). The step that was running runs again, as it does after a worker crash on Bun or Node.
 
+If claiming fails inside `alarm`, the object logs the error and sets the alarm to run again. The first retry is 0.5 seconds later, and each further failure doubles the wait, up to 60 seconds. `alarm` rejects only if it cannot set the alarm. Cloudflare runs a rejected alarm handler again six times and then drops the alarm.
+
 ## Differences from Bun and Node
 
 - **No process isolation.** A delivery whose lease is lost cannot be killed. Its abort signal stops it before the next step, and its lease token rejects every later write.
