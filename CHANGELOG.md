@@ -29,6 +29,11 @@
 
 ### Added
 
+- `@notation/durable/cloudflare` runs Durable inside one Cloudflare Durable Object. `createWorkflowObject(ctx, { router })` returns `fetch` and `alarm` handlers and the `SqliteRuntime` over the object's SQLite storage. It sets the object's alarm to the earliest time an execution is due instead of polling, and runs deliveries in the object's isolate. `DurableObjectSqliteDriver` and `createSqliteDb(ctx.storage)` are exported for use with `SqliteRuntime` directly. The Worker needs the `nodejs_compat` flag.
+- `SqliteDriver` has an optional `transaction(fn)` method. A driver that implements it runs each runtime transaction itself, in place of `BEGIN IMMEDIATE`, `COMMIT` and `ROLLBACK` statements.
+- `SqliteExecutionClient.nextClaimAt()` returns the earliest time at which `claimDue` could return an execution, or `null`.
+- `ExecutionDispatcher.settled()` resolves when one in-flight delivery has settled and its outcome is acknowledged.
+- The HTTP SDK factory takes a `fetch` option that sends each request in place of the global `fetch`, such as a Durable Object stub's `fetch`.
 - `@notation/durable/client` exports the HTTP SDK, `HttpRouteError`, the errors the SDK throws, `registerErrorClass` and the execution view types. It imports no Node built-ins, pino or the dispatcher, so it bundles for the browser. `@notation/durable` still exports the HTTP SDK.
 - `InfrastructureError` has the `code` of its cause, when the cause has one. pino's error serializer does not write a cause's fields, so a log of a failed delivery now shows the code, such as `EFFECT_HANDLER_INVALID`.
 - `@notation/durable/testing` runs workflows in memory, without a worker process or a database file. `createTestSdk(router, { logger?, clock? })` returns a local SDK over a new `MemoryRuntime`, together with that `runtime` and the `dispatcher` it starts on the first trigger. The entry point also exports `MemoryRuntime` and `createInProcessInvoker`, which delivers executions in the calling process.
