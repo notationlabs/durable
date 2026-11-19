@@ -43,6 +43,12 @@ const MIN_CLAIM_DELAY = 10;
  */
 const MAX_ALARM_WAIT = 5 * 60_000;
 
+/**
+ * An alarm this close to the clock is written again when the claim time
+ * moves, instead of being left to fire early.
+ */
+const ALARM_MARGIN = 1_000;
+
 const consoleLogger = {
   info: (...args: unknown[]) => console.log(...args),
   warn: (...args: unknown[]) => console.warn(...args),
@@ -112,16 +118,22 @@ export function createWorkflowObject<Router extends WorkflowRouter>(
   let nudge: (() => void) | undefined;
   let pumping: Promise<void> | undefined;
 
-  // Keeps the alarm at or before the earliest claim time, and returns whether
-  // that time has changed since the last call. The alarm is not moved later:
-  // each lease renewal moves the claim time later, and writing the alarm for
-  // each one costs more than letting it fire early and be set again.
+  // Sets the alarm to the earliest claim time, and returns whether that time
+  // has changed since the last call. An alarm that is already set, earlier
+  // than the claim time and still ahead of the clock is left alone: each lease
+  // renewal moves the claim time later, and the alarm sets itself again when
+  // it fires. An alarm at or behind the clock is always written, because one
+  // set inside the alarm handler to the handler's own time did not fire.
   const arm = () => {
     const at = runtime.executions.nextClaimAt();
     const changed = at !== claimAt;
     claimAt = at;
     const covered =
-      at === null ? armedAt === null : typeof armedAt === "number" && armedAt <= at;
+      at === null
+        ? armedAt === null
+        : typeof armedAt === "number" &&
+          armedAt <= at &&
+          (armedAt === at || armedAt > Date.now() + ALARM_MARGIN);
     if (!covered) {
       armedAt = at;
       const write =

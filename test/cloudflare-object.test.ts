@@ -70,6 +70,26 @@ test("a delay ends the pump, and the alarm resumes the workflow", async () => {
   expect(object.alarms.length).toBeGreaterThanOrEqual(1);
 });
 
+test("the alarm is set to the end of a delay that follows the first delivery", async () => {
+  const workflow = createWorkflow(async function* (step) {
+    yield* step.delay(5_000);
+  });
+  const fake = createFakeStorage();
+  // No alarm fires here, so the alarm time is whatever the object last wrote.
+  const host = createWorkflowObject(
+    { storage: fake.storage, waitUntil() {} },
+    { router: { workflow }, logger }
+  );
+  const local = createLocalSdk<{ workflow: typeof workflow }>(host.runtime);
+
+  const { executionId } = await local.trigger({ workflowId: "workflow" });
+  await expect.poll(async () => (await local.poll(executionId))?.status).toBe("suspended");
+
+  const claimAt = host.runtime.executions.nextClaimAt();
+  expect(claimAt).toBeGreaterThan(Date.now() + 4_000);
+  await expect.poll(() => fake.alarmAt).toBe(claimAt);
+});
+
 test("a write through the local SDK wakes the object", async () => {
   const workflow = createWorkflow(async function* (step) {
     return yield* step.run(() => "done");
