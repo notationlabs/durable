@@ -27,6 +27,7 @@ Each folder in `packages/` is a private workspace package named `@durable/<folde
 - `packages/sdk` – The workflow API, the step runner, and the local and HTTP SDKs
 - `packages/http-server` – HTTP route handlers and middleware
 - `packages/sqlite-runtime` – `SqliteRuntime`, with the Bun and Node drivers
+- `packages/cloudflare` – The SQLite driver for Durable Object storage, and the workflow object that claims on the object's alarm
 - `packages/worker-invoker` – The invoker that runs each delivery in a worker process, and the worker
 - `packages/runtime-conformance` – Qualification suites for runtimes
 - `packages/test-runtime` – `MemoryRuntime`, which keeps its records in memory
@@ -69,7 +70,7 @@ This runs the `build` script of each published package, then type-checks `exampl
 
 Each published package has a `tsup.config.ts` that bundles the source of the private packages it ships:
 
-- `@notation/durable` bundles `sdk`, `core`, `http-server`, `worker-invoker`, `sqlite-runtime`, and for `/testing`, `test-utils`, `test-runtime` and `test-invoker`. Each export path is one tsup entry. Code shared between entries goes into shared chunks, so every export path uses the same classes.
+- `@notation/durable` bundles `sdk`, `core`, `http-server`, `worker-invoker`, `sqlite-runtime`, `cloudflare`, and for `/testing`, `test-utils`, `test-runtime` and `test-invoker`. Each export path is one tsup entry. Code shared between entries goes into shared chunks, so every export path uses the same classes.
 - `@notation/durable-conformance` bundles `runtime-conformance`. A `paths` entry in its `tsconfig.json` resolves `@durable/core` to `src/runtime.ts`, which re-exports `@notation/durable/runtime`. The suites then use the classes in the user's copy of `@notation/durable`. This package builds after `@notation/durable`, because its declarations import the built `@notation/durable`.
 
 Both builds fail if bundled code imports a third-party package that the published `package.json` does not declare (`scripts/declared-imports.ts`).

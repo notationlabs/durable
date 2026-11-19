@@ -764,6 +764,7 @@ export class ExecutionDispatcher {
   stop(): Promise<void>;
   tick(): Promise<number>;
   drain(): Promise<void>;
+  settled(): Promise<void>;
   get activeDeliveries(): number;
 }
 ```
@@ -791,6 +792,7 @@ export class ExecutionDispatcher {
 | `stop` | Stops claiming new work and awaits `drain` |
 | `tick` | Claims up to the free concurrency slots and returns the claimed count |
 | `drain` | Resolves once all currently in-flight deliveries have settled |
+| `settled` | Resolves once one in-flight delivery has settled and its outcome is acknowledged, or at once when none is in flight |
 | `activeDeliveries` | Count of deliveries currently in flight |
 
 See [Leases & Delivery](../authoring/delivery-guarantees.md) for lease renewal, fencing, and abandonment semantics.

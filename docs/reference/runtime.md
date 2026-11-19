@@ -626,6 +626,7 @@ export class ExecutionDispatcher {
   stop(): Promise<void>;
   tick(): Promise<number>;
   drain(): Promise<void>;
+  settled(): Promise<void>;
 }
 ```
 
