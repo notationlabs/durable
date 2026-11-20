@@ -2,10 +2,13 @@ import { createHash } from "crypto";
 import { EventEmitter } from "node:events";
 import { createWorkflowObject } from "../../packages/durable/dist/cloudflare.js";
 import { padding } from "./padding";
-import { live, router, useSql } from "./workflows";
+import { createTables, inObject, live, router } from "./workflows";
 
 type Storage = {
-  sql: { exec(query: string, ...bindings: unknown[]): { toArray(): any[]; rowsWritten?: number } };
+  sql: {
+    exec(query: string, ...bindings: unknown[]): { toArray(): any[]; rowsWritten?: number };
+    databaseSize: number;
+  };
   transactionSync<R>(closure: () => R): R;
   setAlarm(at: number | Date): Promise<void>;
   deleteAlarm(): Promise<void>;
@@ -49,21 +52,46 @@ function captureStack(): string[] {
   return (holder.stack ?? "").split("\n");
 }
 
+function describe(value: unknown): unknown {
+  if (value instanceof Error) return { name: value.name, message: value.message, stack: value.stack };
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, v instanceof Error ? describe(v) : v]));
+  }
+  return value;
+}
+
 export class Workflows {
   private durable;
   private instance = crypto.randomUUID().slice(0, 8);
+  private constructedAt = Date.now();
   private alarms = 0;
+  private object;
 
   constructor(private ctx: State) {
-    ctx.storage.sql.exec(
-      "CREATE TABLE IF NOT EXISTS e2e_log (id INTEGER PRIMARY KEY, at INTEGER, isolate TEXT, instance TEXT, event TEXT, detail TEXT)"
-    );
-    useSql(ctx.storage.sql);
-    log(ctx.storage, this.instance, "constructed");
-    this.durable = createWorkflowObject(ctx, { router, basePath: "/durable" });
+    const { storage } = ctx;
+    createTables(storage.sql);
+    this.object = {
+      sql: storage.sql,
+      sync: () => storage.sync(),
+      isolate: isolateId(),
+      instance: this.instance,
+    };
+    log(storage, this.instance, "constructed");
+    // Warnings and errors from the host also go to the debug log, so a run
+    // can count them afterwards without a tail session.
+    const record = (level: string, method: "log" | "warn" | "error") => (...args: unknown[]) => {
+      console[method](...args);
+      if (level !== "info") log(storage, this.instance, `log-${level}`, args.map(describe));
+    };
+    const logger = { info: record("info", "log"), warn: record("warn", "warn"), error: record("error", "error") };
+    this.durable = createWorkflowObject(ctx, { router, basePath: "/durable", logger: logger as never });
   }
 
-  async fetch(request: Request) {
+  fetch(request: Request) {
+    return inObject(this.object, () => this.handle(request));
+  }
+
+  private async handle(request: Request) {
     const url = new URL(request.url);
     if (url.pathname.startsWith("/durable/")) return this.durable.fetch(request);
     const { storage } = this.ctx;
@@ -72,10 +100,12 @@ export class Workflows {
         return json({
           isolateId: isolateId(),
           instance: this.instance,
+          constructedAt: this.constructedAt,
           padding,
           now: Date.now(),
           alarm: await storage.getAlarm(),
           nextClaimAt: this.durable.runtime.executions.nextClaimAt(),
+          databaseSize: storage.sql.databaseSize,
           live,
         });
       case "/debug/sql": {
@@ -107,17 +137,19 @@ export class Workflows {
     return new Response("Not found", { status: 404 });
   }
 
-  async alarm() {
-    const n = ++this.alarms;
-    log(this.ctx.storage, this.instance, "alarm-start", { n });
-    try {
-      await this.durable.alarm();
-    } finally {
-      log(this.ctx.storage, this.instance, "alarm-end", {
-        n,
-        alarm: await this.ctx.storage.getAlarm(),
-      });
-    }
+  alarm() {
+    return inObject(this.object, async () => {
+      const n = ++this.alarms;
+      log(this.ctx.storage, this.instance, "alarm-start", { n });
+      try {
+        await this.durable.alarm();
+      } finally {
+        log(this.ctx.storage, this.instance, "alarm-end", {
+          n,
+          alarm: await this.ctx.storage.getAlarm(),
+        });
+      }
+    });
   }
 }
 
@@ -452,6 +484,12 @@ export default {
     if (url.pathname.startsWith("/probe/")) {
       return env.PROBE.get(env.PROBE.idFromName(name)).fetch(request);
     }
-    return env.WORKFLOWS.get(env.WORKFLOWS.idFromName(name)).fetch(request);
+    try {
+      return await env.WORKFLOWS.get(env.WORKFLOWS.idFromName(name)).fetch(request);
+    } catch (err) {
+      // What Cloudflare reports when it resets the object or refuses the request.
+      const { retryable, overloaded, durableObjectReset } = err as Record<string, unknown>;
+      return json({ objectError: String(err), retryable, overloaded, durableObjectReset }, 503);
+    }
   },
 };

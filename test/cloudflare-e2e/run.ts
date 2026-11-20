@@ -484,6 +484,343 @@ Object.assign(scenarios, {
   },
 });
 
+// What the runtime and the debug tables hold for one execution.
+async function evidence(executionId: string, tag: string, t0: number) {
+  const [execution] = await sql(
+    "SELECT status, admitted_at, updated_at, lease_token, unacknowledged_delivery_count FROM executions WHERE execution_id = ?",
+    executionId
+  );
+  const stepRows = await sql(
+    "SELECT step_key, step_attempt, step_done FROM step_responses WHERE execution_id = ? ORDER BY rowid",
+    executionId
+  );
+  const counts = await sql("SELECT * FROM e2e_counters WHERE name LIKE ?", `${tag}:%`);
+  const log = (await debug("/debug/log"))
+    .filter((l: any) => l.at >= t0 - 1000)
+    .map((l: any) => ({ t: l.at - t0, i: `${l.isolate}/${l.instance}`, e: l.event, d: l.detail }));
+  return { execution, stepRows, counts, log };
+}
+
+function percentile(sorted: number[], p: number) {
+  if (!sorted.length) return null;
+  return sorted[Math.min(sorted.length - 1, Math.floor((p / 100) * sorted.length))];
+}
+
+async function retry<T>(fn: () => Promise<T>, errors: string[], attempts = 4): Promise<T> {
+  for (let i = 1; ; i++) {
+    try {
+      return await fn();
+    } catch (err) {
+      errors.push(String(err).slice(0, 200));
+      if (i >= attempts) throw err;
+      await sleep(500 * i);
+    }
+  }
+}
+
+Object.assign(scenarios, {
+  // A long delay with no request to the object until it should have ended.
+  // The run counts as a test of eviction only when `evicted` is true: the
+  // step after the delay ran in a different instance from the step before it.
+  async evict() {
+    const tag = `evict-${Date.now()}`;
+    const delayMs = Number(process.env.E2E_DELAY_MS ?? 60 * 60_000);
+    const t0 = Date.now();
+    const ack = await sdk.trigger({ workflowId: "evict", params: { tag, delayMs } });
+    await sleep(delayMs + Number(process.env.E2E_SETTLE_MS ?? 90_000));
+    const view = await sdk.poll(ack.executionId);
+    const found = await evidence(ack.executionId, tag, t0);
+    check(view?.status === "completed", `status ${view?.status}`);
+    const { before, after } = (view as any).result;
+    const constructed = found.log.filter((l: any) => l.e === "constructed");
+    return {
+      delayMs,
+      afterStepLagMs: after.at - before.at - delayMs,
+      instanceBefore: before.instance,
+      instanceAfter: after.instance,
+      evicted: before.instance !== after.instance,
+      instancesConstructed: constructed.length,
+      constructedAt: constructed.map((l: any) => ({ t: l.t, i: l.i })),
+      ...found,
+    };
+  },
+
+  // Starts a held step and samples the object until the execution ends. Run
+  // `wrangler deploy` with a changed `padding.ts` about 20 s after it starts.
+  // With `E2E_QUIET_MS` the driver sends nothing for that long after the
+  // trigger, so no request keeps the object that runs the old code in use.
+  async deploy() {
+    const tag = `deploy-${Date.now()}`;
+    const ms = Number(process.env.E2E_HOLD_MS ?? 60_000);
+    const t0 = Date.now();
+    const ack = await sdk.trigger({ workflowId: "inflight", params: { tag, ms } });
+    console.log(JSON.stringify({ started: tag, t0, executionId: ack.executionId }));
+    const changes: unknown[] = [];
+    const errors: { t: number; error: string }[] = [];
+    let last = "";
+    let status: string | undefined;
+    await sleep(Number(process.env.E2E_QUIET_MS ?? 0));
+    while (Date.now() - t0 < ms * 2 + 180_000) {
+      const state = await debug("/debug/state").catch((err) => ({ text: String(err) }));
+      const t = Date.now() - t0;
+      if (state.instance === undefined) {
+        errors.push({ t, error: JSON.stringify(state).slice(0, 200) });
+      } else {
+        const seen = `${state.isolateId}/${state.instance}/${state.padding}`;
+        if (seen !== last) {
+          changes.push({
+            t,
+            instance: `${state.isolateId}/${state.instance}`,
+            padding: state.padding,
+            alarm: state.alarm && state.alarm - t0,
+            nextClaimAt: state.nextClaimAt && state.nextClaimAt - t0,
+          });
+        }
+        last = seen;
+        status = (await sdk.poll(ack.executionId).catch(() => undefined))?.status;
+        if (status === "completed" || status === "failed" || status === "cancelled") break;
+      }
+      await sleep(1000);
+    }
+    const view = await sdk.poll(ack.executionId);
+    const found = await evidence(ack.executionId, tag, t0);
+    const events = (name: string) => found.log.filter((l: any) => l.e === name);
+    check(view?.status === "completed", `status ${view?.status}`);
+    const value = (view as any).result;
+    return {
+      status: view?.status,
+      completedAfterMs: value.at - t0,
+      attempt: value.attempt,
+      completedBy: value.instance,
+      bodyStarted: events("hold-start").length,
+      bodyFinished: events("hold-end").length,
+      changes,
+      errors,
+      ...found,
+    };
+  },
+
+  // A step that spins without I/O for `E2E_SPIN_ROUNDS` rounds. The driver's
+  // clock times it, because the Worker's clock stands still during the loop.
+  // With `E2E_SPIN_QUIET_MS` the driver sends nothing for that long after the
+  // trigger, so no request arrives during the spin.
+  async spin() {
+    const tag = `spin-${Date.now()}`;
+    const rounds = Number(process.env.E2E_SPIN_ROUNDS ?? 10);
+    const quietMs = Number(process.env.E2E_SPIN_QUIET_MS ?? 0);
+    const timeout = Number(process.env.E2E_SPIN_TIMEOUT_MS ?? 180_000);
+    const t0 = Date.now();
+    const ack = await sdk.trigger({ workflowId: "spin", params: { tag, rounds } });
+    const triggerMs = Date.now() - t0;
+    if (quietMs) await sleep(quietMs);
+    const requests: { t: number; ms: number; status?: string; error?: string }[] = [];
+    let view: any;
+    while (Date.now() - t0 < timeout) {
+      const sent = Date.now();
+      try {
+        view = await sdk.poll(ack.executionId);
+        requests.push({ t: sent - t0, ms: Date.now() - sent, status: view?.status });
+      } catch (err) {
+        requests.push({ t: sent - t0, ms: Date.now() - sent, error: String(err).slice(0, 300) });
+      }
+      if (view?.status === "completed" || view?.status === "failed" || view?.status === "cancelled") break;
+      await sleep(500);
+    }
+    const doneAfterMs = Date.now() - t0;
+    let forced: unknown;
+    if (view?.status !== "completed") {
+      // Stops an execution that would otherwise be delivered and spin again.
+      forced = await sdk.cancel(ack.executionId, { force: true }).catch((err) => String(err));
+    }
+    const found = await evidence(ack.executionId, tag, t0);
+    const value = view?.result;
+    return {
+      rounds,
+      quietMs,
+      triggerMs,
+      status: view?.status,
+      driverDoneAfterMs: doneAfterMs,
+      result: value,
+      spinMsByWorkerClock: value && value.endedAt - value.startedAt,
+      clockMovedDuringLoopMs: value && value.clockAfterLoop - value.startedAt,
+      slowOrFailedRequests: requests.filter((r) => r.error || r.ms > 2000),
+      requests: requests.length,
+      forced,
+      ...found,
+    };
+  },
+
+  // Triggers a mix of executions at a steady rate with bursts, then checks
+  // that each one reached the status the driver expected.
+  async soak() {
+    const durationMs = Number(process.env.E2E_SOAK_MS ?? 60 * 60_000);
+    const rate = Number(process.env.E2E_SOAK_RATE ?? 0.5);
+    const burstEveryMs = Number(process.env.E2E_SOAK_BURST_EVERY_MS ?? 5 * 60_000);
+    const burstSize = Number(process.env.E2E_SOAK_BURST ?? 100);
+    const run = `soak-${Date.now()}`;
+    type Item = {
+      id: string;
+      kind: string;
+      expected: string;
+      // How long the execution should take by design, in milliseconds.
+      expectedMs: number;
+      triggered: boolean;
+      cancelSentAfterMs?: number;
+    };
+    const items: Item[] = [];
+    const errors: string[] = [];
+    const lost: string[] = [];
+    const pending = new Set<Promise<void>>();
+
+    const launch = (n: number) => {
+      const roll = Math.random();
+      const id = `${run}-${n}`;
+      const item: Item =
+        roll < 0.35
+          ? { id, kind: "plain", expected: "completed", expectedMs: 0, triggered: false }
+          : roll < 0.7
+            ? { id, kind: "delay", expected: "completed", expectedMs: 1000 + Math.floor(Math.random() * 29_000), triggered: false }
+            : roll < 0.8
+              ? { id, kind: "parent", expected: "completed", expectedMs: 400, triggered: false }
+              : roll < 0.9
+                ? { id, kind: "throws", expected: "failed", expectedMs: 0, triggered: false }
+                : { id, kind: "cancel", expected: "cancelled", expectedMs: 0, triggered: false };
+      items.push(item);
+      const request =
+        item.kind === "plain" || item.kind === "delay"
+          ? { workflowId: "soak", params: item.kind === "delay" ? { delayMs: item.expectedMs } : {} }
+          : item.kind === "parent"
+            ? { workflowId: "parent" }
+            : item.kind === "throws"
+              ? { workflowId: "throws" }
+              : { workflowId: "cancellable", params: { tag: id } };
+      const work = (async () => {
+        const sent = Date.now();
+        await retry(() => sdk.trigger({ ...request, executionId: id, idempotent: true } as never), errors);
+        item.triggered = true;
+        if (item.kind !== "cancel") return;
+        await sleep(1000 + Math.random() * 2000);
+        item.cancelSentAfterMs = Date.now() - sent;
+        await retry(() => sdk.cancel(id, { reason: "soak" }), errors);
+      })().catch(() => {
+        lost.push(id);
+      });
+      pending.add(work);
+      void work.finally(() => pending.delete(work));
+    };
+
+    const t0 = Date.now();
+    let n = 0;
+    let nextBurst = t0 + burstEveryMs / 2;
+    let nextReport = t0 + 60_000;
+    while (Date.now() - t0 < durationMs) {
+      launch(n++);
+      if (Date.now() >= nextBurst) {
+        nextBurst += burstEveryMs;
+        for (let i = 0; i < burstSize; i++) launch(n++);
+      }
+      if (Date.now() >= nextReport) {
+        nextReport += 60_000;
+        console.log(JSON.stringify({ soak: run, t: Date.now() - t0, triggered: n, errors: errors.length, lost: lost.length }));
+      }
+      // Uneven gaps with the mean of the rate.
+      await sleep((-Math.log(1 - Math.random()) * 1000) / rate);
+    }
+    await Promise.all(pending);
+    const triggerEnd = Date.now();
+
+    const expectedByStatus: Record<string, number> = {};
+    const add = (key: string, by = 1) => (expectedByStatus[key] = (expectedByStatus[key] ?? 0) + by);
+    for (const item of items) {
+      if (!item.triggered) continue;
+      const workflowId = item.kind === "plain" || item.kind === "delay" ? "soak" : item.kind === "cancel" ? "cancellable" : item.kind;
+      add(`${workflowId}/${item.expected}`);
+      if (item.kind === "parent") add("child/completed", 3);
+    }
+
+    const byId = new Map(items.map((item) => [item.id, item]));
+    const inspect = async () => {
+      const rows: any[] = await sql(
+        "SELECT execution_id, workflow_id, status, admitted_at, updated_at, unacknowledged_delivery_count FROM executions WHERE execution_id LIKE ? OR parent_execution_id LIKE ?",
+        `${run}-%`,
+        `${run}-%`
+      );
+      const actualByStatus: Record<string, number> = {};
+      const terminal = new Set(["completed", "failed", "cancelled"]);
+      const notTerminal: unknown[] = [];
+      const wrongStatus: unknown[] = [];
+      const lags: { id: string; kind: string; lag: number }[] = [];
+      for (const row of rows) {
+        const key = `${row.workflow_id}/${row.status}`;
+        actualByStatus[key] = (actualByStatus[key] ?? 0) + 1;
+        if (!terminal.has(row.status)) {
+          notTerminal.push(row);
+          continue;
+        }
+        const item = byId.get(row.execution_id);
+        if (item && item.expected !== row.status) wrongStatus.push({ ...row, expected: item.expected });
+        const kind = item?.kind ?? row.workflow_id;
+        const expectedMs = item ? (item.cancelSentAfterMs ?? item.expectedMs) : 200;
+        lags.push({ id: row.execution_id, kind, lag: row.updated_at - row.admitted_at - expectedMs });
+      }
+      const distribution = (list: number[]) => {
+        const sorted = [...list].sort((a, b) => a - b);
+        return { n: sorted.length, p50: percentile(sorted, 50), p90: percentile(sorted, 90), p99: percentile(sorted, 99), max: sorted.at(-1) ?? null };
+      };
+      const kinds = [...new Set(lags.map((l) => l.kind))];
+      const tables: { name: string }[] = await sql("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE '\\_%' ESCAPE '\\' ORDER BY name");
+      const rowCounts: Record<string, number> = {};
+      for (const { name } of tables) {
+        const counted = await sql(`SELECT count(*) AS n FROM "${name}"`);
+        rowCounts[name] = counted[0]?.n ?? counted;
+      }
+      const state = await debug("/debug/state");
+      return {
+        t: Date.now() - t0,
+        rows: rows.length,
+        expectedByStatus,
+        actualByStatus,
+        matches: JSON.stringify(Object.entries(expectedByStatus).sort()) === JSON.stringify(Object.entries(actualByStatus).sort()),
+        notTerminal: notTerminal.slice(0, 20),
+        notTerminalCount: notTerminal.length,
+        wrongStatus: wrongStatus.slice(0, 20),
+        wrongStatusCount: wrongStatus.length,
+        lagMs: { all: distribution(lags.map((l) => l.lag)), ...Object.fromEntries(kinds.map((k) => [k, distribution(lags.filter((l) => l.kind === k).map((l) => l.lag))])) },
+        slowest: [...lags].sort((a, b) => b.lag - a.lag).slice(0, 10),
+        over5s: lags.filter((l) => l.lag > 5000).length,
+        redelivered: rows.filter((r) => r.unacknowledged_delivery_count > 0).length,
+        // A delay writes attempt 0 when it starts and attempt 1 when it ends.
+        stepAttempts: await sql("SELECT step_key, step_attempt, count(*) AS n FROM step_responses GROUP BY step_key, step_attempt ORDER BY step_key, step_attempt"),
+        databaseSize: state.databaseSize,
+        rowCounts,
+        alarm: state.alarm,
+        nextClaimAt: state.nextClaimAt,
+        instances: await sql("SELECT isolate, instance, min(at) - ? AS firstT, max(at) - ? AS lastT, count(*) AS rows FROM e2e_log GROUP BY isolate, instance ORDER BY firstT", t0, t0),
+        logged: await sql("SELECT event, substr(detail, 1, 300) AS detail, count(*) AS n FROM e2e_log WHERE event LIKE 'log-%' GROUP BY event, substr(detail, 1, 120) ORDER BY n DESC LIMIT 30"),
+      };
+    };
+
+    // The longest delay is 30 s.
+    await sleep(Number(process.env.E2E_SETTLE_MS ?? 45_000));
+    const atEnd = await inspect();
+    console.log(JSON.stringify({ soak: run, atEnd }));
+    await sleep(120_000);
+    const later = await inspect();
+    check(later.notTerminalCount === 0, `${later.notTerminalCount} executions are not terminal`);
+    check(later.matches, `status counts differ: ${JSON.stringify(later.actualByStatus)} expected ${JSON.stringify(expectedByStatus)}`);
+    return {
+      run,
+      triggered: items.filter((i) => i.triggered).length,
+      triggerPhaseMs: triggerEnd - t0,
+      lost,
+      requestErrors: errors.length,
+      requestErrorSamples: [...new Set(errors)].slice(0, 10),
+      atEnd,
+      later,
+    };
+  },
+});
+
 const quick = ["steps", "throws", "children", "concurrency", "cancellation", "store", "fetch", "idempotent"];
 const names = process.argv.slice(2).length ? process.argv.slice(2) : quick;
 let failed = 0;

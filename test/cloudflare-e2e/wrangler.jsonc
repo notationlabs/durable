@@ -11,5 +11,7 @@
     ]
   },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Workflows", "Probe"] }],
+  // The `spin` scenario runs a step for longer than the default 30 s of CPU time.
+  "limits": { "cpu_ms": 300000 },
   "observability": { "enabled": true }
 }
