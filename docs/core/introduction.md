@@ -10,12 +10,6 @@ This onboarding workflow sends a welcome email, waits three days without holding
 
 ::code-group
 
-```ts [src/email.ts]
-export async function sendEmail(to: string, subject: string) {
-  console.log(`Sending "${subject}" to ${to}`);
-}
-```
-
 ```ts [src/workflows/onboarding.ts]
 import { workflow } from "@notation/durable";
 import { sendEmail } from "../email";
@@ -40,6 +34,12 @@ export const onboarding = workflow<{ email: string }, void>(async function* (
 });
 ```
 
+```ts [src/email.ts]
+export async function sendEmail(to: string, subject: string) {
+  console.log(`Sending "${subject}" to ${to}`);
+}
+```
+
 ::
 
 Use workflows for:
@@ -57,23 +57,6 @@ A store is durable state identified by a name, a Standard Schema validator, and 
 This example defines an `approval` store, pauses an expense workflow until a manager approves it, and records the approval from application code:
 
 ::code-group
-
-```ts [src/stores/approval.ts]
-import { defineStore } from "@notation/durable";
-import * as v from "valibot";
-
-export const Approval = defineStore(
-  "approval",
-  v.object({ approved: v.boolean() }),
-  { initial: () => ({ approved: false }) }
-);
-```
-
-```ts [src/payments.ts]
-export async function payExpense(expenseId: string) {
-  console.log(`Paying expense ${expenseId}`);
-}
-```
 
 ```ts [src/workflows/expense.ts]
 import { workflow } from "@notation/durable";
@@ -112,6 +95,23 @@ export async function approveExpense(expenseId: string) {
   await approval.update((draft) => {
     draft.approved = true;
   });
+}
+```
+
+```ts [src/stores/approval.ts]
+import { defineStore } from "@notation/durable";
+import * as v from "valibot";
+
+export const Approval = defineStore(
+  "approval",
+  v.object({ approved: v.boolean() }),
+  { initial: () => ({ approved: false }) }
+);
+```
+
+```ts [src/payments.ts]
+export async function payExpense(expenseId: string) {
+  console.log(`Paying expense ${expenseId}`);
 }
 ```
 

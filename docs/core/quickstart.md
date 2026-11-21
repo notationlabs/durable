@@ -25,12 +25,6 @@ Create the email helper, workflow, router, Durable runtime wiring, and entry poi
 
 ::code-group
 
-```ts [src/email.ts]
-export async function sendEmail(to: string, subject: string) {
-  console.log(`Sending "${subject}" to ${to}`);
-}
-```
-
 ```ts [src/workflows/onboarding.ts]
 import { workflow } from "@notation/durable";
 import { sendEmail } from "../email";
@@ -130,6 +124,12 @@ try {
   console.log("Onboarding finished");
 } finally {
   await dispatcher.stop();
+}
+```
+
+```ts [src/email.ts]
+export async function sendEmail(to: string, subject: string) {
+  console.log(`Sending "${subject}" to ${to}`);
 }
 ```
 
