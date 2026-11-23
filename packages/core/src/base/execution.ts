@@ -71,6 +71,11 @@ export interface ExecutionRecord {
   updatedAt: number;
   /** Consecutive deliveries that ended without an acknowledgement. */
   unacknowledgedDeliveryCount: number;
+  /**
+   * Deliveries that ended with an expired lease since the execution last made
+   * progress. A dispatcher's `maxExpiredDeliveries` limits it.
+   */
+  expiredDeliveryCount: number;
   parent?: ExecutionParent;
   cancellation?: ExecutionCancellation;
 }
@@ -300,6 +305,20 @@ export interface ExecutionClient {
     duration: number;
     /** When absent, any execution whose due time has passed may be claimed. */
     filter?: ExecutionClaimFilter;
+    /**
+     * The delivery limit, applied in the same atomic write as the claim. When
+     * absent, there is no limit. The caller checks that it is a positive
+     * integer: 0 would fail every execution on its first expired lease. See
+     * `DispatcherOptions.maxExpiredDeliveries`.
+     */
+    maxExpiredDeliveries?: number;
+    /**
+     * Called once for each execution the claim recorded `failed` at the
+     * delivery limit, after the write commits. `deliveries` is the error's
+     * count of deliveries that ended with an expired lease. It must not
+     * throw: the claim has committed, and a throw would lose its leases.
+     */
+    onDeliveryLimit?: (event: { executionId: string; deliveries: number }) => void;
   }): Promise<ExecutionLease[]>;
 
   /**
@@ -432,6 +451,26 @@ export function isTerminalExecutionStatus(
   status: ExecutionStatus
 ): status is "completed" | "failed" | "cancelled" {
   return status === "completed" || status === "failed" || status === "cancelled";
+}
+
+/**
+ * The error of an execution that the runtime failed at claim time, because
+ * `deliveries` consecutive deliveries ended with an expired lease. No
+ * workflow code runs when it is recorded.
+ */
+export class DeliveryLimitError extends Error {
+  readonly code: "DELIVERY_LIMIT_REACHED";
+  /** The number of deliveries that ended with an expired lease. */
+  readonly deliveries: number;
+
+  constructor(deliveries: number) {
+    super(
+      `Execution failed after ${deliveries} consecutive deliveries ended with an expired lease`
+    );
+    this.name = "DeliveryLimitError";
+    this.code = "DELIVERY_LIMIT_REACHED";
+    this.deliveries = deliveries;
+  }
 }
 
 /**

@@ -111,7 +111,7 @@ for (const sdkKind of sdkKinds) {
         expect(Object.keys(failed).sort()).toEqual([...base, "error"].sort());
         const page = await sdk.list();
         for (const view of page.executions) {
-          for (const key of ["params", "context", "lease", "token", "wakeAt", "unacknowledgedDeliveryCount"]) {
+          for (const key of ["params", "context", "lease", "token", "wakeAt", "unacknowledgedDeliveryCount", "expiredDeliveryCount"]) {
             expect(view).not.toHaveProperty(key);
           }
         }

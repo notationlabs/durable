@@ -21,6 +21,7 @@
 | `leaseToken` | Highest fencing token issued for this execution |
 | `leaseExpiresAt` | Current lease expiry timestamp |
 | `unacknowledgedDeliveryCount` | Consecutive unacknowledged deliveries |
+| `expiredDeliveryCount` | Deliveries ended by lease expiry since the last progress, compared with the delivery limit |
 | `redeliverAt` | Earliest retry timestamp after a release |
 | `parent` | Immutable caller `executionId`, `stepKey`, and `detached` flag |
 | `cancellation` | First recorded cancellation request, including `forced` and `deliveredAt` |
@@ -133,6 +134,7 @@ Pass the fetched `SequencedExecutionState[]` slice to `toExecutionListPage`. Fet
 ```ts [src/postgres-execution-claim.ts]
 import {
   claimExecution,
+  expiredDeliveryCountAt,
   isExecutionClaimable,
   type ExecutionClaimFilter,
   type ExecutionLease,
@@ -143,27 +145,54 @@ import { withTransaction } from "./postgres-tx";
 export async function claimDueExecutions(
   pool: Pool,
   clock: () => number,
-  request: { limit: number; duration: number; filter?: ExecutionClaimFilter }
+  request: {
+    limit: number;
+    duration: number;
+    filter?: ExecutionClaimFilter;
+    maxExpiredDeliveries?: number;
+    onDeliveryLimit?: (event: { executionId: string; deliveries: number }) => void;
+  }
 ): Promise<ExecutionLease[]> {
   const ids = request.filter?.executionIds;
   if (request.limit <= 0 || ids?.length === 0) return [];
+  const failed: { executionId: string; deliveries: number }[] = [];
 
-  return withTransaction(pool, async (tx) => {
+  const leases = await withTransaction(pool, async (tx) => {
     const now = clock();
     const candidates = await tx.selectClaimableForUpdateSkipLocked(now, request.limit, ids);
     const leases: ExecutionLease[] = [];
 
     for (const state of candidates) {
       if (!isExecutionClaimable(state, now)) continue;
-      const claimed = claimExecution(state, { now, duration: request.duration });
+      const claimed = claimExecution(state, {
+        now,
+        duration: request.duration,
+        maxExpiredDeliveries: request.maxExpiredDeliveries,
+      });
       await tx.updateExecutionState(claimed.state);
+      if (claimed.lease === null) {
+        // The claim reached the delivery limit and recorded the execution failed.
+        await tx.deleteWaitersHeldBy(state.executionId);
+        await tx.wakeJoinWaitersOf(state.executionId);
+        failed.push({
+          executionId: state.executionId,
+          deliveries: expiredDeliveryCountAt(state, now),
+        });
+        continue;
+      }
       leases.push(claimed.lease);
     }
 
     return leases;
   });
+  for (const event of failed) request.onDeliveryLimit?.(event);
+  return leases;
 }
 ```
+
+When `claimExecution` returns `lease: null`, the claim reached `maxExpiredDeliveries` and the state is `failed` with a `DeliveryLimitError`. Delete the waiters the execution holds and wake its join waiters in the same transaction, as for a forced cancellation. After the transaction commits, call `onDeliveryLimit` once for each execution the claim failed. `expiredDeliveryCountAt(state, now)` on the state before the claim gives `deliveries`.
+
+A heap step write that inserts a new done record must apply `recordExecutionProgress` to the execution's state in the same transaction, and write the state back when the helper returns a different object. A write that inserts a record that is not done, or finds the record already stored, must not.
 
 Sort claimable rows by `nextClaimAt ASC, executionId ASC` and lock selected rows, for example with `SELECT ... FOR UPDATE SKIP LOCKED` in Postgres, so concurrent dispatchers never lease the same execution.
 

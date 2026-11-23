@@ -21,6 +21,7 @@ class ExecutionRow {
   lease_token!: number;
   lease_expires_at!: number | null;
   unacknowledged_delivery_count!: number;
+  expired_delivery_count!: number;
   redeliver_at!: number | null;
   next_claim_at!: number | null;
   parent_execution_id!: string | null;
@@ -86,16 +87,19 @@ export class ExecutionsDao {
       CREATE INDEX IF NOT EXISTS idx_executions_status
       ON executions(status);
     `);
-    this.setupCancellation();
+    this.setupAddedColumns();
   }
 
   /**
-   * Adds the cancellation columns and child index if missing, under the write
-   * lock so processes opening the file together add them once. Every process
-   * sharing the file must support cancellation before anything calls `cancel`.
+   * Adds the columns added since the table was first created, and the child
+   * index, if missing, under the write lock so processes opening the file
+   * together add them once. Every process sharing the file must support
+   * cancellation before anything calls `cancel`, and must count expired
+   * deliveries before any dispatcher sets a delivery limit.
    */
-  private setupCancellation() {
+  private setupAddedColumns() {
     const columns = [
+      "expired_delivery_count INTEGER NOT NULL DEFAULT 0",
       "parent_detached INTEGER NOT NULL DEFAULT 0",
       "cancellation_reason TEXT",
       "cancellation_source TEXT",
@@ -226,7 +230,7 @@ export class ExecutionsDao {
         `INSERT INTO executions (
            execution_id, workflow_id, params, context, status, outcome,
            admitted_at, updated_at, due_at, claimed_due_at, lease_token,
-           lease_expires_at, unacknowledged_delivery_count, redeliver_at,
+           lease_expires_at, unacknowledged_delivery_count, expired_delivery_count, redeliver_at,
            next_claim_at, parent_execution_id, parent_step_key,
            parent_detached, cancellation_reason, cancellation_source,
            cancellation_forced, cancellation_requested_at,
@@ -234,7 +238,7 @@ export class ExecutionsDao {
          ) VALUES (
            $executionId, $workflowId, $params, $context, $status, $outcome,
            $admittedAt, $updatedAt, $dueAt, $claimedDueAt, $leaseToken,
-           $leaseExpiresAt, $unacknowledgedDeliveryCount, $redeliverAt,
+           $leaseExpiresAt, $unacknowledgedDeliveryCount, $expiredDeliveryCount, $redeliverAt,
            $nextClaimAt, $parentExecutionId, $parentStepKey,
            $parentDetached, $cancellationReason, $cancellationSource,
            $cancellationForced, $cancellationRequestedAt,
@@ -268,6 +272,7 @@ export class ExecutionsDao {
            lease_token = $leaseToken,
            lease_expires_at = $leaseExpiresAt,
            unacknowledged_delivery_count = $unacknowledgedDeliveryCount,
+           expired_delivery_count = $expiredDeliveryCount,
            redeliver_at = $redeliverAt,
            next_claim_at = $nextClaimAt,
            cancellation_reason = $cancellationReason,
@@ -296,6 +301,7 @@ function toState(row: ExecutionRow): ExecutionState {
     leaseToken: Number(row.lease_token),
     leaseExpiresAt: toNumberOrNull(row.lease_expires_at),
     unacknowledgedDeliveryCount: Number(row.unacknowledged_delivery_count),
+    expiredDeliveryCount: Number(row.expired_delivery_count),
     redeliverAt: toNumberOrNull(row.redeliver_at),
     parent:
       row.parent_execution_id !== null && row.parent_step_key !== null
@@ -333,6 +339,7 @@ function toBindings(state: ExecutionState) {
     $leaseToken: state.leaseToken,
     $leaseExpiresAt: state.leaseExpiresAt,
     $unacknowledgedDeliveryCount: state.unacknowledgedDeliveryCount,
+    $expiredDeliveryCount: state.expiredDeliveryCount,
     $redeliverAt: state.redeliverAt,
     $nextClaimAt: nextClaimAt(state),
     $cancellationReason: state.cancellation?.reason ?? null,

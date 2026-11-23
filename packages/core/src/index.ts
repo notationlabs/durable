@@ -37,6 +37,7 @@ export type {
   WorkflowStartErrorCode,
 } from "./base/execution";
 export {
+  DeliveryLimitError,
   ExecutionAdmissionError,
   ExecutionListRequestError,
   InfrastructureError,
@@ -129,6 +130,7 @@ export {
   executionIdConflict,
   executionNotFound,
   executionStatusAt,
+  expiredDeliveryCountAt,
   matchExecutionAdmission,
   isExecutionClaimable,
   isLeaseCurrent,
@@ -139,6 +141,7 @@ export {
   prepareExecutionCancel,
   prepareExecutionStart,
   propagatedCancellation,
+  recordExecutionProgress,
   redeliveryDelay,
   releaseExecutionLease,
   renewExecutionLease,

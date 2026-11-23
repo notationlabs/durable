@@ -11,6 +11,7 @@ export class MemoryHeapClient implements HeapClient {
   private isLeaseCurrent: (lease: ExecutionLease) => boolean;
   private onStepDone?: (step: { executionId: string; stepKey: string }) => void;
   private markCancellationDelivered?: (executionId: string) => void;
+  private onProgress?: (executionId: string) => void;
 
   constructor(params: {
     /**
@@ -29,10 +30,16 @@ export class MemoryHeapClient implements HeapClient {
      * execution has no request.
      */
     markCancellationDelivered?: (executionId: string) => void;
+    /**
+     * Called synchronously when a new done step record is written, so the
+     * runtime resets the execution's delivery counts in the same write.
+     */
+    onProgress?: (executionId: string) => void;
   }) {
     this.isLeaseCurrent = params.isLeaseCurrent;
     this.onStepDone = params.onStepDone;
     this.markCancellationDelivered = params.markCancellationDelivered;
+    this.onProgress = params.onProgress;
   }
 
   getKey(params: { executionId: string; stepKey: string }) {
@@ -59,6 +66,7 @@ export class MemoryHeapClient implements HeapClient {
     const step = { executionId: lease.executionId, stepKey };
     const { record, inserted } = this.insert(step, stepAttempt, done, stepResponseJson);
     if (inserted && done) {
+      this.onProgress?.(lease.executionId);
       this.onStepDone?.(step);
       for (const other of params.deleteWaitersOf ?? []) {
         this.onStepDone?.({ executionId: lease.executionId, stepKey: other });

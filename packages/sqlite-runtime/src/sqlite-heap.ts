@@ -1,7 +1,9 @@
 import {
   isLeaseCurrent,
   markCancellationDelivered,
+  recordExecutionProgress,
   type ExecutionLease,
+  type ExecutionState,
   type HeapClient,
   type HeapRecord,
   type LeaseLost,
@@ -63,7 +65,8 @@ export class SqliteHeapClient implements HeapClient {
 
   /**
    * Checks the lease against the `executions` row and writes the step record
-   * in one IMMEDIATE transaction, so no claim can interleave between them.
+   * in one IMMEDIATE transaction, so no claim can interleave between them. A
+   * new record resets the execution's delivery counts in the same transaction.
    */
   async writeStep(params: {
     lease: ExecutionLease;
@@ -88,10 +91,14 @@ export class SqliteHeapClient implements HeapClient {
         done,
         stepResponseJson
       );
-      // A waiter is deleted with the write that records its step's result.
-      // Unfinished attempts (e.g. a store wait, a suspended effect or a join)
-      // keep the waiter they registered.
+      // Only a done record counts as progress, because every delivery that
+      // reaches an unfinished wait writes a new not-done record. A waiter is
+      // deleted with the write that records its step's result. Unfinished
+      // attempts (e.g. a store wait, a suspended effect or a join) keep the
+      // waiter they registered.
       if (inserted && done) {
+        const next = recordExecutionProgress(state);
+        if (next !== state) this.executionsDao.updateState(next);
         this.deleteStepWaiters(executionId, stepKey);
         for (const other of params.deleteWaitersOf ?? []) {
           this.deleteStepWaiters(executionId, other);

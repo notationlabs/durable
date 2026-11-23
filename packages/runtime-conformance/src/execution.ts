@@ -1,6 +1,8 @@
 import {
   DEFAULT_LEASE_DURATION,
+  DeliveryLimitError,
   ExecutionListRequestError,
+  REDELIVERY_DELAY_MAX,
   defineStore,
   durableValueCodec,
   redeliveryDelay,
@@ -1577,6 +1579,257 @@ export function registerExecutionClientConformance({
         expect(await claim(runtime)).toEqual([]);
         advance(redeliveryDelay(1));
         await claimOne(runtime, "held-back");
+      });
+    });
+
+    describe("delivery limit", () => {
+      const LIMIT = 3;
+
+      function claimWithLimit(runtime: Runtime) {
+        return runtime.executions.claimDue({
+          limit: 100,
+          duration: LEASE,
+          maxExpiredDeliveries: LIMIT,
+        });
+      }
+
+      /** Lets the current lease expire and the longest redelivery delay pass. */
+      function expire(advance: (ms: number) => void) {
+        advance(LEASE + REDELIVERY_DELAY_MAX);
+      }
+
+      it("fails the execution with DeliveryLimitError when a claim reaches the limit", async ({
+        runtime,
+        clock,
+        advance,
+      }) => {
+        await admit(runtime, "crashing");
+        for (let delivery = 1; delivery <= LIMIT; delivery++) {
+          if (delivery > 1) expire(advance);
+          expect((await claimWithLimit(runtime)).map((l) => l.executionId)).toEqual([
+            "crashing",
+          ]);
+        }
+        expire(advance);
+        expect(await claimWithLimit(runtime)).toEqual([]);
+
+        const record = await runtime.executions.get("crashing");
+        expect(record).toMatchObject({
+          status: "failed",
+          updatedAt: clock.now,
+          unacknowledgedDeliveryCount: 0,
+          expiredDeliveryCount: 0,
+        });
+        const outcome = record?.outcome;
+        if (outcome?.status !== "failed") throw new Error("expected a failed outcome");
+        expect(outcome.error).toBeInstanceOf(DeliveryLimitError);
+        expect(outcome.error).toMatchObject({
+          name: "DeliveryLimitError",
+          code: "DELIVERY_LIMIT_REACHED",
+          deliveries: LIMIT,
+        });
+
+        // A failed execution is never claimed again, and a wake is ignored.
+        expect(
+          await runtime.executions.requestWake({ executionId: "crashing", wakeAt: clock.now })
+        ).toEqual({ status: "ignored" });
+        expire(advance);
+        expect(await claim(runtime)).toEqual([]);
+      });
+
+      it("calls onDeliveryLimit once for each execution it fails, after the record is failed", async ({
+        runtime,
+        advance,
+      }) => {
+        await admit(runtime, "reported");
+        const calls: { executionId: string; deliveries: number }[] = [];
+        const statuses: Promise<string | undefined>[] = [];
+        const claimReporting = () =>
+          runtime.executions.claimDue({
+            limit: 100,
+            duration: LEASE,
+            maxExpiredDeliveries: LIMIT,
+            onDeliveryLimit: (event) => {
+              calls.push(event);
+              statuses.push(runtime.executions.get(event.executionId).then((r) => r?.status));
+            },
+          });
+        for (let delivery = 1; delivery <= LIMIT; delivery++) {
+          if (delivery > 1) expire(advance);
+          expect(await claimReporting()).toHaveLength(1);
+        }
+        expect(calls).toEqual([]);
+        expire(advance);
+        expect(await claimReporting()).toEqual([]);
+        expire(advance);
+        await claimReporting();
+        expect(calls).toEqual([{ executionId: "reported", deliveries: LIMIT }]);
+        expect(await Promise.all(statuses)).toEqual(["failed"]);
+      });
+
+      it("shows the expired delivery count on the record, counting a held lease that has expired", async ({
+        runtime,
+        advance,
+      }) => {
+        await admit(runtime, "counted");
+        await claimWithLimit(runtime);
+        expect(await runtime.executions.get("counted")).toMatchObject({ expiredDeliveryCount: 0 });
+        advance(LEASE);
+        expect(await runtime.executions.get("counted")).toMatchObject({
+          expiredDeliveryCount: 1,
+          unacknowledgedDeliveryCount: 1,
+        });
+        expire(advance);
+        await claimWithLimit(runtime);
+        expect(await runtime.executions.get("counted")).toMatchObject({ expiredDeliveryCount: 1 });
+      });
+
+      it("wakes the executions joined to one that reaches the limit", async ({
+        runtime,
+        advance,
+      }) => {
+        await admit(runtime, "joiner");
+        const joinerLease = await claimOne(runtime, "joiner");
+        const target = acceptedId(await startFrom(runtime, "joiner", "child"));
+        expect(
+          await runtime.joins.join({
+            executionId: "joiner",
+            stepKey: "child",
+            targetExecutionId: target,
+          })
+        ).toEqual({ status: "waiting" });
+        await runtime.executions.acknowledge({
+          lease: joinerLease,
+          outcome: { status: "suspended" },
+        });
+
+        for (let delivery = 1; delivery <= LIMIT; delivery++) {
+          if (delivery > 1) expire(advance);
+          expect((await claimWithLimit(runtime)).map((l) => l.executionId)).toEqual([target]);
+        }
+        expire(advance);
+        expect(await claimWithLimit(runtime)).toEqual([]);
+        expect(await runtime.executions.get(target)).toMatchObject({ status: "failed" });
+        // The claim that failed the target woke the joiner in the same write.
+        expect(await claimWithLimit(runtime).then((l) => l.map((d) => d.executionId))).toEqual([
+          "joiner",
+        ]);
+      });
+
+      it("does not count released leases", async ({ runtime, advance }) => {
+        await admit(runtime, "released");
+        for (let delivery = 1; delivery <= LIMIT * 2; delivery++) {
+          const [lease] = await claimWithLimit(runtime);
+          expect(lease?.executionId).toBe("released");
+          await runtime.executions.release({ lease });
+          advance(REDELIVERY_DELAY_MAX);
+        }
+        expect(await runtime.executions.get("released")).toMatchObject({
+          status: "admitted",
+          unacknowledgedDeliveryCount: LIMIT * 2,
+        });
+        // A claim over an expired lease checks the limit. Had the releases
+        // counted, this claim would fail the execution.
+        await claimWithLimit(runtime);
+        expire(advance);
+        expect(await claimWithLimit(runtime)).toHaveLength(1);
+      });
+
+      it("resets the count when the holder records a new step", async ({ runtime, advance }) => {
+        await admit(runtime, "progressing");
+        let lease!: ExecutionLease;
+        for (let delivery = 1; delivery <= LIMIT; delivery++) {
+          if (delivery > 1) expire(advance);
+          [lease] = await claimWithLimit(runtime);
+        }
+        expect(
+          await runtime.heap.writeStep({
+            lease,
+            stepKey: "step",
+            stepAttempt: 0,
+            done: true,
+            stepResponseJson: "{}",
+          })
+        ).toMatchObject({ meta: { done: true } });
+        expect(await runtime.executions.get("progressing")).toMatchObject({
+          status: "running",
+          unacknowledgedDeliveryCount: 0,
+        });
+        for (let delivery = 1; delivery <= LIMIT - 1; delivery++) {
+          expire(advance);
+          expect(await claimWithLimit(runtime)).toHaveLength(1);
+        }
+        expire(advance);
+        expect(await claimWithLimit(runtime)).toEqual([]);
+        expect(await runtime.executions.get("progressing")).toMatchObject({ status: "failed" });
+      });
+
+      it("does not reset the count when a step write finds the record already written", async ({
+        runtime,
+        advance,
+      }) => {
+        await admit(runtime, "replaying");
+        let lease = await claimOne(runtime, "replaying");
+        const write = () =>
+          runtime.heap.writeStep({
+            lease,
+            stepKey: "step",
+            stepAttempt: 0,
+            done: true,
+            stepResponseJson: "{}",
+          });
+        await write();
+        for (let delivery = 2; delivery <= LIMIT; delivery++) {
+          expire(advance);
+          [lease] = await claimWithLimit(runtime);
+          await write();
+        }
+        expire(advance);
+        expect(await claimWithLimit(runtime)).toEqual([]);
+        expect(await runtime.executions.get("replaying")).toMatchObject({ status: "failed" });
+      });
+
+      it("does not reset the count when a step write records a step that is not done", async ({
+        runtime,
+        advance,
+      }) => {
+        await admit(runtime, "waiting");
+        let lease = await claimOne(runtime, "waiting");
+        for (let delivery = 1; delivery <= LIMIT; delivery++) {
+          if (delivery > 1) {
+            expire(advance);
+            [lease] = await claimWithLimit(runtime);
+          }
+          await runtime.heap.writeStep({
+            lease,
+            stepKey: "wait",
+            stepAttempt: delivery - 1,
+            done: false,
+            stepResponseJson: "{}",
+          });
+        }
+        expire(advance);
+        expect(await claimWithLimit(runtime)).toEqual([]);
+        expect(await runtime.executions.get("waiting")).toMatchObject({ status: "failed" });
+      });
+
+      it("resets the count on acknowledgement", async ({ runtime, clock, advance }) => {
+        await admit(runtime, "recovering");
+        let lease!: ExecutionLease;
+        for (let delivery = 1; delivery <= LIMIT; delivery++) {
+          if (delivery > 1) expire(advance);
+          [lease] = await claimWithLimit(runtime);
+        }
+        await runtime.executions.acknowledge({ lease, outcome: { status: "suspended" } });
+        for (let delivery = 1; delivery <= LIMIT; delivery++) {
+          if (delivery === 1) {
+            await runtime.executions.requestWake({ executionId: "recovering", wakeAt: clock.now });
+          } else {
+            expire(advance);
+          }
+          expect(await claimWithLimit(runtime)).toHaveLength(1);
+        }
+        expect(await runtime.executions.get("recovering")).toMatchObject({ status: "running" });
       });
     });
 

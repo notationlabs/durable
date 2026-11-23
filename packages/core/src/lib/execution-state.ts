@@ -16,7 +16,6 @@ import type {
   LeaseLost,
   WorkflowRunOutcome,
 } from "../base/execution";
-import { isTerminalExecutionStatus } from "../base/execution";
 import type { DurableValue } from "../base/durable-value";
 import {
   decodeParsedValue,
@@ -24,6 +23,7 @@ import {
   encodeThrownValue,
   isPlainObject,
 } from "../base/durable-value";
+import { DeliveryLimitError, isTerminalExecutionStatus } from "../base/execution";
 import { WORKFLOW_RESULT_STEP_KEY, WorkflowValueError } from "../base/errors";
 import { ReadOnlyMap } from "../utils/map";
 
@@ -70,6 +70,13 @@ export type ExecutionState = {
    * `unacknowledgedDeliveryCountAt` adds that one.
    */
   unacknowledgedDeliveryCount: number;
+  /**
+   * Leases that ended by expiry and a later claim since the execution last
+   * made progress: since its last acknowledgement or new done step record. A
+   * release does not change it. `claimExecution` compares it with the
+   * delivery limit.
+   */
+  expiredDeliveryCount: number;
   /**
    * When a released execution may be claimed again. A held lease's delay is
    * measured from `leaseExpiresAt` instead.
@@ -262,6 +269,7 @@ export function createExecutionState(params: {
     leaseToken: 0,
     leaseExpiresAt: null,
     unacknowledgedDeliveryCount: 0,
+    expiredDeliveryCount: 0,
     redeliverAt: null,
     parent: params.parent ?? null,
     cancellation: params.cancellation ?? null,
@@ -292,6 +300,15 @@ export function unacknowledgedDeliveryCountAt(state: ExecutionState, now: number
   return state.unacknowledgedDeliveryCount + (hasExpiredLease(state, now) ? 1 : 0);
 }
 
+/**
+ * Deliveries that ended with an expired lease at `now`, counting a held lease
+ * that has expired as ended. For a claim that reaches the delivery limit, it
+ * is the count the `DeliveryLimitError` reports.
+ */
+export function expiredDeliveryCountAt(state: ExecutionState, now: number) {
+  return state.expiredDeliveryCount + (hasExpiredLease(state, now) ? 1 : 0);
+}
+
 export function toExecutionRecord(
   state: ExecutionState,
   now: number
@@ -309,6 +326,7 @@ export function toExecutionRecord(
     admittedAt: state.admittedAt,
     updatedAt: state.updatedAt,
     unacknowledgedDeliveryCount: unacknowledgedDeliveryCountAt(state, now),
+    expiredDeliveryCount: expiredDeliveryCountAt(state, now),
     ...(state.parent !== null ? { parent: { ...state.parent } } : {}),
     ...(state.cancellation !== null
       ? { cancellation: toExecutionCancellation(state.cancellation) }
@@ -386,11 +404,48 @@ export function requestExecutionWake(
 /**
  * Leases a claimable execution with the next token. Adapters check
  * `isExecutionClaimable` first, in the same atomic write.
+ *
+ * When the claim is over an expired lease and takes `expiredDeliveryCount` to
+ * `maxExpiredDeliveries`, it fails the execution with a `DeliveryLimitError`
+ * instead, and `lease` is null. Adapters then treat the execution as made
+ * terminal outside a delivery, as after a forced cancel: they delete the
+ * waiters it holds and wake its join waiters in the same write.
  */
 export function claimExecution(
   state: ExecutionState,
-  params: { now: number; duration: number }
-): { state: ExecutionState; lease: ExecutionLease } {
+  params: {
+    now: number;
+    duration: number;
+    /** Absent for no limit. */
+    maxExpiredDeliveries?: number;
+  }
+): { state: ExecutionState; lease: ExecutionLease | null } {
+  const expired = state.leaseExpiresAt !== null;
+  const expiredDeliveryCount = state.expiredDeliveryCount + (expired ? 1 : 0);
+  if (
+    expired &&
+    params.maxExpiredDeliveries !== undefined &&
+    expiredDeliveryCount >= params.maxExpiredDeliveries
+  ) {
+    return {
+      state: {
+        ...state,
+        status: "failed",
+        outcome: encodeExecutionOutcome({
+          status: "failed",
+          error: new DeliveryLimitError(expiredDeliveryCount),
+        }),
+        dueAt: null,
+        claimedDueAt: null,
+        leaseExpiresAt: null,
+        redeliverAt: null,
+        unacknowledgedDeliveryCount: 0,
+        expiredDeliveryCount: 0,
+        updatedAt: params.now,
+      },
+      lease: null,
+    };
+  }
   const lease: ExecutionLease = {
     executionId: state.executionId,
     token: state.leaseToken + 1,
@@ -400,8 +455,8 @@ export function claimExecution(
     state: {
       ...state,
       // Claiming over an expired lease ends it unacknowledged.
-      unacknowledgedDeliveryCount:
-        state.unacknowledgedDeliveryCount + (state.leaseExpiresAt !== null ? 1 : 0),
+      unacknowledgedDeliveryCount: state.unacknowledgedDeliveryCount + (expired ? 1 : 0),
+      expiredDeliveryCount,
       // The lease covers the wakes due now, plus any an expired lease covered.
       claimedDueAt: earliest(state.dueAt, state.claimedDueAt),
       dueAt: null,
@@ -469,6 +524,7 @@ export function acknowledgeExecution(
     claimedDueAt: null,
     leaseExpiresAt: null,
     unacknowledgedDeliveryCount: 0,
+    expiredDeliveryCount: 0,
     redeliverAt: null,
     updatedAt: now,
   };
@@ -638,6 +694,7 @@ export function requestExecutionCancellation(
       leaseExpiresAt: null,
       redeliverAt: null,
       unacknowledgedDeliveryCount: 0,
+      expiredDeliveryCount: 0,
       updatedAt: now,
     },
     result: outcome,
@@ -677,9 +734,25 @@ export function cancellationForStartedChild(
 }
 
 /**
- * Sets `deliveredAt` on the execution's request. Adapters apply it in the
- * same fenced write as the step records of the delivered cancellation, after
- * checking the lease. Throws if no request is recorded.
+ * Resets both delivery counts after the current holder records a new done
+ * step record. Adapters apply it in the same fenced write as the record, after
+ * checking the lease. A not-done record does not count as progress, because
+ * every delivery that reaches an unfinished wait writes a new one. A replayed
+ * step writes nothing, so it does not count either. Returns `state` itself
+ * when both counts are 0, so adapters can skip the write.
+ */
+export function recordExecutionProgress(state: ExecutionState): ExecutionState {
+  if (state.unacknowledgedDeliveryCount === 0 && state.expiredDeliveryCount === 0) {
+    return state;
+  }
+  return { ...state, unacknowledgedDeliveryCount: 0, expiredDeliveryCount: 0 };
+}
+
+/**
+ * Sets `deliveredAt` on the execution's request and resets the delivery
+ * counts, because a delivered cancellation is progress. Adapters apply it in
+ * the same fenced write as the step records of the delivered cancellation,
+ * after checking the lease. Throws if no request is recorded.
  */
 export function markCancellationDelivered(
   state: ExecutionState,
@@ -692,6 +765,8 @@ export function markCancellationDelivered(
   return {
     ...state,
     cancellation: { ...state.cancellation, deliveredAt: now },
+    unacknowledgedDeliveryCount: 0,
+    expiredDeliveryCount: 0,
     updatedAt: now,
   };
 }

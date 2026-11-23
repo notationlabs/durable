@@ -21,8 +21,9 @@ The dispatcher bounds concurrent work by reserving free slots from `concurrency`
 | `leaseDuration` | `30_000` ms |
 | `renewInterval` | `leaseDuration / 3` |
 | `abortGracePeriod` | `1_000` ms |
+| `maxExpiredDeliveries` | No limit |
 
-`renewInterval` must be positive and shorter than `leaseDuration`, and `filter.executionIds` cannot be empty.
+`renewInterval` must be positive and shorter than `leaseDuration`, `filter.executionIds` cannot be empty, and `maxExpiredDeliveries` must be a positive integer.
 
 ## Fencing tokens (`dueAt` vs `claimedDueAt`)
 
@@ -70,4 +71,42 @@ Normal workflow outcomes settle through `acknowledge`, resetting retry counts an
 | Step conflict or runtime error | Calls `release` to schedule redelivery after backoff |
 | Aborted delivery signal | Skips `release` and `acknowledge` after renewal loss or grace expiry |
 
-If loading state, releasing, or acknowledging fails unexpectedly, the dispatcher lets the lease expire safely. Each unacknowledged delivery increments the failure count and schedules retry via capped exponential backoff (`1_000 * 2 ** (n - 1)` ms, up to 300,000 ms).
+If loading state, releasing, or acknowledging fails unexpectedly, the dispatcher lets the lease expire safely. Each unacknowledged delivery increments the failure count and schedules retry via capped exponential backoff (`1_000 * 2 ** (n - 1)` ms, up to 300,000 ms). A new done step record resets the count, as an acknowledgement does.
+
+## Delivery limit
+
+A delivery whose lease expires has ended without the dispatcher seeing it end. The usual causes are a worker that exits, a process that is reset, and a step that runs past its lease without the renewal reaching the runtime. If the cause is in the workflow, for example a step that always crashes its worker, the execution is delivered again after each backoff for as long as the runtime runs.
+
+A restart or deploy of the dispatcher's process also ends each delivery in flight with an expired lease. An execution whose step runs longer than the time between deploys can reach a small limit without any fault in the workflow. Set the limit well above the number of restarts expected during one execution.
+
+`maxExpiredDeliveries` sets how many consecutive deliveries of one execution may end with an expired lease. The dispatcher passes it to `claimDue`. The default is no limit.
+
+`ExecutionState.expiredDeliveryCount` holds the count. The runtime changes it in these writes:
+
+| Write | Effect on `expiredDeliveryCount` |
+| :--- | :--- |
+| Claim over an expired lease | Adds 1 |
+| Release | No change |
+| New done step record | Resets to 0 |
+| New step record that is not done | No change |
+| Step write that finds the record already written | No change |
+| Cancellation recorded as delivered | Resets to 0 |
+| Acknowledgement or forced cancellation | Resets to 0 |
+
+A done step write and an acknowledgement also reset `unacknowledgedDeliveryCount`, so the backoff starts again at 1,000 ms after the execution has made progress. A done step write changes the `executions` row only when one of the counts is not 0.
+
+A record that is not done does not count, because a store, join or effect wait that is still unfinished writes a new not-done record on every delivery. If it counted, a delivery that dies beside such a wait would reset the count each time and never reach the limit. A failed attempt awaiting a retry is also not done, but its delivery is acknowledged, and the acknowledgement resets the count.
+
+A release does not count, because the dispatcher released the lease after a runtime client rejected: the dispatcher was running and the cause is outside the workflow. A replayed step writes nothing, so an execution whose delivery dies at the same step each time keeps counting.
+
+`claimExecution` checks the limit in the same atomic write as the claim. When the claim over an expired lease would take the count to the limit, it records the execution `failed` with a `DeliveryLimitError` and takes no lease. The error has `code: "DELIVERY_LIMIT_REACHED"` and `deliveries`, the number of deliveries that ended with an expired lease. The adapter then treats the execution like a force-cancelled one: it deletes the store, effect and join waiters the execution holds, and wakes its join waiters, in the same write. `claimDue` returns no lease for the execution.
+
+After the write commits, `claimDue` calls the request's `onDeliveryLimit` once for each execution it failed, with `executionId` and `deliveries`. The dispatcher's callback logs the failure at error level and emits the `DeliveryLimitError` on `workflowEndEmitter`, so a `wait` in the same process returns without waiting for its next poll. An adapter that does not call the callback still records the failure correctly.
+
+A claim that fails an execution still counts against the claim's `limit`, so the dispatcher starts fewer deliveries than it has free slots until its next claim.
+
+`ExecutionRecord.expiredDeliveryCount` shows the count. Like `unacknowledgedDeliveryCount`, it counts a held lease that has expired, before any claim replaces it.
+
+If a graceful cancellation is pending and not yet delivered when the limit is reached, the execution ends `failed` with the `DeliveryLimitError`, not `cancelled`. Its cancellation request stays on the record with `deliveredAt` null.
+
+No workflow code runs for this failure, so a workflow cannot catch it. `wait`, `poll`, `/wait`, `/events` and joins in other processes read it from the record like any other failure.
