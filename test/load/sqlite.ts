@@ -15,23 +15,18 @@ if (runtime !== "bun" && runtime !== "node") {
 
 const dir = mkdtempSync(join(tmpdir(), "durable-load-"));
 const env: Record<string, string | undefined> = { ...process.env, LOAD_DB: join(dir, "load.sqlite") };
-let command: string[];
-if (runtime === "bun") {
-  command = ["bun", join(import.meta.dirname, "sqlite-server.ts")];
-} else {
-  // Node runs the server and every worker from a bundle, so that no process
-  // loads TypeScript source at start-up. The Bun driver stays out of the
-  // bundle, because Node cannot load `bun:sqlite`.
-  const build = await Bun.build({
-    entrypoints: ["sqlite-server.ts", "sqlite-worker.ts"].map((file) => join(import.meta.dirname, file)),
-    outdir: join(dir, "build"),
-    target: "node",
-    external: ["@durable/sqlite-runtime/bun"],
-  });
-  if (!build.success) throw new AggregateError(build.logs, "Bundling the Node server failed");
-  command = ["node", join(dir, "build", "sqlite-server.js")];
-  env.LOAD_WORKER_PATH = join(dir, "build", "sqlite-worker.js");
-}
+// Both runtimes run the server and every worker from a bundle, so that no
+// process spends its start-up loading TypeScript source. Each bundle leaves
+// out the other runtime's SQLite driver, which its runtime cannot load.
+const build = await Bun.build({
+  entrypoints: ["sqlite-server.ts", "sqlite-worker.ts"].map((file) => join(import.meta.dirname, file)),
+  outdir: join(dir, "build"),
+  target: runtime,
+  external: [runtime === "bun" ? "@durable/sqlite-runtime/node" : "@durable/sqlite-runtime/bun"],
+});
+if (!build.success) throw new AggregateError(build.logs, "Bundling the server failed");
+env.LOAD_WORKER_PATH = join(dir, "build", "sqlite-worker.js");
+const command = [runtime, join(dir, "build", "sqlite-server.js")];
 const server = spawn(command[0], command.slice(1), { env, stdio: ["ignore", "pipe", "inherit"] });
 
 try {
