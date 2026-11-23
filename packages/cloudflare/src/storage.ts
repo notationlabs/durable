@@ -7,6 +7,7 @@ export interface DurableObjectStorageLike {
     exec(query: string, ...bindings: any[]): { toArray(): any[] };
   };
   transactionSync<R>(closure: () => R): R;
+  getAlarm(): Promise<number | null>;
   setAlarm(scheduledTime: number | Date): Promise<void>;
   deleteAlarm(): Promise<void>;
 }

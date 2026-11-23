@@ -257,3 +257,48 @@ test("at the delivery limit, the alarm fails the execution instead of delivering
   expect(object.alarms).toHaveLength(1);
   await expect.poll(() => fake.alarmAt).toBeNull();
 }, 10_000);
+
+test("a new instance sets the alarm when an execution is due and no alarm is set", async () => {
+  const workflow = createWorkflow(async function* (step) {
+    return yield* step.run(() => "delivered");
+  });
+  const fake = createFakeStorage();
+
+  // An object whose alarm write failed and which was then evicted: the
+  // execution is due and no alarm is set.
+  const evicted = new SqliteRuntime(createSqliteDb(fake.storage));
+  await evicted.executions.admit({
+    executionId: "due",
+    workflowId: "workflow",
+    params: undefined,
+    context: new Map(),
+  });
+  expect(fake.alarmAt).toBeNull();
+
+  // `poll` and `wait` write nothing, so only the alarm can start the delivery.
+  const { object, sdk } = createObject({ workflow }, undefined, fake);
+  expect(await sdk.wait("due", { timeout: 5_000 })).toMatchObject({
+    status: "completed",
+    result: "delivered",
+  });
+  expect(object.alarms).toHaveLength(1);
+}, 10_000);
+
+test("a new instance leaves an alarm that is already set to the claim time", async () => {
+  const workflow = createWorkflow(async function* (step) {
+    yield* step.delay(5_000);
+  });
+  const fake = createFakeStorage();
+  const first = createObject({ workflow }, undefined, fake);
+  const { executionId } = await first.sdk.trigger({ workflowId: "workflow" });
+  await expect.poll(async () => (await first.sdk.poll(executionId))?.status).toBe("suspended");
+  await expect.poll(() => fake.alarmAt).toBe(first.object.host.runtime.executions.nextClaimAt());
+
+  let writes = 0;
+  const { setAlarm, deleteAlarm } = fake.storage;
+  fake.storage.setAlarm = (at) => (writes++, setAlarm(at));
+  fake.storage.deleteAlarm = () => (writes++, deleteAlarm());
+  first.object.restart();
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  expect(writes).toBe(0);
+});

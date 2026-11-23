@@ -1,3 +1,5 @@
+import { spawn } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { createHttpSdkFactory } from "../../packages/durable/dist/client.js";
 import type { Router } from "./workflows";
 
@@ -532,6 +534,9 @@ Object.assign(scenarios, {
     const found = await evidence(ack.executionId, tag, t0);
     check(view?.status === "completed", `status ${view?.status}`);
     const { before, after } = (view as any).result;
+    if (process.env.E2E_REQUIRE_EVICTED) {
+      check(before.instance !== after.instance, `not evicted: instance ${before.instance} ran both steps`);
+    }
     const constructed = found.log.filter((l: any) => l.e === "constructed");
     return {
       delayMs,
@@ -543,6 +548,51 @@ Object.assign(scenarios, {
       constructedAt: constructed.map((l: any) => ({ t: l.t, i: l.i })),
       ...found,
     };
+  },
+
+  // Runs `evict` once per delay in `E2E_EVICT_DELAYS_MS`, all at the same
+  // time, each in its own process and on its own object. A run fails unless a
+  // different instance ran the step after the delay.
+  async "evict-many"() {
+    const minutes = [5, 5, 10, 10, 15, 20, 30, 30, 45, 60];
+    const delays = process.env.E2E_EVICT_DELAYS_MS
+      ? process.env.E2E_EVICT_DELAYS_MS.split(",").map(Number)
+      : minutes.map((m) => m * 60_000);
+    const runs = await Promise.all(
+      delays.map(async (delayMs, i) => {
+        const child = spawn(
+          process.execPath,
+          [...process.execArgv, fileURLToPath(import.meta.url), "evict"],
+          {
+            env: {
+              ...process.env,
+              E2E_OBJECT: `${object}-evict-${i}`,
+              E2E_DELAY_MS: String(delayMs),
+              E2E_REQUIRE_EVICTED: "1",
+            },
+            stdio: ["ignore", "pipe", "inherit"],
+          }
+        );
+        let out = "";
+        child.stdout.on("data", (chunk) => (out += chunk));
+        const code = await new Promise((resolve) => child.on("close", resolve));
+        const line = out.split("\n").find((l) => l.startsWith('{"scenario":"evict"'));
+        const result = line ? JSON.parse(line) : { pass: false, error: `exit code ${code}, no result` };
+        return {
+          object: `${object}-evict-${i}`,
+          delayMs,
+          pass: result.pass,
+          evicted: result.detail?.evicted ?? false,
+          afterStepLagMs: result.detail?.afterStepLagMs,
+          instancesConstructed: result.detail?.instancesConstructed,
+          error: result.error,
+        };
+      })
+    );
+    console.log(JSON.stringify({ runs }));
+    const failed = runs.filter((run) => !run.pass);
+    check(failed.length === 0, `${failed.length} of ${runs.length} runs failed: ${JSON.stringify(failed)}`);
+    return { runs };
   },
 
   // Starts a held step and samples the object until the execution ends. Run

@@ -79,6 +79,9 @@ export function createFakeStorage() {
         throw err;
       }
     },
+    async getAlarm() {
+      return alarmAt;
+    },
     async setAlarm(scheduledTime) {
       const at = Number(scheduledTime);
       if (at > Date.now()) alarmAt = at;

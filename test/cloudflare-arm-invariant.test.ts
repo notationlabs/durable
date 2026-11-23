@@ -102,6 +102,7 @@ function createHarness(options: Options) {
     const storage: DurableObjectStorageLike = {
       sql: { exec: (query, ...bindings) => (live(), fake.storage.sql.exec(query, ...bindings)) },
       transactionSync: (closure) => (live(), fake.storage.transactionSync(closure)),
+      getAlarm: async () => (live(), fake.storage.getAlarm()),
       setAlarm: async (at) => (live(), fake.storage.setAlarm(at)),
       deleteAlarm: async () => (live(), fake.storage.deleteAlarm()),
     };

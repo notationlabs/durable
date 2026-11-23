@@ -219,6 +219,21 @@ export function createWorkflowObject<Router extends WorkflowRouter>(
     );
   };
 
+  // A new instance does not know the alarm time. If an alarm write failed
+  // before an eviction, executions are due and no alarm is set, and without
+  // this read nothing would claim them until the next write.
+  storage
+    .getAlarm()
+    .then((current) => {
+      // A commit or the alarm handler has set the alarm since.
+      if (armedAt !== undefined || pumping) return;
+      armedAt = current;
+      arm();
+    })
+    .catch((err) => {
+      logger.error({ err }, "Failed to read the Durable Object alarm");
+    });
+
   return {
     runtime,
     invoker,

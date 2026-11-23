@@ -99,6 +99,24 @@ pnpm exec wrangler dev --port 8799 --var E2E_SECRET:local
 E2E_URL=http://localhost:8799 E2E_SECRET=local node --import tsx run.ts
 ```
 
+The same scenarios run against a deployed Worker. Deploy the test Worker with a secret, pass its URL and the secret to `run.ts`, and delete the Worker afterwards. Every route refuses a request without the secret:
+
+```sh
+export CLOUDFLARE_ACCOUNT_ID=... CLOUDFLARE_API_TOKEN=... E2E_SECRET=$(openssl rand -hex 16)
+pnpm exec wrangler deploy --var E2E_SECRET:$E2E_SECRET
+export E2E_URL=https://durable-e2e-test.<subdomain>.workers.dev
+
+node --import tsx run.ts                      # the quick set, about 1 minute
+node --import tsx run.ts evict-many           # ten idle evictions in parallel, about 62 minutes
+node --import tsx run.ts soak                 # one hour; E2E_SOAK_MS=86400000 E2E_SOAK_RATE=0.1 for 24 hours
+node --import tsx run.ts spin                 # a CPU-bound step
+node --import tsx run.ts alarm-set alarm-fail # how Cloudflare fires and retries alarms, about 12 minutes
+
+pnpm exec wrangler delete
+```
+
+`evict-many` runs `evict` on ten objects with delays from 5 to 60 minutes (`E2E_EVICT_DELAYS_MS`). A run fails unless a different instance ran the step after the delay, so it does not pass on local workerd, which keeps the object in memory. `deploy` needs a `wrangler deploy` with a changed `padding.ts` about 20 seconds after it starts. Each `run.ts` process uses a new object unless `E2E_OBJECT` names one, so scenarios can run at the same time in separate processes.
+
 Two more suites run inside workerd with `@cloudflare/vitest-plugin`, on real Durable Object storage and alarms. They need no Cloudflare account and no build, and CI runs them in the `workerd` job. `test/cloudflare-e2e/conformance` runs the runtime conformance suites. `test/cloudflare-e2e/host` runs the workflow object's scenarios; its alarms are the ones workerd fires. `test/cloudflare-e2e` is outside the pnpm workspace, so install it with npm first:
 
 ```sh
