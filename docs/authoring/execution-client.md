@@ -134,6 +134,7 @@ Pass the fetched `SequencedExecutionState[]` slice to `toExecutionListPage`. Fet
 ```ts [src/postgres-execution-claim.ts]
 import {
   claimExecution,
+  expiredDeliveryCountAt,
   isExecutionClaimable,
   type ExecutionClaimFilter,
   type ExecutionLease,
@@ -149,12 +150,14 @@ export async function claimDueExecutions(
     duration: number;
     filter?: ExecutionClaimFilter;
     maxExpiredDeliveries?: number;
+    onDeliveryLimit?: (event: { executionId: string; deliveries: number }) => void;
   }
 ): Promise<ExecutionLease[]> {
   const ids = request.filter?.executionIds;
   if (request.limit <= 0 || ids?.length === 0) return [];
+  const failed: { executionId: string; deliveries: number }[] = [];
 
-  return withTransaction(pool, async (tx) => {
+  const leases = await withTransaction(pool, async (tx) => {
     const now = clock();
     const candidates = await tx.selectClaimableForUpdateSkipLocked(now, request.limit, ids);
     const leases: ExecutionLease[] = [];
@@ -171,6 +174,10 @@ export async function claimDueExecutions(
         // The claim reached the delivery limit and recorded the execution failed.
         await tx.deleteWaitersHeldBy(state.executionId);
         await tx.wakeJoinWaitersOf(state.executionId);
+        failed.push({
+          executionId: state.executionId,
+          deliveries: expiredDeliveryCountAt(state, now),
+        });
         continue;
       }
       leases.push(claimed.lease);
@@ -178,10 +185,12 @@ export async function claimDueExecutions(
 
     return leases;
   });
+  for (const event of failed) request.onDeliveryLimit?.(event);
+  return leases;
 }
 ```
 
-When `claimExecution` returns `lease: null`, the claim reached `maxExpiredDeliveries` and the state is `failed` with a `DeliveryLimitError`. Delete the waiters the execution holds and wake its join waiters in the same transaction, as for a forced cancellation.
+When `claimExecution` returns `lease: null`, the claim reached `maxExpiredDeliveries` and the state is `failed` with a `DeliveryLimitError`. Delete the waiters the execution holds and wake its join waiters in the same transaction, as for a forced cancellation. After the transaction commits, call `onDeliveryLimit` once for each execution the claim failed. `expiredDeliveryCountAt(state, now)` on the state before the claim gives `deliveries`.
 
 A heap step write that inserts a new done record must apply `recordExecutionProgress` to the execution's state in the same transaction, and write the state back when the helper returns a different object. A write that inserts a record that is not done, or finds the record already stored, must not.
 

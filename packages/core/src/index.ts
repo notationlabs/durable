@@ -130,6 +130,7 @@ export {
   executionIdConflict,
   executionNotFound,
   executionStatusAt,
+  expiredDeliveryCountAt,
   matchExecutionAdmission,
   isExecutionClaimable,
   isLeaseCurrent,

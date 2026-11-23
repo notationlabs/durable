@@ -101,8 +101,12 @@ A release does not count, because the dispatcher released the lease after a runt
 
 `claimExecution` checks the limit in the same atomic write as the claim. When the claim over an expired lease would take the count to the limit, it records the execution `failed` with a `DeliveryLimitError` and takes no lease. The error has `code: "DELIVERY_LIMIT_REACHED"` and `deliveries`, the number of deliveries that ended with an expired lease. The adapter then treats the execution like a force-cancelled one: it deletes the store, effect and join waiters the execution holds, and wakes its join waiters, in the same write. `claimDue` returns no lease for the execution.
 
-A claim that fails an execution still counts against the claim's `limit`, so the dispatcher starts fewer deliveries than it has free slots until its next claim. The dispatcher does not log the failure.
+After the write commits, `claimDue` calls the request's `onDeliveryLimit` once for each execution it failed, with `executionId` and `deliveries`. The dispatcher's callback logs the failure at error level and emits the `DeliveryLimitError` on `workflowEndEmitter`, so a `wait` in the same process returns without waiting for its next poll. An adapter that does not call the callback still records the failure correctly.
+
+A claim that fails an execution still counts against the claim's `limit`, so the dispatcher starts fewer deliveries than it has free slots until its next claim.
+
+`ExecutionRecord.expiredDeliveryCount` shows the count. Like `unacknowledgedDeliveryCount`, it counts a held lease that has expired, before any claim replaces it.
 
 If a graceful cancellation is pending and not yet delivered when the limit is reached, the execution ends `failed` with the `DeliveryLimitError`, not `cancelled`. Its cancellation request stays on the record with `deliveredAt` null.
 
-No workflow code runs for this failure, so a workflow cannot catch it. `workflowEndEmitter` does not emit it, because no delivery ends; `wait`, `poll`, `/wait`, `/events` and joins read it from the record like any other failure.
+No workflow code runs for this failure, so a workflow cannot catch it. `wait`, `poll`, `/wait`, `/events` and joins in other processes read it from the record like any other failure.

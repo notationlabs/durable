@@ -4,6 +4,7 @@ import {
   createExecutionState,
   createStartedExecution,
   executionNotFound,
+  expiredDeliveryCountAt,
   isExecutionClaimable,
   isTerminalExecutionStatus,
   matchExecutionAdmission,
@@ -231,12 +232,14 @@ export class SqliteExecutionClient implements ExecutionClient {
     duration: number;
     filter?: ExecutionClaimFilter;
     maxExpiredDeliveries?: number;
+    onDeliveryLimit?: (event: { executionId: string; deliveries: number }) => void;
   }): Promise<ExecutionLease[]> {
     const executionIds = request.filter?.executionIds;
     if (request.limit <= 0 || executionIds?.length === 0) return [];
+    const failed: { executionId: string; deliveries: number }[] = [];
     // The IMMEDIATE transaction holds the write lock, so concurrent claims from
     // any process sharing the file see each other's leases.
-    return runTransaction(this.db, () => {
+    const leases = runTransaction(this.db, () => {
       const now = this.clock();
       const leases: ExecutionLease[] = [];
 
@@ -256,6 +259,7 @@ export class SqliteExecutionClient implements ExecutionClient {
         this.executionsDao.updateState(claimed.state);
         if (claimed.lease === null) {
           this.onEndedOutsideDelivery(executionId);
+          failed.push({ executionId, deliveries: expiredDeliveryCountAt(state, now) });
           continue;
         }
         leases.push(claimed.lease);
@@ -263,6 +267,8 @@ export class SqliteExecutionClient implements ExecutionClient {
 
       return leases;
     });
+    for (const event of failed) request.onDeliveryLimit?.(event);
+    return leases;
   }
 
   async renew(request: {

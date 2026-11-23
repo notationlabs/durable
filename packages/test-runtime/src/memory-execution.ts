@@ -4,6 +4,7 @@ import {
   createExecutionState,
   createStartedExecution,
   executionNotFound,
+  expiredDeliveryCountAt,
   isExecutionClaimable,
   isLeaseCurrent,
   isTerminalExecutionStatus,
@@ -267,6 +268,7 @@ export class MemoryExecutionClient implements ExecutionClient {
     duration: number;
     filter?: ExecutionClaimFilter;
     maxExpiredDeliveries?: number;
+    onDeliveryLimit?: (event: { executionId: string; deliveries: number }) => void;
   }): Promise<ExecutionLease[]> {
     const now = this.clock();
     const ids = request.filter?.executionIds && new Set(request.filter.executionIds);
@@ -285,6 +287,7 @@ export class MemoryExecutionClient implements ExecutionClient {
       .slice(0, Math.max(0, request.limit));
 
     const leases: ExecutionLease[] = [];
+    const failed: { executionId: string; deliveries: number }[] = [];
     for (const { state } of claimable) {
       const claimed = claimExecution(state, {
         now,
@@ -295,10 +298,15 @@ export class MemoryExecutionClient implements ExecutionClient {
       if (claimed.lease === null) {
         this.onEndedOutsideDelivery?.(state.executionId);
         this.onTerminal?.(state.executionId);
+        failed.push({
+          executionId: state.executionId,
+          deliveries: expiredDeliveryCountAt(state, now),
+        });
       } else {
         leases.push(claimed.lease);
       }
     }
+    for (const event of failed) request.onDeliveryLimit?.(event);
     return leases;
   }
 

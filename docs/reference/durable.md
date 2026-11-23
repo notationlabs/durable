@@ -601,6 +601,7 @@ export interface ExecutionRecord {
   admittedAt: number;
   updatedAt: number;
   unacknowledgedDeliveryCount: number;
+  expiredDeliveryCount: number;
   parent?: ExecutionParent;
   cancellation?: ExecutionCancellation;
 }

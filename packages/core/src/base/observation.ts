@@ -28,7 +28,7 @@ export type TerminalExecutionView =
 
 /**
  * What an observer sees of an execution record. It leaves out `params`,
- * `context`, lease and wake state and `unacknowledgedDeliveryCount`;
+ * `context`, lease and wake state and the delivery counts;
  * operators read those through `ExecutionClient.get`.
  */
 export type ExecutionView = ActiveExecutionView | TerminalExecutionView;

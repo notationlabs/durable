@@ -300,6 +300,15 @@ export function unacknowledgedDeliveryCountAt(state: ExecutionState, now: number
   return state.unacknowledgedDeliveryCount + (hasExpiredLease(state, now) ? 1 : 0);
 }
 
+/**
+ * Deliveries that ended with an expired lease at `now`, counting a held lease
+ * that has expired as ended. For a claim that reaches the delivery limit, it
+ * is the count the `DeliveryLimitError` reports.
+ */
+export function expiredDeliveryCountAt(state: ExecutionState, now: number) {
+  return state.expiredDeliveryCount + (hasExpiredLease(state, now) ? 1 : 0);
+}
+
 export function toExecutionRecord(
   state: ExecutionState,
   now: number
@@ -317,6 +326,7 @@ export function toExecutionRecord(
     admittedAt: state.admittedAt,
     updatedAt: state.updatedAt,
     unacknowledgedDeliveryCount: unacknowledgedDeliveryCountAt(state, now),
+    expiredDeliveryCount: expiredDeliveryCountAt(state, now),
     ...(state.parent !== null ? { parent: { ...state.parent } } : {}),
     ...(state.cancellation !== null
       ? { cancellation: toExecutionCancellation(state.cancellation) }

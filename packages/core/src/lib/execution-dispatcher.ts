@@ -9,6 +9,7 @@ import type {
   WorkflowRunOutcome,
 } from "../base/execution";
 import {
+  DeliveryLimitError,
   LeaseLostError,
   WorkflowCancelledError,
   isTerminalExecutionStatus,
@@ -58,7 +59,8 @@ export interface DispatcherOptions {
    * The number of consecutive deliveries of one execution that may end with
    * an expired lease. When a claim would reach it, the runtime records the
    * execution `failed` with a `DeliveryLimitError` instead of delivering it
-   * again, and no workflow code runs. Released leases do not count. A new
+   * again, and no workflow code runs. The dispatcher logs the failure at
+   * error level. Released leases do not count. A new
    * done step record, an acknowledgement or a delivered cancellation resets
    * the count. It must be a positive integer.
    * @default no limit
@@ -175,6 +177,7 @@ export class ExecutionDispatcher {
         duration: this.leaseDuration,
         filter: this.filter,
         maxExpiredDeliveries: this.maxExpiredDeliveries,
+        onDeliveryLimit: (event) => this.onDeliveryLimit(event),
       });
     } finally {
       this.claiming -= slots;
@@ -416,6 +419,17 @@ export class ExecutionDispatcher {
         return current;
       },
     };
+  }
+
+  private onDeliveryLimit(event: { executionId: string; deliveries: number }) {
+    this.logger.error(
+      event,
+      "Execution failed: its deliveries reached the limit of expired leases"
+    );
+    this.invoker.workflowEndEmitter.emit(
+      event.executionId,
+      new DeliveryLimitError(event.deliveries)
+    );
   }
 
   private warnLost(lease: ExecutionLease) {

@@ -80,6 +80,7 @@ export interface ExecutionRecord {
   admittedAt: number;
   updatedAt: number;
   unacknowledgedDeliveryCount: number;
+  expiredDeliveryCount: number;
   parent?: ExecutionParent;
   cancellation?: ExecutionCancellation;
 }
@@ -190,6 +191,7 @@ export interface ExecutionClient {
     duration: number;
     filter?: ExecutionClaimFilter;
     maxExpiredDeliveries?: number;
+    onDeliveryLimit?: (event: { executionId: string; deliveries: number }) => void;
   }): Promise<ExecutionLease[]>;
   renew(request: {
     lease: ExecutionLease;
@@ -1003,6 +1005,7 @@ export type SequencedExecutionState = {
 | `toExecutionListPage` | Builds `{ executions, cursor? }` from `limit + 1` sequenced rows |
 | `executionStatusAt` | Returns `"running"` while `leaseExpiresAt > now`, else `state.status` |
 | `unacknowledgedDeliveryCountAt` | Counts consecutive unacknowledged deliveries including an expired lease |
+| `expiredDeliveryCountAt` | Counts deliveries ended by lease expiry since the last progress, including an expired lease that is still held |
 | `redeliveryDelay` | Computes exponential backoff between `1000` and `300000` ms |
 | `toExecutionRecord` | Decodes `ExecutionState` into an `ExecutionRecord` |
 | `executionNotFound` | Builds `{ status: "rejected", code: "EXECUTION_NOT_FOUND", message }` |

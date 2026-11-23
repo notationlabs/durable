@@ -487,7 +487,13 @@ test("fails an execution whose deliveries keep ending with an expired lease once
   const { invoker, stats } = stubInvoker(async () => {
     throw new WorkerExitedError("Worker process exited before replying (code 1)");
   });
-  const dispatcher = dispatcherFor(runtime, invoker, { maxExpiredDeliveries: 2 });
+  const error = vi.fn();
+  const dispatcher = dispatcherFor(runtime, invoker, {
+    maxExpiredDeliveries: 2,
+    logger: { ...logger, error } as unknown as Logger,
+  });
+  const ended = vi.fn();
+  invoker.workflowEndEmitter.on("exits", ended);
   await admit(runtime, "exits");
 
   for (let delivery = 1; delivery <= 3; delivery++) {
@@ -503,6 +509,11 @@ test("fails an execution whose deliveries keep ending with an expired lease once
     error: expect.any(DeliveryLimitError),
   });
   expect(record?.outcome).toMatchObject({ error: { deliveries: 2 } });
+  const limitLogs = error.mock.calls.filter(([fields]) => "deliveries" in fields);
+  expect(limitLogs).toEqual([[{ executionId: "exits", deliveries: 2 }, expect.any(String)]]);
+  expect(ended).toHaveBeenCalledTimes(1);
+  expect(ended.mock.calls[0][0]).toBeInstanceOf(DeliveryLimitError);
+  expect(ended.mock.calls[0][0]).toMatchObject({ deliveries: 2 });
 });
 
 test("does not count deliveries whose lease the dispatcher releases", async () => {

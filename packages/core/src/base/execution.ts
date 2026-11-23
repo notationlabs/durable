@@ -71,6 +71,11 @@ export interface ExecutionRecord {
   updatedAt: number;
   /** Consecutive deliveries that ended without an acknowledgement. */
   unacknowledgedDeliveryCount: number;
+  /**
+   * Deliveries that ended with an expired lease since the execution last made
+   * progress. A dispatcher's `maxExpiredDeliveries` limits it.
+   */
+  expiredDeliveryCount: number;
   parent?: ExecutionParent;
   cancellation?: ExecutionCancellation;
 }
@@ -307,6 +312,13 @@ export interface ExecutionClient {
      * `DispatcherOptions.maxExpiredDeliveries`.
      */
     maxExpiredDeliveries?: number;
+    /**
+     * Called once for each execution the claim recorded `failed` at the
+     * delivery limit, after the write commits. `deliveries` is the error's
+     * count of deliveries that ended with an expired lease. It must not
+     * throw: the claim has committed, and a throw would lose its leases.
+     */
+    onDeliveryLimit?: (event: { executionId: string; deliveries: number }) => void;
   }): Promise<ExecutionLease[]>;
 
   /**
