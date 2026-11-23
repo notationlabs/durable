@@ -227,8 +227,7 @@ export class MemoryExecutionClient implements ExecutionClient {
   recordProgress(executionId: string) {
     const state = this.executions.get(executionId);
     if (!state) throw new Error(`Execution "${executionId}" does not exist`);
-    const next = recordExecutionProgress(state);
-    if (next !== state) this.executions.set(executionId, next);
+    this.executions.set(executionId, recordExecutionProgress(state));
   }
 
   /**

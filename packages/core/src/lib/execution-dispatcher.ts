@@ -86,9 +86,6 @@ export interface DispatcherOptions {
  *   execution is delivered again after the redelivery delay.
  * - If reading the record, acknowledging or releasing throws, the lease is
  *   left to expire rather than released.
- * - With `maxExpiredDeliveries` set, the claim that would reach it records the
- *   execution `failed` with a `DeliveryLimitError` instead of returning a
- *   lease, so the dispatcher never sees that execution.
  */
 export class ExecutionDispatcher {
   private runtime: Runtime;
@@ -177,9 +174,7 @@ export class ExecutionDispatcher {
         limit: slots,
         duration: this.leaseDuration,
         filter: this.filter,
-        ...(this.maxExpiredDeliveries !== undefined
-          ? { maxExpiredDeliveries: this.maxExpiredDeliveries }
-          : {}),
+        maxExpiredDeliveries: this.maxExpiredDeliveries,
       });
     } finally {
       this.claiming -= slots;

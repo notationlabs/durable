@@ -592,15 +592,13 @@ test("a claim that reaches the limit records failed with DeliveryLimitError and 
     updatedAt: now,
   });
   const outcome = toExecutionRecord(claimed.state, now).outcome;
-  for (const recorded of ["outcome" in claimed ? claimed.outcome : undefined, outcome]) {
-    if (recorded?.status !== "failed") throw new Error("expected failed");
-    expect(recorded.error).toBeInstanceOf(DeliveryLimitError);
-    expect(recorded.error).toMatchObject({
-      name: "DeliveryLimitError",
-      code: "DELIVERY_LIMIT_REACHED",
-      deliveries: 3,
-    });
-  }
+  if (outcome?.status !== "failed") throw new Error("expected failed");
+  expect(outcome.error).toBeInstanceOf(DeliveryLimitError);
+  expect(outcome.error).toMatchObject({
+    name: "DeliveryLimitError",
+    code: "DELIVERY_LIMIT_REACHED",
+    deliveries: 3,
+  });
 });
 
 test("a first claim and a claim after a release are not stopped by the limit", () => {

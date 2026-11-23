@@ -136,10 +136,7 @@ export class SqliteHeapClient implements HeapClient {
         return record;
       });
       // Throws, and so rolls back, when no request is recorded.
-      const delivered = markCancellationDelivered(state, this.clock());
-      this.executionsDao.updateState(
-        steps.length > 0 ? recordExecutionProgress(delivered) : delivered
-      );
+      this.executionsDao.updateState(markCancellationDelivered(state, this.clock()));
       return records;
     });
   }

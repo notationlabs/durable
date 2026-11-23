@@ -413,15 +413,11 @@ export function claimExecution(
     /** Absent for no limit. */
     maxExpiredDeliveries?: number;
   }
-):
-  | { state: ExecutionState; lease: ExecutionLease }
-  | { state: ExecutionState; lease: null; outcome: ExecutionOutcome };
+): { state: ExecutionState; lease: ExecutionLease | null };
 export function claimExecution(
   state: ExecutionState,
   params: { now: number; duration: number; maxExpiredDeliveries?: number }
-):
-  | { state: ExecutionState; lease: ExecutionLease }
-  | { state: ExecutionState; lease: null; outcome: ExecutionOutcome } {
+): { state: ExecutionState; lease: ExecutionLease | null } {
   const expired = state.leaseExpiresAt !== null;
   const expiredDeliveryCount = state.expiredDeliveryCount + (expired ? 1 : 0);
   if (
@@ -429,15 +425,14 @@ export function claimExecution(
     params.maxExpiredDeliveries !== undefined &&
     expiredDeliveryCount >= params.maxExpiredDeliveries
   ) {
-    const outcome: ExecutionOutcome = {
-      status: "failed",
-      error: new DeliveryLimitError(expiredDeliveryCount),
-    };
     return {
       state: {
         ...state,
         status: "failed",
-        outcome: encodeExecutionOutcome(outcome),
+        outcome: encodeExecutionOutcome({
+          status: "failed",
+          error: new DeliveryLimitError(expiredDeliveryCount),
+        }),
         dueAt: null,
         claimedDueAt: null,
         leaseExpiresAt: null,
@@ -447,7 +442,6 @@ export function claimExecution(
         updatedAt: params.now,
       },
       lease: null,
-      outcome,
     };
   }
   const lease: ExecutionLease = {
@@ -752,9 +746,10 @@ export function recordExecutionProgress(state: ExecutionState): ExecutionState {
 }
 
 /**
- * Sets `deliveredAt` on the execution's request. Adapters apply it in the
- * same fenced write as the step records of the delivered cancellation, after
- * checking the lease. Throws if no request is recorded.
+ * Sets `deliveredAt` on the execution's request and resets the delivery
+ * counts, because a delivered cancellation is progress. Adapters apply it in
+ * the same fenced write as the step records of the delivered cancellation,
+ * after checking the lease. Throws if no request is recorded.
  */
 export function markCancellationDelivered(
   state: ExecutionState,
@@ -767,6 +762,8 @@ export function markCancellationDelivered(
   return {
     ...state,
     cancellation: { ...state.cancellation, deliveredAt: now },
+    unacknowledgedDeliveryCount: 0,
+    expiredDeliveryCount: 0,
     updatedAt: now,
   };
 }

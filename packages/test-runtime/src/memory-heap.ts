@@ -95,7 +95,6 @@ export class MemoryHeapClient implements HeapClient {
     if (conflicting) return stored.map((record) => (record ? clone(record) : null));
     // Throws before any record is written when no request is recorded.
     this.markCancellationDelivered(lease.executionId);
-    if (steps.length > 0) this.onProgress?.(lease.executionId);
     return steps.map(({ stepKey, stepAttempt, stepResponseJson }) => {
       const step = { executionId: lease.executionId, stepKey };
       const { record } = this.insert(step, stepAttempt, true, stepResponseJson);

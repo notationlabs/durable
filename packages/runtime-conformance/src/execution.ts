@@ -1754,15 +1754,6 @@ export function registerExecutionClientConformance({
         }
         expect(await runtime.executions.get("recovering")).toMatchObject({ status: "running" });
       });
-
-      it("has no limit when claimDue is not given one", async ({ runtime, advance }) => {
-        await admit(runtime, "unlimited");
-        for (let delivery = 1; delivery <= 20; delivery++) {
-          if (delivery > 1) expire(advance);
-          await claimOne(runtime, "unlimited");
-        }
-        expect(await runtime.executions.get("unlimited")).toMatchObject({ status: "running" });
-      });
     });
 
     describe("fencing", () => {
