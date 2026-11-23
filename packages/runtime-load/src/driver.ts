@@ -311,6 +311,9 @@ export async function runLoad(target: LoadTarget, options: LoadOptions): Promise
     const triggerMs: number[] = [];
     const pending = new Set<Promise<void>>();
     const waitedLags: number[] = [];
+    // Kept apart from `pending`, so that settle time counts from the last
+    // trigger and not from the end of the timed waits.
+    const timed: Promise<void>[] = [];
     const waitDeadline = Date.now() + options.stageMs + settleTimeoutMs;
 
     const timeUntilEnd = async (executionId: string, kind: LoadKind, sent: number) => {
@@ -337,10 +340,10 @@ export async function runLoad(target: LoadTarget, options: LoadOptions): Promise
       const work = sdk
         .trigger({ workflowId: loadKinds[kind].workflowId, executionId })
         .then(
-          async () => {
+          () => {
             triggerMs.push(performance.now() - sent);
             roots.set(executionId, kind);
-            if (options.waitEvery && n % options.waitEvery === 0) await timeUntilEnd(executionId, kind, sent);
+            if (options.waitEvery && n % options.waitEvery === 0) timed.push(timeUntilEnd(executionId, kind, sent));
           },
           (err) => triggerErrors.add(err)
         )
@@ -366,6 +369,7 @@ export async function runLoad(target: LoadTarget, options: LoadOptions): Promise
 
     const { views, settled, read } = await settle(sdk, roots, sentAt + settleTimeoutMs, listLimit, errors);
     const settleMs = Date.now() - sentAt;
+    await Promise.all(timed);
     const unexpected = findUnexpected(roots, views);
     const ended: Record<string, number> = {};
     const lags: { kind: LoadKind; lag: number }[] = [];
