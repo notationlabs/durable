@@ -91,13 +91,14 @@ export class SqliteHeapClient implements HeapClient {
         done,
         stepResponseJson
       );
-      // A not-done record is rewritten by every delivery that reaches an
-      // unfinished wait, so only a done record counts as progress.
-      if (inserted && done) this.recordProgress(state);
-      // A waiter is deleted with the write that records its step's result.
-      // Unfinished attempts (e.g. a store wait, a suspended effect or a join)
-      // keep the waiter they registered.
+      // Only a done record counts as progress, because every delivery that
+      // reaches an unfinished wait writes a new not-done record. A waiter is
+      // deleted with the write that records its step's result. Unfinished
+      // attempts (e.g. a store wait, a suspended effect or a join) keep the
+      // waiter they registered.
       if (inserted && done) {
+        const next = recordExecutionProgress(state);
+        if (next !== state) this.executionsDao.updateState(next);
         this.deleteStepWaiters(executionId, stepKey);
         for (const other of params.deleteWaitersOf ?? []) {
           this.deleteStepWaiters(executionId, other);
@@ -141,11 +142,6 @@ export class SqliteHeapClient implements HeapClient {
       this.executionsDao.updateState(markCancellationDelivered(state, this.clock()));
       return records;
     });
-  }
-
-  private recordProgress(state: ExecutionState) {
-    const next = recordExecutionProgress(state);
-    if (next !== state) this.executionsDao.updateState(next);
   }
 
   private read(executionId: string, stepKey: string, stepAttempt: number): HeapRecord | null {

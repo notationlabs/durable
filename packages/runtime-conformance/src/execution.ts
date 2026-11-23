@@ -1680,6 +1680,11 @@ export function registerExecutionClientConformance({
           status: "admitted",
           unacknowledgedDeliveryCount: LIMIT * 2,
         });
+        // A claim over an expired lease checks the limit. Had the releases
+        // counted, this claim would fail the execution.
+        await claimWithLimit(runtime);
+        expire(advance);
+        expect(await claimWithLimit(runtime)).toHaveLength(1);
       });
 
       it("resets the count when the holder records a new step", async ({ runtime, advance }) => {

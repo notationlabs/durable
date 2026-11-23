@@ -403,20 +403,12 @@ export function requestExecutionWake(
  */
 export function claimExecution(
   state: ExecutionState,
-  params: { now: number; duration: number }
-): { state: ExecutionState; lease: ExecutionLease };
-export function claimExecution(
-  state: ExecutionState,
   params: {
     now: number;
     duration: number;
     /** Absent for no limit. */
     maxExpiredDeliveries?: number;
   }
-): { state: ExecutionState; lease: ExecutionLease | null };
-export function claimExecution(
-  state: ExecutionState,
-  params: { now: number; duration: number; maxExpiredDeliveries?: number }
 ): { state: ExecutionState; lease: ExecutionLease | null } {
   const expired = state.leaseExpiresAt !== null;
   const expiredDeliveryCount = state.expiredDeliveryCount + (expired ? 1 : 0);
@@ -736,8 +728,8 @@ export function cancellationForStartedChild(
  * step record. Adapters apply it in the same fenced write as the record, after
  * checking the lease. A not-done record does not count as progress, because
  * every delivery that reaches an unfinished wait writes a new one. A replayed
- * step writes nothing, so it does not count either. Returns `state` itself when both counts are 0, so
- * adapters can skip the write.
+ * step writes nothing, so it does not count either. Returns `state` itself
+ * when both counts are 0, so adapters can skip the write.
  */
 export function recordExecutionProgress(state: ExecutionState): ExecutionState {
   if (state.unacknowledgedDeliveryCount === 0 && state.expiredDeliveryCount === 0) {

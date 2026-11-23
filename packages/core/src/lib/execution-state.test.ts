@@ -34,6 +34,12 @@ function prepare(request: { workflowId: string; params?: unknown; detached?: boo
   return prepared.start;
 }
 
+function claimLease(state: ExecutionState, params: Parameters<typeof claimExecution>[1]) {
+  const { state: next, lease } = claimExecution(state, params);
+  if (lease === null) throw new Error("expected a lease");
+  return { state: next, lease };
+}
+
 test.each([
   ["an empty workflow ID", { workflowId: "" }],
   ["array params", { workflowId: "w", params: [] }],
@@ -239,7 +245,7 @@ test("acknowledging a non-durable result records a failed outcome with INVALID_S
     encoded: encodeExecutionEvent({ params: undefined, context: undefined }),
     now: 0,
   });
-  const { state, lease } = claimExecution(admitted, { now: 0, duration: 1_000 });
+  const { state, lease } = claimLease(admitted, { now: 0, duration: 1_000 });
   const acknowledged = acknowledgeExecution(state, {
     lease,
     outcome: { status: "completed", result: { at: new WeakMap() } },
@@ -267,7 +273,7 @@ function admitted(executionId = "e", now = 0): ExecutionState {
 }
 
 function suspended(executionId = "e"): ExecutionState {
-  const { state, lease } = claimExecution(admitted(executionId), { now: 0, duration: 1_000 });
+  const { state, lease } = claimLease(admitted(executionId), { now: 0, duration: 1_000 });
   return acknowledgeExecution(state, { lease, outcome: { status: "suspended" }, now: 1 }).state;
 }
 
@@ -331,7 +337,7 @@ test("a repeated graceful request changes nothing and does not propagate", () =>
 
 test("a forced request after a graceful one keeps the first reason and ends the lease", () => {
   const graceful = requestExecutionCancellation(suspended(), { reason: "a", force: false }, 10);
-  const { state: running, lease } = claimExecution(graceful.state, { now: 10, duration: 1_000 });
+  const { state: running, lease } = claimLease(graceful.state, { now: 10, duration: 1_000 });
   const forced = requestExecutionCancellation(running, { reason: "b", force: true }, 20);
 
   expect(forced).toMatchObject({
@@ -363,7 +369,7 @@ test("a forced request after a graceful one keeps the first reason and ends the 
 });
 
 test("a request on a terminal execution returns its outcome and changes nothing", () => {
-  const { state, lease } = claimExecution(admitted(), { now: 0, duration: 1_000 });
+  const { state, lease } = claimLease(admitted(), { now: 0, duration: 1_000 });
   const completed = acknowledgeExecution(state, {
     lease,
     outcome: { status: "completed", result: 42 },
@@ -516,7 +522,7 @@ test("acknowledging cancelled records the request's reason and source, or fails 
     { reason: "r", source: "root", force: false },
     1
   ).state;
-  const claimed = claimExecution(requested, { now: 1, duration: 1_000 });
+  const claimed = claimLease(requested, { now: 1, duration: 1_000 });
   const acknowledged = acknowledgeExecution(claimed.state, {
     lease: claimed.lease,
     outcome: { status: "cancelled" },
@@ -526,7 +532,7 @@ test("acknowledging cancelled records the request's reason and source, or fails 
   expect(acknowledged.state.status).toBe("cancelled");
   expect(acknowledged.state.cancellation).toMatchObject({ reason: "r", source: "root" });
 
-  const unrequested = claimExecution(suspended(), { now: 1, duration: 1_000 });
+  const unrequested = claimLease(suspended(), { now: 1, duration: 1_000 });
   const failed = acknowledgeExecution(unrequested.state, {
     lease: unrequested.lease,
     outcome: { status: "cancelled" },
@@ -550,15 +556,13 @@ test("cancelled outcomes round trip without absent fields", () => {
 
 /** Claims `state` at `now` with a 1 s lease and lets the lease expire. */
 function claimAndExpire(state: ExecutionState, now: number, maxExpiredDeliveries?: number) {
-  const claimed = claimExecution(state, { now, duration: 1_000, maxExpiredDeliveries });
-  if (claimed.lease === null) throw new Error("expected a lease");
-  return claimed.state;
+  return claimLease(state, { now, duration: 1_000, maxExpiredDeliveries }).state;
 }
 
 test("a claim over an expired lease counts it, and a release does not", () => {
   const expired = claimAndExpire(admitted(), 0);
   expect(expired.expiredDeliveryCount).toBe(0);
-  const second = claimExecution(expired, { now: 10_000, duration: 1_000 });
+  const second = claimLease(expired, { now: 10_000, duration: 1_000 });
   expect(second.state).toMatchObject({
     expiredDeliveryCount: 1,
     unacknowledgedDeliveryCount: 1,
@@ -601,15 +605,6 @@ test("a claim that reaches the limit records failed with DeliveryLimitError and 
   });
 });
 
-test("a first claim and a claim after a release are not stopped by the limit", () => {
-  const first = claimExecution(admitted(), { now: 0, duration: 1_000, maxExpiredDeliveries: 1 });
-  if (first.lease === null) throw new Error("expected a lease");
-  const released = releaseExecutionLease(first.state, { lease: first.lease, now: 1 }).state;
-  expect(
-    claimExecution(released, { now: 10_000, duration: 1_000, maxExpiredDeliveries: 1 }).lease
-  ).not.toBeNull();
-});
-
 test("without a limit, claims over expired leases keep returning leases", () => {
   let state = admitted();
   for (let i = 0; i < 20; i++) state = claimAndExpire(state, i * 1_000_000);
@@ -617,7 +612,7 @@ test("without a limit, claims over expired leases keep returning leases", () => 
 });
 
 test("progress, an acknowledgement and a forced cancel reset both counts", () => {
-  const counted = claimExecution(claimAndExpire(admitted(), 0), { now: 10_000, duration: 1_000 });
+  const counted = claimLease(claimAndExpire(admitted(), 0), { now: 10_000, duration: 1_000 });
   expect(counted.state).toMatchObject({ expiredDeliveryCount: 1, unacknowledgedDeliveryCount: 1 });
 
   expect(recordExecutionProgress(counted.state)).toMatchObject({

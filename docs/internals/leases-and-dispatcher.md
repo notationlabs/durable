@@ -77,6 +77,8 @@ If loading state, releasing, or acknowledging fails unexpectedly, the dispatcher
 
 A delivery whose lease expires has ended without the dispatcher seeing it end. The usual causes are a worker that exits, a process that is reset, and a step that runs past its lease without the renewal reaching the runtime. If the cause is in the workflow, for example a step that always crashes its worker, the execution is delivered again after each backoff for as long as the runtime runs.
 
+A restart or deploy of the dispatcher's process also ends each delivery in flight with an expired lease. An execution whose step runs longer than the time between deploys can reach a small limit without any fault in the workflow. Set the limit well above the number of restarts expected during one execution.
+
 `maxExpiredDeliveries` sets how many consecutive deliveries of one execution may end with an expired lease. The dispatcher passes it to `claimDue`. The default is no limit.
 
 `ExecutionState.expiredDeliveryCount` holds the count. The runtime changes it in these writes:

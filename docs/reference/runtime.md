@@ -649,7 +649,7 @@ Defaults and validation rules for `ExecutionDispatcher` options:
 - **`renewInterval`** – Defaults to `leaseDuration / 3`. Throws `RangeError` if not positive and strictly less than `leaseDuration`.
 - **`abortGracePeriod`** – Defaults to `1_000` ms. Throws `RangeError` if negative.
 - **`filter`** – Claims any due execution by default. Throws `RangeError` if `filter.executionIds` is an empty array.
-- **`maxExpiredDeliveries`** – No limit by default. Throws `RangeError` if not a positive integer. Released leases do not count, and a new done step record or an acknowledgement resets the count.
+- **`maxExpiredDeliveries`** – No limit by default. Throws `RangeError` if not a positive integer. Released leases do not count, and a new done step record, an acknowledgement or a delivered cancellation resets the count.
 
 ### WorkflowInvoker and DeliveryOptions
 

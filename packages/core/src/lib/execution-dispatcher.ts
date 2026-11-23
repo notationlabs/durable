@@ -58,9 +58,9 @@ export interface DispatcherOptions {
    * The number of consecutive deliveries of one execution that may end with
    * an expired lease. When a claim would reach it, the runtime records the
    * execution `failed` with a `DeliveryLimitError` instead of delivering it
-   * again, and no workflow code runs. Released leases do not count, and a
-   * new done step record or an acknowledgement resets the count. It must be a
-   * positive integer.
+   * again, and no workflow code runs. Released leases do not count. A new
+   * done step record, an acknowledgement or a delivered cancellation resets
+   * the count. It must be a positive integer.
    * @default no limit
    */
   maxExpiredDeliveries?: number;

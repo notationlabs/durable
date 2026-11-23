@@ -31,8 +31,8 @@ export class MemoryHeapClient implements HeapClient {
      */
     markCancellationDelivered?: (executionId: string) => void;
     /**
-     * Called synchronously when a new done step record is written, so the runtime
-     * resets the execution's delivery counts in the same write.
+     * Called synchronously when a new done step record is written, so the
+     * runtime resets the execution's delivery counts in the same write.
      */
     onProgress?: (executionId: string) => void;
   }) {
