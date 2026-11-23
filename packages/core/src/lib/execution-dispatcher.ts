@@ -59,7 +59,7 @@ export interface DispatcherOptions {
    * an expired lease. When a claim would reach it, the runtime records the
    * execution `failed` with a `DeliveryLimitError` instead of delivering it
    * again, and no workflow code runs. Released leases do not count, and a
-   * newly recorded step or an acknowledgement resets the count. It must be a
+   * new done step record or an acknowledgement resets the count. It must be a
    * positive integer.
    * @default no limit
    */

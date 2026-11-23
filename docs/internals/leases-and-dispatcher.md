@@ -71,7 +71,7 @@ Normal workflow outcomes settle through `acknowledge`, resetting retry counts an
 | Step conflict or runtime error | Calls `release` to schedule redelivery after backoff |
 | Aborted delivery signal | Skips `release` and `acknowledge` after renewal loss or grace expiry |
 
-If loading state, releasing, or acknowledging fails unexpectedly, the dispatcher lets the lease expire safely. Each unacknowledged delivery increments the failure count and schedules retry via capped exponential backoff (`1_000 * 2 ** (n - 1)` ms, up to 300,000 ms). A newly recorded step resets the count, as an acknowledgement does.
+If loading state, releasing, or acknowledging fails unexpectedly, the dispatcher lets the lease expire safely. Each unacknowledged delivery increments the failure count and schedules retry via capped exponential backoff (`1_000 * 2 ** (n - 1)` ms, up to 300,000 ms). A new done step record resets the count, as an acknowledgement does.
 
 ## Delivery limit
 
@@ -85,12 +85,15 @@ A delivery whose lease expires has ended without the dispatcher seeing it end. T
 | :--- | :--- |
 | Claim over an expired lease | Adds 1 |
 | Release | No change |
-| New step record, done or not | Resets to 0 |
+| New done step record | Resets to 0 |
+| New step record that is not done | No change |
 | Step write that finds the record already written | No change |
 | Cancellation recorded as delivered | Resets to 0 |
 | Acknowledgement or forced cancellation | Resets to 0 |
 
-A step write and an acknowledgement also reset `unacknowledgedDeliveryCount`, so the backoff starts again at 1,000 ms after the execution has made progress. A step write changes the `executions` row only when one of the counts is not 0.
+A done step write and an acknowledgement also reset `unacknowledgedDeliveryCount`, so the backoff starts again at 1,000 ms after the execution has made progress. A done step write changes the `executions` row only when one of the counts is not 0.
+
+A record that is not done does not count, because a store, join or effect wait that is still unfinished writes a new not-done record on every delivery. If it counted, a delivery that dies beside such a wait would reset the count each time and never reach the limit. A failed attempt awaiting a retry is also not done, but its delivery is acknowledged, and the acknowledgement resets the count.
 
 A release does not count, because the dispatcher released the lease after a runtime client rejected: the dispatcher was running and the cause is outside the workflow. A replayed step writes nothing, so an execution whose delivery dies at the same step each time keeps counting.
 

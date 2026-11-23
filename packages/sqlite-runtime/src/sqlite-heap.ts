@@ -91,7 +91,9 @@ export class SqliteHeapClient implements HeapClient {
         done,
         stepResponseJson
       );
-      if (inserted) this.recordProgress(state);
+      // A not-done record is rewritten by every delivery that reaches an
+      // unfinished wait, so only a done record counts as progress.
+      if (inserted && done) this.recordProgress(state);
       // A waiter is deleted with the write that records its step's result.
       // Unfinished attempts (e.g. a store wait, a suspended effect or a join)
       // keep the waiter they registered.

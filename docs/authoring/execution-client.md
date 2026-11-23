@@ -183,7 +183,7 @@ export async function claimDueExecutions(
 
 When `claimExecution` returns `lease: null`, the claim reached `maxExpiredDeliveries` and the state is `failed` with a `DeliveryLimitError`. Delete the waiters the execution holds and wake its join waiters in the same transaction, as for a forced cancellation.
 
-A heap step write that inserts a new record must apply `recordExecutionProgress` to the execution's state in the same transaction, and write the state back when the helper returns a different object. A write that finds the record already stored must not.
+A heap step write that inserts a new done record must apply `recordExecutionProgress` to the execution's state in the same transaction, and write the state back when the helper returns a different object. A write that inserts a record that is not done, or finds the record already stored, must not.
 
 Sort claimable rows by `nextClaimAt ASC, executionId ASC` and lock selected rows, for example with `SELECT ... FOR UPDATE SKIP LOCKED` in Postgres, so concurrent dispatchers never lease the same execution.
 

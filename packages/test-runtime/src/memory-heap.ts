@@ -31,7 +31,7 @@ export class MemoryHeapClient implements HeapClient {
      */
     markCancellationDelivered?: (executionId: string) => void;
     /**
-     * Called synchronously when a new step record is written, so the runtime
+     * Called synchronously when a new done step record is written, so the runtime
      * resets the execution's delivery counts in the same write.
      */
     onProgress?: (executionId: string) => void;
@@ -65,8 +65,8 @@ export class MemoryHeapClient implements HeapClient {
 
     const step = { executionId: lease.executionId, stepKey };
     const { record, inserted } = this.insert(step, stepAttempt, done, stepResponseJson);
-    if (inserted) this.onProgress?.(lease.executionId);
     if (inserted && done) {
+      this.onProgress?.(lease.executionId);
       this.onStepDone?.(step);
       for (const other of params.deleteWaitersOf ?? []) {
         this.onStepDone?.({ executionId: lease.executionId, stepKey: other });

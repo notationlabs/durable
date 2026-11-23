@@ -116,7 +116,7 @@ A delivery ends without an outcome when either `executions.release` is called af
 
 1. After a release, `redeliverAt` advances by the backoff for the current failure count.
 2. After lease expiry, `nextClaimAt` measures the delay from expiration using one higher failure count.
-3. Acknowledgement resets the unacknowledged failure counter to zero and clears `redeliverAt`. A newly recorded step also resets the counter.
+3. Acknowledgement resets the unacknowledged failure counter to zero and clears `redeliverAt`. A new done step record also resets the counter.
 
 `redeliveryDelay(count)` returns 0 for non-positive counts, starts at 1,000 ms (`REDELIVERY_DELAY_BASE`), and doubles per consecutive failure up to 300,000 ms (`REDELIVERY_DELAY_MAX`).
 

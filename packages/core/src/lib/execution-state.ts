@@ -72,7 +72,7 @@ export type ExecutionState = {
   unacknowledgedDeliveryCount: number;
   /**
    * Leases that ended by expiry and a later claim since the execution last
-   * made progress: since its last acknowledgement or newly recorded step. A
+   * made progress: since its last acknowledgement or new done step record. A
    * release does not change it. `claimExecution` compares it with the
    * delivery limit.
    */
@@ -732,10 +732,11 @@ export function cancellationForStartedChild(
 }
 
 /**
- * Resets both delivery counts after the current holder records a new step
- * record, done or not. Adapters apply it in the same fenced write as the
- * record, after checking the lease. A replayed step writes nothing, so it does
- * not count as progress. Returns `state` itself when both counts are 0, so
+ * Resets both delivery counts after the current holder records a new done
+ * step record. Adapters apply it in the same fenced write as the record, after
+ * checking the lease. A not-done record does not count as progress, because
+ * every delivery that reaches an unfinished wait writes a new one. A replayed
+ * step writes nothing, so it does not count either. Returns `state` itself when both counts are 0, so
  * adapters can skip the write.
  */
 export function recordExecutionProgress(state: ExecutionState): ExecutionState {

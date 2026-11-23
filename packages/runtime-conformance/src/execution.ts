@@ -1736,6 +1736,30 @@ export function registerExecutionClientConformance({
         expect(await runtime.executions.get("replaying")).toMatchObject({ status: "failed" });
       });
 
+      it("does not reset the count when a step write records a step that is not done", async ({
+        runtime,
+        advance,
+      }) => {
+        await admit(runtime, "waiting");
+        let lease = await claimOne(runtime, "waiting");
+        for (let delivery = 1; delivery <= LIMIT; delivery++) {
+          if (delivery > 1) {
+            expire(advance);
+            [lease] = await claimWithLimit(runtime);
+          }
+          await runtime.heap.writeStep({
+            lease,
+            stepKey: "wait",
+            stepAttempt: delivery - 1,
+            done: false,
+            stepResponseJson: "{}",
+          });
+        }
+        expire(advance);
+        expect(await claimWithLimit(runtime)).toEqual([]);
+        expect(await runtime.executions.get("waiting")).toMatchObject({ status: "failed" });
+      });
+
       it("resets the count on acknowledgement", async ({ runtime, clock, advance }) => {
         await admit(runtime, "recovering");
         let lease!: ExecutionLease;

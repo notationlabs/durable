@@ -302,7 +302,9 @@ export interface ExecutionClient {
     filter?: ExecutionClaimFilter;
     /**
      * The delivery limit, applied in the same atomic write as the claim. When
-     * absent, there is no limit. See `DispatcherOptions.maxExpiredDeliveries`.
+     * absent, there is no limit. The caller checks that it is a positive
+     * integer: 0 would fail every execution on its first expired lease. See
+     * `DispatcherOptions.maxExpiredDeliveries`.
      */
     maxExpiredDeliveries?: number;
   }): Promise<ExecutionLease[]>;
