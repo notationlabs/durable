@@ -1,4 +1,6 @@
 import { spawn } from "node:child_process";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHttpSdkFactory } from "../../packages/durable/dist/client.js";
 import { formatLoadReport, runLoad } from "../../packages/runtime-load/src/driver";
@@ -874,40 +876,54 @@ Object.assign(scenarios, {
 
 Object.assign(scenarios, {
   // Runs the load suite against its own object, so earlier scenarios do not
-  // add to the table it measures. `E2E_LOAD_OBJECT` names the object;
-  // `E2E_LOAD_STAGES`, `E2E_LOAD_STAGE_MS`, `E2E_LOAD_SETTLE_MS` and
-  // `E2E_LOAD_PREFILL` set the options.
+  // add to the table it measures. `E2E_LOAD_OBJECT` names the object. See
+  // CONTRIBUTING.md for the `E2E_LOAD_*` options.
   async load() {
-    const name = process.env.E2E_LOAD_OBJECT ?? `load-${Date.now()}`;
+    const env = process.env;
+    const name = env.E2E_LOAD_OBJECT ?? `load-${Date.now()}`;
     const withObject = (input: string) => {
       const url = new URL(input);
       url.searchParams.set("object", name);
       return url.toString();
     };
+    // A request that never answers would hold up the end of a stage, so each
+    // one has a time limit. It is longer than the server's 8 s cap on /wait.
+    const send = (input: string, init: RequestInit = {}) =>
+      originalFetch(withObject(input), { ...init, signal: init.signal ?? AbortSignal.timeout(30_000) });
     const loadSdk = createHttpSdkFactory<Router>()({
       url: `${base}/durable`,
       fetchOptions: { headers },
-      fetch: (input, init) => originalFetch(withObject(input), init),
+      fetch: send,
     });
     const probe = async () => {
-      const res = await originalFetch(withObject(`${base}/debug/state`), { headers });
-      const state = (await res.json()) as { rowsWritten: number; databaseSize: number };
-      return { rowsWritten: state.rowsWritten, databaseKb: Math.round(state.databaseSize / 1024) };
+      const res = await send(`${base}/debug/state`, { headers });
+      if (!res.ok) throw new Error(`/debug/state answered ${res.status}: ${(await res.text()).slice(0, 200)}`);
+      const state = (await res.json()) as { rowsWritten: number; databaseSize: number; constructedAt: number };
+      return {
+        rowsWritten: state.rowsWritten,
+        databaseKb: Math.round(state.databaseSize / 1024),
+        constructedAt: state.constructedAt,
+      };
     };
-    const stages = process.env.E2E_LOAD_STAGES?.split(",").map(Number) ?? [1, 5, 20, 50];
     const report = await runLoad(
-      { sdk: loadSdk, probe },
+      { sdk: loadSdk, probe, instanceKey: "constructedAt" },
       {
-        stages,
-        stageMs: Number(process.env.E2E_LOAD_STAGE_MS ?? 10_000),
-        settleTimeoutMs: Number(process.env.E2E_LOAD_SETTLE_MS ?? 60_000),
-        prefill: Number(process.env.E2E_LOAD_PREFILL ?? 0),
+        stages: env.E2E_LOAD_STAGES?.split(",").map(Number) ?? [1, 5, 20, 50],
+        stageMs: Number(env.E2E_LOAD_STAGE_MS ?? 10_000),
+        settleTimeoutMs: Number(env.E2E_LOAD_SETTLE_MS ?? 60_000),
+        ...(env.E2E_LOAD_MAX_LAG_MS ? { maxLagMs: Number(env.E2E_LOAD_MAX_LAG_MS) } : {}),
+        prefill: Number(env.E2E_LOAD_PREFILL ?? 0),
+        prefillConcurrency: Number(env.E2E_LOAD_PREFILL_CONCURRENCY ?? 50),
+        listLimit: Number(env.E2E_LOAD_LIST_LIMIT ?? 1000),
         log: (message) => console.error(message),
       }
     );
-    console.log(`\nload (object ${name})\n\n${formatLoadReport(report)}\n`);
+    const out = env.E2E_LOAD_OUT ?? join(import.meta.dirname, "..", "load", "reports", `cloudflare-${name}.json`);
+    mkdirSync(dirname(out), { recursive: true });
+    writeFileSync(out, JSON.stringify({ runtime: "cloudflare", base, object: name, ...report }, null, 2));
+    console.log(`\nload (object ${name})\n\n${formatLoadReport(report)}\nReport: ${out}\n`);
     check(report.ok, "some executions did not end in their expected status");
-    return { object: name, ...report };
+    return { object: name, report: out, stoppedEarly: report.stoppedEarly };
   },
 });
 

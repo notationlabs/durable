@@ -25,9 +25,18 @@ export type LoadTarget = {
   sdk: LoadSdk;
   /**
    * Reads numbers from the runtime under load, such as rows written or the
-   * database size. The driver calls it before and after each stage.
+   * database size. The driver calls it before and after each stage. A probe
+   * that throws is recorded as an observation error, and its values are left
+   * out.
    */
   probe?: () => Promise<Record<string, number>>;
+  /**
+   * A probe key whose value changes when the runtime restarts, such as the
+   * time the instance was constructed. The report marks a stage where it
+   * changed as `restarted`, because counters held in memory start again from
+   * zero there.
+   */
+  instanceKey?: string;
 };
 
 type TriggeredKind = Exclude<LoadKind, "child">;
@@ -44,19 +53,27 @@ export type LoadOptions = {
   mix?: Partial<Record<TriggeredKind, number>>;
   /**
    * How long the driver waits after a stage's last trigger for its executions
-   * to end, in milliseconds. Executions still open after it count as
-   * unexpected.
+   * to end, in milliseconds. When executions are still open after it, they
+   * count as unexpected and the ramp stops.
    * @default 60000
    */
   settleTimeoutMs?: number;
+  /**
+   * Stops the ramp after a stage whose lag p50 is above this many
+   * milliseconds. Without it, only a stage that does not settle stops the
+   * ramp.
+   */
+  maxLagMs?: number;
   /**
    * Single-step executions to run to the end before the first stage, so the
    * stages run against a runtime that already holds finished executions.
    * @default 0
    */
   prefill?: number;
-  /** @default 20 */
+  /** How many pre-fill triggers are in flight at once. @default 20 */
   prefillConcurrency?: number;
+  /** The `limit` of each `list` request. @default 1000 */
+  listLimit?: number;
   /** Seeds the gaps between triggers and the choice of kind. @default the clock */
   seed?: number;
   /** Prefixes every execution ID. @default `load-` and the clock in base 36 */
@@ -80,6 +97,7 @@ export type LoadStageReport = {
   /** Triggers that resolved, divided by the stage's length. */
   sentRate: number;
   triggered: number;
+  /** Triggers that rejected, such as a `503` from a Worker in front of the runtime. */
   triggerErrors: number;
   triggerErrorSamples: string[];
   /** Time for `trigger` to resolve, measured by the driver. */
@@ -99,8 +117,13 @@ export type LoadStageReport = {
   settled: boolean;
   unexpected: number;
   unexpectedSamples: Unexpected[];
+  /** Failed `list`, `wait` and probe calls. The driver retries them until the settle timeout. */
+  observeErrors: number;
+  observeErrorSamples: string[];
   probeBefore?: Record<string, number>;
   probeAfter?: Record<string, number>;
+  /** The `instanceKey` probe value changed during the stage. */
+  restarted?: boolean;
 };
 
 export type LoadReport = {
@@ -110,11 +133,19 @@ export type LoadReport = {
   options: Omit<LoadOptions, "log">;
   prefill?: {
     executions: number;
+    triggerErrors: number;
+    triggerErrorSamples: string[];
     ms: number;
+    settled: boolean;
     unexpected: number;
+    observeErrors: number;
+    probeBefore?: Record<string, number>;
     probeAfter?: Record<string, number>;
+    restarted?: boolean;
   };
   stages: LoadStageReport[];
+  /** Why the driver ran fewer stages than `options.stages` lists. */
+  stoppedEarly?: string;
   /** True when every execution ended in the status its kind should end in. */
   ok: boolean;
 };
@@ -127,23 +158,41 @@ const DEFAULT_MIX: Record<TriggeredKind, number> = {
   fail: 10,
 };
 
-const LIST_LIMIT = 1000;
 const TERMINAL = new Set(["completed", "failed", "cancelled"]);
+/** The ramp stops after a stage in which more than this share of triggers rejected. */
+const MAX_TRIGGER_ERROR_SHARE = 0.1;
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+class Errors {
+  count = 0;
+  private seen = new Set<string>();
+
+  add(err: unknown) {
+    this.count++;
+    if (this.seen.size < 5) this.seen.add(String(err).slice(0, 200));
+  }
+
+  get samples() {
+    return [...this.seen];
+  }
+}
 
 /**
  * Triggers the load router's workflows through `target.sdk` at each rate in
  * `options.stages`, and reads the outcome of every execution back through
  * `list`. Each stage waits for its executions to end before the next starts.
+ * The ramp stops early after a stage that does not settle, whose lag p50 is
+ * above `maxLagMs`, or in which more than a tenth of triggers rejected.
  */
 export async function runLoad(target: LoadTarget, options: LoadOptions): Promise<LoadReport> {
-  const { sdk, probe } = target;
+  const { sdk, instanceKey } = target;
   const { log = () => {}, ...reported } = options;
   const seed = options.seed ?? Date.now() % 2 ** 32;
   const random = mulberry32(seed);
   const runId = options.runId ?? `load-${Date.now().toString(36)}`;
   const settleTimeoutMs = options.settleTimeoutMs ?? 60_000;
+  const listLimit = options.listLimit ?? 1000;
   const mix = Object.entries({ ...DEFAULT_MIX, ...options.mix }).filter(
     ([, weight]) => weight > 0
   ) as [TriggeredKind, number][];
@@ -160,6 +209,20 @@ export async function runLoad(target: LoadTarget, options: LoadOptions): Promise
     return mix[mix.length - 1][0];
   };
 
+  const probe = async (errors: Errors) => {
+    if (!target.probe) return undefined;
+    try {
+      return await target.probe();
+    } catch (err) {
+      errors.add(err);
+      return undefined;
+    }
+  };
+  const restarted = (before?: Record<string, number>, after?: Record<string, number>) =>
+    instanceKey && before?.[instanceKey] !== undefined && after?.[instanceKey] !== undefined
+      ? before[instanceKey] !== after[instanceKey]
+      : undefined;
+
   const report: LoadReport = {
     runId,
     seed,
@@ -171,35 +234,68 @@ export async function runLoad(target: LoadTarget, options: LoadOptions): Promise
 
   if (options.prefill) {
     const count = options.prefill;
-    log(`prefill: ${count} executions`);
+    const concurrency = options.prefillConcurrency ?? 20;
+    log(`prefill: ${count} executions, ${concurrency} triggers in flight`);
+    const errors = new Errors();
+    const triggerErrors = new Errors();
+    const probeBefore = await probe(errors);
     const started = Date.now();
     const roots = new Map<string, LoadKind>();
     let next = 0;
+    let lastLog = started;
     const lane = async () => {
       while (next < count) {
         const executionId = `${runId}-prefill-${next++}`;
-        await sdk.trigger({ workflowId: loadKinds.single.workflowId, executionId });
-        roots.set(executionId, "single");
+        try {
+          await sdk.trigger({ workflowId: loadKinds.single.workflowId, executionId });
+          roots.set(executionId, "single");
+        } catch (err) {
+          triggerErrors.add(err);
+        }
+        if (Date.now() - lastLog >= 10_000) {
+          lastLog = Date.now();
+          log(`prefill: ${roots.size} triggered, ${triggerErrors.count} errors`);
+        }
       }
     };
-    await Promise.all(Array.from({ length: options.prefillConcurrency ?? 20 }, lane));
-    const { views } = await settle(sdk, roots, Date.now() + Math.max(settleTimeoutMs, count * 100));
+    await Promise.all(Array.from({ length: concurrency }, lane));
+    log(`prefill: triggered in ${Date.now() - started} ms, waiting for executions to end`);
+    const { views, settled } = await settle(
+      sdk,
+      roots,
+      Date.now() + Math.max(settleTimeoutMs, count * 20),
+      listLimit,
+      errors
+    );
     const unexpected = findUnexpected(roots, views);
+    const probeAfter = await probe(errors);
     report.prefill = {
-      executions: count,
+      executions: roots.size,
+      triggerErrors: triggerErrors.count,
+      triggerErrorSamples: triggerErrors.samples,
       ms: Date.now() - started,
+      settled,
       unexpected: unexpected.length,
-      probeAfter: await probe?.(),
+      observeErrors: errors.count,
+      probeBefore,
+      probeAfter,
+      restarted: restarted(probeBefore, probeAfter),
     };
+    log(`prefill: done in ${report.prefill.ms} ms`);
     if (unexpected.length) report.ok = false;
+    if (!settled) {
+      report.stoppedEarly = `pre-fill executions were still open after ${Math.max(settleTimeoutMs, count * 20)} ms`;
+      return report;
+    }
   }
 
   for (const [index, rate] of options.stages.entries()) {
     log(`stage ${index + 1}/${options.stages.length}: ${rate}/s for ${options.stageMs} ms`);
-    const probeBefore = await probe?.();
+    const errors = new Errors();
+    const triggerErrors = new Errors();
+    const probeBefore = await probe(errors);
     const roots = new Map<string, LoadKind>();
     const triggerMs: number[] = [];
-    const errors: string[] = [];
     const pending = new Set<Promise<void>>();
 
     const launch = (n: number) => {
@@ -213,9 +309,7 @@ export async function runLoad(target: LoadTarget, options: LoadOptions): Promise
             triggerMs.push(performance.now() - sent);
             roots.set(executionId, kind);
           },
-          (err) => {
-            errors.push(String(err).slice(0, 200));
-          }
+          (err) => triggerErrors.add(err)
         )
         .finally(() => pending.delete(work));
       pending.add(work);
@@ -237,7 +331,7 @@ export async function runLoad(target: LoadTarget, options: LoadOptions): Promise
     await Promise.all(pending);
     const sentAt = Date.now();
 
-    const { views, settled } = await settle(sdk, roots, sentAt + settleTimeoutMs);
+    const { views, settled, read } = await settle(sdk, roots, sentAt + settleTimeoutMs, listLimit, errors);
     const settleMs = Date.now() - sentAt;
     const unexpected = findUnexpected(roots, views);
     const ended: Record<string, number> = {};
@@ -249,12 +343,13 @@ export async function runLoad(target: LoadTarget, options: LoadOptions): Promise
       }
     }
     const kinds = [...new Set(lags.map((l) => l.kind))].sort();
+    const probeAfter = await probe(errors);
     const stage: LoadStageReport = {
       rate,
       sentRate: roots.size / (options.stageMs / 1000),
       triggered: roots.size,
-      triggerErrors: errors.length,
-      triggerErrorSamples: [...new Set(errors)].slice(0, 5),
+      triggerErrors: triggerErrors.count,
+      triggerErrorSamples: triggerErrors.samples,
       triggerMs: distribution(triggerMs),
       executions: views.size,
       ended,
@@ -266,14 +361,35 @@ export async function runLoad(target: LoadTarget, options: LoadOptions): Promise
       settled,
       unexpected: unexpected.length,
       unexpectedSamples: unexpected.slice(0, 10),
+      observeErrors: errors.count,
+      observeErrorSamples: errors.samples,
       probeBefore,
-      probeAfter: await probe?.(),
+      probeAfter,
+      restarted: restarted(probeBefore, probeAfter),
     };
     if (stage.unexpected) report.ok = false;
     report.stages.push(stage);
     log(
-      `stage ${index + 1}: ${stage.triggered} triggered, lag p50 ${stage.lagMs.p50} ms, p99 ${stage.lagMs.p99} ms, settled in ${settleMs} ms`
+      `stage ${index + 1}: ${stage.triggered} triggered, ${stage.triggerErrors} trigger errors, lag p50 ${stage.lagMs.p50} ms, p99 ${stage.lagMs.p99} ms, settled ${settled} in ${settleMs} ms`
     );
+
+    const last = index === options.stages.length - 1;
+    const attempts = stage.triggered + stage.triggerErrors;
+    const stop =
+      attempts > 0 && stage.triggerErrors / attempts > MAX_TRIGGER_ERROR_SHARE
+        ? `${stage.triggerErrors} of ${attempts} triggers of the ${rate}/s stage rejected, for example: ${stage.triggerErrorSamples[0]}`
+        : !settled && !read
+          ? `the executions of the ${rate}/s stage could not be listed before the settle timeout, for example: ${stage.observeErrorSamples[0]}`
+          : !settled
+            ? `executions of the ${rate}/s stage were still open ${settleTimeoutMs} ms after its last trigger`
+            : options.maxLagMs !== undefined && (stage.lagMs.p50 ?? 0) > options.maxLagMs
+              ? `lag p50 of the ${rate}/s stage was ${stage.lagMs.p50} ms, above maxLagMs ${options.maxLagMs}`
+              : undefined;
+    if (stop && !last) {
+      report.stoppedEarly = stop;
+      log(`stopping: ${stop}`);
+      break;
+    }
   }
   return report;
 }
@@ -283,14 +399,15 @@ type Seen = Map<string, { view: ExecutionView; kind: LoadKind }>;
 /**
  * Reads the views of `roots` and of the children they started, newest first,
  * and stops once it has seen every root. Children are admitted after their
- * parent, so they come before it in the listing.
+ * parent, so they come before it in the listing. Older executions, such as
+ * pre-filled ones, are not read.
  */
-async function collect(sdk: LoadSdk, roots: Map<string, LoadKind>): Promise<Seen> {
+async function collect(sdk: LoadSdk, roots: Map<string, LoadKind>, limit: number): Promise<Seen> {
   const views: Seen = new Map();
   let found = 0;
   let cursor: string | undefined;
   do {
-    const page = await sdk.list({ limit: LIST_LIMIT, ...(cursor ? { cursor } : {}) });
+    const page = await sdk.list({ limit, ...(cursor ? { cursor } : {}) });
     for (const view of page.executions) {
       const kind = roots.get(view.executionId);
       if (kind) {
@@ -305,20 +422,48 @@ async function collect(sdk: LoadSdk, roots: Map<string, LoadKind>): Promise<Seen
   return views;
 }
 
-/** Lists until every root and child is terminal, or `deadline` passes. */
-async function settle(sdk: LoadSdk, roots: Map<string, LoadKind>, deadline: number) {
+/**
+ * Lists until every root and child is terminal, or `deadline` passes.
+ * Between listings it waits on the newest open execution: by the time it
+ * ends, the older ones have usually ended too, so the driver lists the stage
+ * only a few times. A failed call is recorded and tried again after a pause.
+ */
+async function settle(
+  sdk: LoadSdk,
+  roots: Map<string, LoadKind>,
+  deadline: number,
+  limit: number,
+  errors: Errors
+) {
+  let views: Seen = new Map();
+  if (!roots.size) return { views, settled: true, read: true };
+  // Whether the latest listing succeeded, so a timeout can be told apart
+  // from a runtime that could not be read.
+  let read = false;
   while (true) {
-    const views = await collect(sdk, roots);
-    const open = [...views.values()].filter(({ view }) => !TERMINAL.has(view.status));
-    const missing = [...roots.keys()].some((id) => !views.has(id));
-    if (!open.length && !missing) return { views, settled: true };
+    let open: { view: ExecutionView }[] = [];
+    try {
+      views = await collect(sdk, roots, limit);
+      read = true;
+      open = [...views.values()].filter(({ view }) => !TERMINAL.has(view.status));
+      const missing = [...roots.keys()].some((id) => !views.has(id));
+      if (!open.length && !missing) return { views, settled: true, read };
+    } catch (err) {
+      read = false;
+      errors.add(err);
+    }
     const remaining = deadline - Date.now();
-    if (remaining <= 0) return { views, settled: false };
-    // Waiting on the oldest open execution returns as soon as it ends, instead
-    // of listing again after a fixed pause.
-    const oldest = open.at(-1);
-    if (oldest) await sdk.wait(oldest.view.executionId, { timeout: Math.min(1000, remaining) });
-    else await sleep(Math.min(250, remaining));
+    if (remaining <= 0) return { views, settled: false, read };
+    const newest = open[0];
+    try {
+      if (newest) {
+        await sdk.wait(newest.view.executionId, { timeout: Math.min(10_000, remaining) });
+        continue;
+      }
+    } catch (err) {
+      errors.add(err);
+    }
+    await sleep(Math.min(1000, remaining));
   }
 }
 
@@ -397,16 +542,18 @@ export function formatLoadReport(report: LoadReport): string {
     sections.push([
       ["rate/s", ...keys.map((key) => `${key} before -> after`)],
       ...report.stages.map((s) => [
-        String(s.rate),
+        `${s.rate}${s.restarted ? " (restarted)" : ""}`,
         ...keys.map((key) => `${show(s.probeBefore?.[key])} -> ${show(s.probeAfter?.[key])}`),
       ]),
     ]);
   }
 
   const lines: string[] = [];
-  if (report.prefill) {
+  const prefill = report.prefill;
+  if (prefill) {
     lines.push(
-      `prefill: ${report.prefill.executions} executions in ${report.prefill.ms} ms, ${report.prefill.unexpected} unexpected`
+      `prefill: ${prefill.executions} executions in ${prefill.ms} ms, ${prefill.triggerErrors} trigger errors, ${prefill.unexpected} unexpected${prefill.settled ? "" : ", timed out"}${prefill.restarted ? ", restarted" : ""}`,
+      ""
     );
   }
   for (const rows of sections) {
@@ -414,6 +561,12 @@ export function formatLoadReport(report: LoadReport): string {
     for (const row of rows) lines.push(row.map((cell, i) => cell.padEnd(widths[i])).join("  ").trimEnd());
     lines.push("");
   }
+  const observeErrors = report.stages.reduce((sum, s) => sum + s.observeErrors, prefill?.observeErrors ?? 0);
+  if (observeErrors) lines.push(`${observeErrors} list, wait or probe calls failed and were tried again.`);
+  if (report.stages.some((s) => s.restarted)) {
+    lines.push("(restarted): the runtime restarted during the stage, so counters held in memory started again from zero.");
+  }
+  if (report.stoppedEarly) lines.push(`Stopped early: ${report.stoppedEarly}.`);
   lines.push(report.ok ? "Every execution ended in its expected status." : "Some executions did not end in their expected status.");
   return lines.join("\n");
 }

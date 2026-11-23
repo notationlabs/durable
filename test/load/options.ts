@@ -12,6 +12,8 @@ export function loadOptions(): LoadOptions {
     stageMs: Number(env.LOAD_STAGE_MS ?? 10_000),
     settleTimeoutMs: Number(env.LOAD_SETTLE_MS ?? 60_000),
     prefill: Number(env.LOAD_PREFILL ?? 0),
+    prefillConcurrency: Number(env.LOAD_PREFILL_CONCURRENCY ?? 20),
+    ...(env.LOAD_MAX_LAG_MS ? { maxLagMs: Number(env.LOAD_MAX_LAG_MS) } : {}),
     ...(env.LOAD_SEED ? { seed: Number(env.LOAD_SEED) } : {}),
     log: (message) => console.error(message),
   };
