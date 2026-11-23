@@ -42,6 +42,7 @@ export type WorkflowObjectOptions<Router extends WorkflowRouter> = {
   maxWait?: number;
   concurrency?: number;
   leaseDuration?: number;
+  maxExpiredDeliveries?: number;
 };
 ```
 
@@ -55,6 +56,7 @@ export type WorkflowObjectOptions<Router extends WorkflowRouter> = {
 | `maxWait` | `8000` | Longest a `/wait` request stays open, in milliseconds |
 | `concurrency` | `10` | Most deliveries in flight at once |
 | `leaseDuration` | `30_000` | Lease length in milliseconds |
+| `maxExpiredDeliveries` | no limit | Consecutive deliveries of one execution that may end with an expired lease before the execution is recorded `failed` |
 
 | Member | Behavior |
 | :--- | :--- |

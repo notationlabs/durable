@@ -19,7 +19,7 @@ afterEach(() => {
 
 function createObject<W extends WorkflowRouter>(
   router: W,
-  options?: { concurrency?: number; leaseDuration?: number },
+  options?: { concurrency?: number; leaseDuration?: number; maxExpiredDeliveries?: number },
   fake = createFakeStorage(),
   objectOptions?: Parameters<typeof createFakeObject>[2]
 ) {
@@ -228,4 +228,32 @@ test("after an eviction during a delivery, the alarm delivers the execution agai
     result: "delivered",
   });
   expect(object.alarms).toHaveLength(1);
+}, 10_000);
+
+test("at the delivery limit, the alarm fails the execution instead of delivering it again", async () => {
+  let runs = 0;
+  const workflow = createWorkflow(async function* (step) {
+    return yield* step.run(() => ++runs);
+  });
+  const fake = createFakeStorage();
+
+  const evicted = new SqliteRuntime(createSqliteDb(fake.storage));
+  await evicted.executions.admit({
+    executionId: "held",
+    workflowId: "workflow",
+    params: undefined,
+    context: new Map(),
+  });
+  expect(await evicted.executions.claimDue({ limit: 1, duration: 30 })).toHaveLength(1);
+  await fake.storage.setAlarm(evicted.executions.nextClaimAt()!);
+
+  const { object, sdk } = createObject({ workflow }, { maxExpiredDeliveries: 1 }, fake);
+
+  expect(await sdk.wait("held", { timeout: 5_000 })).toMatchObject({
+    status: "failed",
+    error: { name: "DeliveryLimitError", deliveries: 1 },
+  });
+  expect(runs).toBe(0);
+  expect(object.alarms).toHaveLength(1);
+  await expect.poll(() => fake.alarmAt).toBeNull();
 }, 10_000);

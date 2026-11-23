@@ -32,6 +32,14 @@ export type WorkflowObjectOptions<Router extends WorkflowRouter> = {
   concurrency?: number;
   /** How long each lease lasts unless renewed, in milliseconds. @default 30_000 */
   leaseDuration?: number;
+  /**
+   * The number of consecutive deliveries of one execution that may end with
+   * an expired lease, such as after an eviction or a CPU limit reset. The
+   * claim that would reach it records the execution `failed` with a
+   * `DeliveryLimitError` instead of delivering it again.
+   * @default no limit
+   */
+  maxExpiredDeliveries?: number;
 };
 
 /** The shortest wait before claiming again while deliveries are in flight. */
@@ -105,6 +113,7 @@ export function createWorkflowObject<Router extends WorkflowRouter>(
     logger,
     concurrency,
     leaseDuration: options.leaseDuration,
+    maxExpiredDeliveries: options.maxExpiredDeliveries,
   });
   const routes = createRoutes({
     basePath: options.basePath,

@@ -102,6 +102,23 @@ If Cloudflare evicts the object during a delivery, the delivery's lease expires 
 
 If claiming fails inside `alarm`, the object logs the error and sets the alarm to run again. The first retry is 0.5 seconds later, and each further failure doubles the wait, up to 60 seconds. `alarm` rejects only if it cannot set the alarm. Cloudflare runs a rejected alarm handler again six times and then drops the alarm.
 
+## Limiting redelivery
+
+By default the object delivers an execution again every time its lease expires, with a delay that doubles from one second up to five minutes. **A step that exceeds the Worker's CPU limit is therefore delivered again without end**: Cloudflare resets the object, the lease expires, and the alarm delivers the step again. Each delivery uses CPU time up to the limit.
+
+`maxExpiredDeliveries` sets how many consecutive deliveries of one execution may end with an expired lease:
+
+```ts [src/worker.ts]
+export class Workflows extends DurableObject {
+  durable = createWorkflowObject(this.ctx, { router, maxExpiredDeliveries: 10 });
+  // ...
+}
+```
+
+The claim that would reach the limit records the execution `failed` with a `DeliveryLimitError`, and no workflow code runs. A completed step or a suspension resets the count, so only an execution that makes no progress reaches the limit.
+
+Every execution in the object shares one isolate, so a reset also expires the leases of the other deliveries in flight, and each of those executions gets one count. An execution with a long step that keeps overlapping with the failing one can reach the limit too. Choose a limit well above the number of deploys and evictions one step is likely to meet.
+
 ## Differences from Bun and Node
 
 - **No process isolation.** A delivery whose lease is lost cannot be killed. Its abort signal stops it before the next step, and its lease token rejects every later write.
