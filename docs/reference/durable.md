@@ -755,6 +755,7 @@ export class ExecutionDispatcher {
       renewInterval?: number;
       abortGracePeriod?: number;
       filter?: ExecutionClaimFilter;
+      maxExpiredDeliveries?: number;
     }
   );
 
@@ -781,6 +782,7 @@ export class ExecutionDispatcher {
 | `renewInterval` | `leaseDuration / 3`; positive and below `leaseDuration` |
 | `abortGracePeriod` | `1_000` ms after lease loss; non-negative |
 | `filter` | Claims any due execution; empty `executionIds` throws `RangeError` |
+| `maxExpiredDeliveries` | No limit; positive integer. Fails an execution with `DeliveryLimitError` after this many consecutive deliveries end with an expired lease |
 
 | Member | Description |
 | :--- | :--- |
@@ -828,7 +830,7 @@ export const WORKFLOW_RESULT_STEP_KEY = "$$workflow-result$$";
 
 | Category | Exports |
 | :--- | :--- |
-| Workflow errors | `RetryableError`, `StoreValidationError`, `WorkflowStartError`, `WorkflowJoinError`, `WorkflowCancelledError`, `WorkflowValueError`, `WorkflowRaceError`, `WorkflowEffectError` |
+| Workflow errors | `RetryableError`, `StoreValidationError`, `WorkflowStartError`, `WorkflowJoinError`, `WorkflowCancelledError`, `WorkflowValueError`, `WorkflowRaceError`, `WorkflowEffectError`, `DeliveryLimitError` |
 | Error code unions | `WorkflowValueErrorCode`, `WorkflowStartErrorCode`, `WorkflowJoinErrorCode`, `WorkflowEffectErrorCode`, `ExecutionAdmissionErrorCode`, `EffectDeliveryErrorCode` |
 | SDK errors | `ExecutionAdmissionError`, `ExecutionListRequestError`, `ExecutionCancelRequestError`, `HttpRouteError` |
 | Effect delivery errors | `EffectDeliveryError`, `EffectClientInvariantError` |

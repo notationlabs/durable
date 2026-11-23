@@ -21,6 +21,7 @@
 | `leaseToken` | Highest fencing token issued for this execution |
 | `leaseExpiresAt` | Current lease expiry timestamp |
 | `unacknowledgedDeliveryCount` | Consecutive unacknowledged deliveries |
+| `expiredDeliveryCount` | Deliveries ended by lease expiry since the last progress, compared with the delivery limit |
 | `redeliverAt` | Earliest retry timestamp after a release |
 | `parent` | Immutable caller `executionId`, `stepKey`, and `detached` flag |
 | `cancellation` | First recorded cancellation request, including `forced` and `deliveredAt` |
@@ -143,7 +144,12 @@ import { withTransaction } from "./postgres-tx";
 export async function claimDueExecutions(
   pool: Pool,
   clock: () => number,
-  request: { limit: number; duration: number; filter?: ExecutionClaimFilter }
+  request: {
+    limit: number;
+    duration: number;
+    filter?: ExecutionClaimFilter;
+    maxExpiredDeliveries?: number;
+  }
 ): Promise<ExecutionLease[]> {
   const ids = request.filter?.executionIds;
   if (request.limit <= 0 || ids?.length === 0) return [];
@@ -155,8 +161,18 @@ export async function claimDueExecutions(
 
     for (const state of candidates) {
       if (!isExecutionClaimable(state, now)) continue;
-      const claimed = claimExecution(state, { now, duration: request.duration });
+      const claimed = claimExecution(state, {
+        now,
+        duration: request.duration,
+        maxExpiredDeliveries: request.maxExpiredDeliveries,
+      });
       await tx.updateExecutionState(claimed.state);
+      if (claimed.lease === null) {
+        // The claim reached the delivery limit and recorded the execution failed.
+        await tx.deleteWaitersHeldBy(state.executionId);
+        await tx.wakeJoinWaitersOf(state.executionId);
+        continue;
+      }
       leases.push(claimed.lease);
     }
 
@@ -164,6 +180,10 @@ export async function claimDueExecutions(
   });
 }
 ```
+
+When `claimExecution` returns `lease: null`, the claim reached `maxExpiredDeliveries` and the state is `failed` with a `DeliveryLimitError`. Delete the waiters the execution holds and wake its join waiters in the same transaction, as for a forced cancellation.
+
+A heap step write that inserts a new record must apply `recordExecutionProgress` to the execution's state in the same transaction, and write the state back when the helper returns a different object. A write that finds the record already stored must not.
 
 Sort claimable rows by `nextClaimAt ASC, executionId ASC` and lock selected rows, for example with `SELECT ... FOR UPDATE SKIP LOCKED` in Postgres, so concurrent dispatchers never lease the same execution.
 

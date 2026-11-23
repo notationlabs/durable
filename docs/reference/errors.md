@@ -4,7 +4,7 @@ This reference catalogs all workflow-facing errors, SDK client errors, HTTP serv
 
 ## Workflow errors
 
-Workflow errors are thrown inside workflow code during step execution, store operations, or cancellation, or thrown by `triggerAndWait` and `waitForResult` when an execution finishes in a failed or cancelled state. All eight classes are exported from `@notation/durable` and registered by default for durable error revival.
+Workflow errors are thrown inside workflow code during step execution, store operations, or cancellation, or thrown by `triggerAndWait` and `waitForResult` when an execution finishes in a failed or cancelled state. All nine classes are exported from `@notation/durable` and registered by default for durable error revival.
 
 | Error | Description |
 | :--- | :--- |
@@ -15,6 +15,7 @@ Workflow errors are thrown inside workflow code during step execution, store ope
 | `WorkflowRaceError` | Raised by `step.race` when every branch fails or the branch list is empty |
 | `WorkflowEffectError` | Raised by `step.effect` on invalid descriptors, mismatches, or exhausted attempts |
 | `WorkflowCancelledError` | Thrown into workflow code on cancellation delivery and by wait helpers on cancellation |
+| `DeliveryLimitError` | Recorded by the runtime when an execution's deliveries reach `maxExpiredDeliveries` |
 | `StoreValidationError` | Raised when initial or updated store state fails the store schema |
 
 ### `RetryableError`
@@ -164,6 +165,19 @@ export class WorkflowCancelledError extends Error {
 `WorkflowCancelledError` throws inside workflow code at the first unfinished step upon cancellation delivery, and throws from `triggerAndWait` or `waitForResult` when an execution ends cancelled. Optional `reason` and propagated ancestor `source` attach when present.
 
 If workflow code catches the error and returns normally, the execution completes; otherwise it ends cancelled. `@notation/durable`, `@notation/durable/client`, and `@notation/durable/runtime` all export `WorkflowCancelledError` (see [Cancellation](../core/cancellation.md)).
+
+### `DeliveryLimitError`
+
+```ts [@notation/durable]
+export class DeliveryLimitError extends Error {
+  readonly code: "DELIVERY_LIMIT_REACHED";
+  readonly deliveries: number;
+
+  constructor(deliveries: number);
+}
+```
+
+The runtime records `DeliveryLimitError` as the outcome of an execution that `ExecutionDispatcher` would otherwise deliver again after `maxExpiredDeliveries` consecutive deliveries ended with an expired lease. `deliveries` is that number. No workflow code runs when it is recorded, so workflow code never catches it. `triggerAndWait` and `waitForResult` throw it, and `step.join` and `step.call` throw a `WorkflowJoinError` with it as the `cause`. `@notation/durable`, `@notation/durable/client`, and `@notation/durable/runtime` all export it.
 
 ### `StoreValidationError`
 
@@ -406,9 +420,9 @@ Default registered classes:
 | Category | Registered classes |
 | :--- | :--- |
 | Built-in JavaScript | `TypeError`, `RangeError`, `SyntaxError`, `ReferenceError`, `EvalError`, `URIError`, `AggregateError` |
-| Workflow errors | `RetryableError`, `StoreValidationError`, `WorkflowStartError`, `WorkflowJoinError`, `WorkflowCancelledError`, `WorkflowValueError`, `WorkflowRaceError`, `WorkflowEffectError` |
+| Workflow errors | `RetryableError`, `StoreValidationError`, `WorkflowStartError`, `WorkflowJoinError`, `WorkflowCancelledError`, `WorkflowValueError`, `WorkflowRaceError`, `WorkflowEffectError`, `DeliveryLimitError` |
 | Runtime errors | `EffectClientInvariantError`, `EffectDeliveryError` |
 
-`RetryableError` registers whenever `@notation/durable` or `@notation/durable/client` loads, while the remaining 16 default classes register in `@notation/durable/runtime` as well.
+`RetryableError` registers whenever `@notation/durable` or `@notation/durable/client` loads, while the remaining 17 default classes register in `@notation/durable/runtime` as well.
 
 `registerErrorClass` throws `TypeError` if given an empty name or non-`Error` constructor (see [Errors & Retries](../core/errors-and-retries.md)).

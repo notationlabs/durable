@@ -1,6 +1,7 @@
 export { createHttpSdkFactory } from "./exports/sdk-http";
 export { HttpRouteError } from "./exports/errors";
 export {
+  DeliveryLimitError,
   ExecutionAdmissionError,
   ExecutionCancelRequestError,
   ExecutionListRequestError,

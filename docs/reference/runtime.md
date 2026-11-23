@@ -189,6 +189,7 @@ export interface ExecutionClient {
     limit: number;
     duration: number;
     filter?: ExecutionClaimFilter;
+    maxExpiredDeliveries?: number;
   }): Promise<ExecutionLease[]>;
   renew(request: {
     lease: ExecutionLease;
@@ -611,6 +612,7 @@ export interface DispatcherOptions {
   renewInterval?: number;
   abortGracePeriod?: number;
   filter?: ExecutionClaimFilter;
+  maxExpiredDeliveries?: number;
 }
 
 export class ExecutionDispatcher {
@@ -636,6 +638,7 @@ export class ExecutionDispatcher {
 | `renewInterval` | Milliseconds between lease renewal requests |
 | `abortGracePeriod` | Milliseconds to wait after lease loss before freeing the delivery slot |
 | `filter` | `ExecutionClaimFilter` restricting which execution IDs are claimed |
+| `maxExpiredDeliveries` | Consecutive deliveries of one execution that may end with an expired lease before the claim records it `failed` |
 
 Defaults and validation rules for `ExecutionDispatcher` options:
 
@@ -646,6 +649,7 @@ Defaults and validation rules for `ExecutionDispatcher` options:
 - **`renewInterval`** – Defaults to `leaseDuration / 3`. Throws `RangeError` if not positive and strictly less than `leaseDuration`.
 - **`abortGracePeriod`** – Defaults to `1_000` ms. Throws `RangeError` if negative.
 - **`filter`** – Claims any due execution by default. Throws `RangeError` if `filter.executionIds` is an empty array.
+- **`maxExpiredDeliveries`** – No limit by default. Throws `RangeError` if not a positive integer. Released leases do not count, and a newly recorded step or an acknowledgement resets the count.
 
 ### WorkflowInvoker and DeliveryOptions
 
@@ -921,6 +925,7 @@ export type ExecutionState = {
   leaseToken: number;
   leaseExpiresAt: number | null;
   unacknowledgedDeliveryCount: number;
+  expiredDeliveryCount: number;
   redeliverAt: number | null;
   parent: ExecutionParent | null;
   cancellation: ExecutionCancellationState | null;
@@ -979,7 +984,7 @@ export type SequencedExecutionState = {
 | `matchStartRequest` | Resolves a repeated `start` request against a stored `StartRequestState` |
 | `createStartedExecution` | Builds child target state and `StartRequestState` with inherited context |
 | `cancellationForStartedChild` | Computes inherited cancellation for a newly started non-detached child |
-| `claimExecution` | Leases a claimable state with an incremented `leaseToken` |
+| `claimExecution` | Leases a claimable state with an incremented `leaseToken`, or records it `failed` with `DeliveryLimitError` and returns `lease: null` when `maxExpiredDeliveries` is reached |
 | `isExecutionClaimable` | Checks whether the next claim timestamp is at or before `now` |
 | `nextClaimAt` | Computes earliest claim timestamp or `null` when nothing is pending |
 | `renewExecutionLease` | Extends `leaseExpiresAt` if the lease token matches the stored lease |
@@ -991,6 +996,7 @@ export type SequencedExecutionState = {
 | `requestExecutionCancellation` | Applies graceful or forced cancellation to `ExecutionState` |
 | `propagatedCancellation` | Derives child `CancellationRequest` from a cancelled parent |
 | `markCancellationDelivered` | Sets `cancellation.deliveredAt` during fenced cancellation delivery |
+| `recordExecutionProgress` | Resets both delivery counts in the fenced write of a new step record |
 | `toExecutionCancellation` | Converts `ExecutionCancellationState` to `ExecutionCancellation` |
 | `prepareExecutionListRequest` | Validates list filters, cursor, and limit |
 | `matchesExecutionListRequest` | Checks whether an `ExecutionState` matches `PreparedExecutionListRequest` |
@@ -1143,6 +1149,7 @@ export function registerErrorClass(name: string, errorClass: ErrorClass): void;
 | `WorkflowStartError` | Raised in workflow code by `step.start` on rejected start parameters or mismatch |
 | `WorkflowJoinError` | Raised in workflow code by `step.join` or `step.call` |
 | `WorkflowCancelledError` | Thrown into workflow code when a delivery carries a cancellation request |
+| `DeliveryLimitError` | Recorded as the outcome when a claim reaches `maxExpiredDeliveries` |
 | `WorkflowEffectError` | Raised in workflow code by `step.effect` on invalid, mismatched, or unknown effects |
 | `EffectDeliveryError` | Infrastructure cause when `step.effect` fails without recording a step |
 | `EffectClientInvariantError` | Thrown by `EffectClient` on invalid requests or broken storage invariants |
