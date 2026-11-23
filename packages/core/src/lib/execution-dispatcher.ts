@@ -426,10 +426,19 @@ export class ExecutionDispatcher {
       event,
       "Execution failed: its deliveries reached the limit of expired leases"
     );
-    this.invoker.workflowEndEmitter.emit(
-      event.executionId,
-      new DeliveryLimitError(event.deliveries)
-    );
+    // The claim has committed, so a throw here would lose the other leases
+    // it took, and those executions would each count an expired delivery.
+    try {
+      this.invoker.workflowEndEmitter.emit(
+        event.executionId,
+        new DeliveryLimitError(event.deliveries)
+      );
+    } catch (err) {
+      this.logger.error(
+        { err, executionId: event.executionId },
+        "A workflowEndEmitter listener threw"
+      );
+    }
   }
 
   private warnLost(lease: ExecutionLease) {

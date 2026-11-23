@@ -516,6 +516,41 @@ test("fails an execution whose deliveries keep ending with an expired lease once
   expect(ended.mock.calls[0][0]).toMatchObject({ deliveries: 2 });
 });
 
+test("delivers the other executions of a claim when a listener throws on the delivery-limit emit", async () => {
+  const { runtime, clock } = clocked();
+  const { invoker, stats } = stubInvoker(async (event) => {
+    if (event.executionId === "exits") {
+      throw new WorkerExitedError("Worker process exited before replying (code 1)");
+    }
+    return { status: "completed", result: "ok" };
+  });
+  const error = vi.fn();
+  const dispatcher = dispatcherFor(runtime, invoker, {
+    maxExpiredDeliveries: 1,
+    logger: { ...logger, error } as unknown as Logger,
+  });
+  invoker.workflowEndEmitter.on("exits", () => {
+    throw new Error("listener failed");
+  });
+  await admit(runtime, "exits");
+  await dispatcher.tick();
+  await dispatcher.drain();
+  clock.now += DEFAULT_LEASE_DURATION + REDELIVERY_DELAY_MAX;
+
+  // One claim fails "exits" and takes a lease for "healthy".
+  await admit(runtime, "healthy");
+  await dispatcher.tick();
+  await dispatcher.drain();
+
+  expect(stats.delivered).toEqual(["exits", "healthy"]);
+  expect(await runtime.executions.get("exits")).toMatchObject({ status: "failed" });
+  expect(await runtime.executions.get("healthy")).toMatchObject({ status: "completed" });
+  expect(error).toHaveBeenCalledWith(
+    { err: expect.objectContaining({ message: "listener failed" }), executionId: "exits" },
+    "A workflowEndEmitter listener threw"
+  );
+});
+
 test("does not count deliveries whose lease the dispatcher releases", async () => {
   const { runtime, clock } = clocked();
   const { invoker, stats } = stubInvoker(async () => {
