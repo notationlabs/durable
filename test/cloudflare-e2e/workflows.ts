@@ -7,6 +7,7 @@ import {
   workflow,
   type StandardSchemaV1,
 } from "../../packages/durable/dist/index.js";
+import { loadRouter } from "../../packages/runtime-load/src/router";
 
 type Sql = { exec(query: string, ...bindings: unknown[]): { toArray(): any[] } };
 type Scope = { sql: Sql; sync(): Promise<void>; isolate: string; instance: string };
@@ -260,6 +261,7 @@ export const router = createWorkflowRouter({
   evict,
   spin,
   soak,
+  ...loadRouter,
 });
 
 export type Router = typeof router;

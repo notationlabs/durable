@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { createHttpSdkFactory } from "../../packages/durable/dist/client.js";
+import { formatLoadReport, runLoad } from "../../packages/runtime-load/src/driver";
 import type { Router } from "./workflows";
 
 // Usage: E2E_URL=http://localhost:8799 [E2E_SECRET=...] tsx run.ts [scenario ...]
@@ -868,6 +869,45 @@ Object.assign(scenarios, {
       atEnd,
       later,
     };
+  },
+});
+
+Object.assign(scenarios, {
+  // Runs the load suite against its own object, so earlier scenarios do not
+  // add to the table it measures. `E2E_LOAD_OBJECT` names the object;
+  // `E2E_LOAD_STAGES`, `E2E_LOAD_STAGE_MS`, `E2E_LOAD_SETTLE_MS` and
+  // `E2E_LOAD_PREFILL` set the options.
+  async load() {
+    const name = process.env.E2E_LOAD_OBJECT ?? `load-${Date.now()}`;
+    const withObject = (input: string) => {
+      const url = new URL(input);
+      url.searchParams.set("object", name);
+      return url.toString();
+    };
+    const loadSdk = createHttpSdkFactory<Router>()({
+      url: `${base}/durable`,
+      fetchOptions: { headers },
+      fetch: (input, init) => originalFetch(withObject(input), init),
+    });
+    const probe = async () => {
+      const res = await originalFetch(withObject(`${base}/debug/state`), { headers });
+      const state = (await res.json()) as { rowsWritten: number; databaseSize: number };
+      return { rowsWritten: state.rowsWritten, databaseKb: Math.round(state.databaseSize / 1024) };
+    };
+    const stages = process.env.E2E_LOAD_STAGES?.split(",").map(Number) ?? [1, 5, 20, 50];
+    const report = await runLoad(
+      { sdk: loadSdk, probe },
+      {
+        stages,
+        stageMs: Number(process.env.E2E_LOAD_STAGE_MS ?? 10_000),
+        settleTimeoutMs: Number(process.env.E2E_LOAD_SETTLE_MS ?? 60_000),
+        prefill: Number(process.env.E2E_LOAD_PREFILL ?? 0),
+        log: (message) => console.error(message),
+      }
+    );
+    console.log(`\nload (object ${name})\n\n${formatLoadReport(report)}\n`);
+    check(report.ok, "some executions did not end in their expected status");
+    return { object: name, ...report };
   },
 });
 
