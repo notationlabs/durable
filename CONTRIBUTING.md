@@ -30,6 +30,7 @@ Each folder in `packages/` is a private workspace package named `@durable/<folde
 - `packages/cloudflare` – The SQLite driver for Durable Object storage, and the workflow object that claims on the object's alarm
 - `packages/worker-invoker` – The invoker that runs each delivery in a worker process, and the worker
 - `packages/runtime-conformance` – Qualification suites for runtimes
+- `packages/runtime-load` – The load suite: workflows every host mounts, and a driver that triggers them through an SDK
 - `packages/test-runtime` – `MemoryRuntime`, which keeps its records in memory
 - `packages/test-invoker` – An invoker that runs deliveries in the current process
 - `packages/test-utils` – `createTestSdk`, and the repository's test helpers
@@ -126,6 +127,58 @@ node ./node_modules/vitest/vitest.mjs run --root test/cloudflare-e2e/host
 ```
 
 `test/cloudflare-arm-invariant.test.ts` is part of `pok test`. It runs random sequences of triggers, cancellations, alarms and evictions against the workflow object over the fake storage, and checks that the alarm covers the earliest claim time. A failure prints its seed. `ARM_SEED=<seed>` runs that sequence again, and `ARM_RUNS` sets how many sequences run from that seed.
+
+### Load Suite
+
+The load suite measures how long executions take to end as the trigger rate rises. It reports numbers and is not part of `pok test` or CI. `packages/runtime-load` holds the workflows (`loadRouter`) and the driver (`runLoad`). Each runtime has a caller:
+
+```sh
+pok load memory   # the in-memory runtime, in one process
+pok load bun      # SQLite on Bun: an HTTP server with worker processes
+pok load node     # SQLite on Node: the same server under Node with tsx
+```
+
+The SQLite callers start the server in a child process, with a new database in a temporary directory, and stop it at the end. The dispatcher uses its default concurrency of 10, and each delivery runs in a forked worker process. `LOAD_CONCURRENCY` changes the concurrency.
+
+The Cloudflare caller is the `load` scenario of the e2e runner. It uses its own Durable Object, named by `E2E_LOAD_OBJECT` or `load-<time>`. Against local workerd:
+
+```sh
+pok build
+cd test/cloudflare-e2e
+pnpm exec wrangler dev --port 8799 --var E2E_SECRET:local
+E2E_URL=http://localhost:8799 E2E_SECRET=local node --import tsx run.ts load
+```
+
+The `E2E_LOAD_*` variables set its options.
+
+The driver runs one stage per rate. In each stage it triggers executions for `stageMs` with exponential gaps between triggers, so the triggers arrive unevenly at the stage's mean rate. Each trigger picks one of these kinds: one step, ten steps, a delay of one second between two steps, a parent that starts two children and joins them, and a step that throws. After the last trigger of a stage, the driver lists executions until every execution of the stage has ended, or until the settle timeout passes. The next stage starts after that.
+
+The local callers read these environment variables:
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `LOAD_STAGES` | `1,5,20,50` | Trigger rates per second, one stage each |
+| `LOAD_STAGE_MS` | `10000` | How long each stage sends triggers |
+| `LOAD_SETTLE_MS` | `60000` | How long a stage waits for its executions to end |
+| `LOAD_PREFILL` | `0` | Single-step executions to run before the first stage |
+| `LOAD_SEED` | the clock | Seeds the gaps and the choice of kind |
+| `LOAD_OUT` | `test/load/reports/<runtime>-<run ID>.json` | Where the JSON report goes |
+
+The Cloudflare scenario reads `E2E_LOAD_STAGES`, `E2E_LOAD_STAGE_MS`, `E2E_LOAD_SETTLE_MS` and `E2E_LOAD_PREFILL`, and prints the report in its result line.
+
+#### Reading the report
+
+The callers print three tables and write the full report as JSON.
+
+- The first table has one row per stage. `sent/s` is the rate the driver reached. `trigger p50 / p99` is how long `trigger` took to resolve, measured by the driver. `ended` counts the stage's executions by status, children included. `lag` is `updatedAt - admittedAt` of each execution, less the time its delays take by design, read from the views that `list` returns. `settle ms` is the time from the stage's last trigger until every execution ended.
+- The second table splits lag by kind. `child` is the children that `parent` starts; their lag counts from their own admission.
+- The third table shows the caller's probe values before and after each stage. In-memory reports the heap and RSS of the process. SQLite reports the row count of `executions`, the database size and the WAL size. Cloudflare reports the object's database size and the `rowsWritten` of the runtime's SQL cursors, counted by the test Worker. That counter is held in memory, so it starts again from zero when the object restarts.
+
+The rate at which lag starts to climb from one stage to the next is the number to watch. With `LOAD_PREFILL`, compare lag against a run without pre-fill to see whether claims and lists slow down as the table grows. Finished executions are never deleted, so the table only grows.
+
+The only check is that every execution ended in the status its kind should end in: `failed` for the throwing kind, `completed` for the others. An execution that is still open after the settle timeout fails the check. The caller then exits with code 1. There are no timing thresholds.
+
+Compare numbers only between runs on the same runtime and machine. The runtimes differ in hardware, worker processes, concurrency and network, so numbers from two runtimes do not rank them. CPU time per execution on Cloudflare cannot be measured inside a Worker; read it from Cloudflare's analytics for the Worker.
 
 ### Dev Workflow
 

@@ -21,6 +21,7 @@ export default defineConfig({
         versionOnly("packages/core/package.json"),
         versionOnly("packages/http-server/package.json"),
         versionOnly("packages/runtime-conformance/package.json"),
+        versionOnly("packages/runtime-load/package.json"),
         versionOnly("packages/sdk/package.json"),
         versionOnly("packages/sqlite-runtime/package.json"),
         versionOnly("packages/worker-invoker/package.json"),
