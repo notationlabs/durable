@@ -195,7 +195,7 @@ export class SqliteExecutionClient implements ExecutionClient {
         const applied = requestExecutionCancellation(state, request, now);
         result ??= applied.result;
         if (applied.state !== state) this.executionsDao.updateState(applied.state);
-        if (applied.terminal) this.onForceCancelled(state.executionId);
+        if (applied.terminal) this.onEndedOutsideDelivery(state.executionId);
         if (!applied.propagate) continue;
         const propagated = propagatedCancellation(applied.state);
         for (const child of this.executionsDao.getAttachedChildStates(state.executionId)) {
@@ -208,11 +208,12 @@ export class SqliteExecutionClient implements ExecutionClient {
   }
 
   /**
-   * Deletes the waiters a force-cancelled execution holds and wakes its join
-   * waiters, inside the cancel's transaction. The join waiters stay
-   * registered until each joiner records its step.
+   * Deletes the waiters held by an execution that became terminal without a
+   * delivery (a forced cancel, or a claim that reached the delivery limit),
+   * and wakes its join waiters, inside the caller's transaction. The join
+   * waiters stay registered until each joiner records its step.
    */
-  private onForceCancelled(executionId: string) {
+  private onEndedOutsideDelivery(executionId: string) {
     this.storeWaitersDao.deleteExecutionWaiters(executionId);
     this.effectWaitersDao.deleteExecutionWaiters(executionId);
     this.joinWaitersDao.deleteExecutionWaiters(executionId);
@@ -229,6 +230,7 @@ export class SqliteExecutionClient implements ExecutionClient {
     limit: number;
     duration: number;
     filter?: ExecutionClaimFilter;
+    maxExpiredDeliveries?: number;
   }): Promise<ExecutionLease[]> {
     const executionIds = request.filter?.executionIds;
     if (request.limit <= 0 || executionIds?.length === 0) return [];
@@ -249,8 +251,13 @@ export class SqliteExecutionClient implements ExecutionClient {
         const claimed = claimExecution(state, {
           now,
           duration: request.duration,
+          maxExpiredDeliveries: request.maxExpiredDeliveries,
         });
         this.executionsDao.updateState(claimed.state);
+        if (claimed.lease === null) {
+          this.onEndedOutsideDelivery(executionId);
+          continue;
+        }
         leases.push(claimed.lease);
       }
 

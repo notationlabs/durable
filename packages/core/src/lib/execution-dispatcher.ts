@@ -54,6 +54,16 @@ export interface DispatcherOptions {
    * @default every execution whose due time has passed
    */
   filter?: ExecutionClaimFilter;
+  /**
+   * The number of consecutive deliveries of one execution that may end with
+   * an expired lease. When a claim would reach it, the runtime records the
+   * execution `failed` with a `DeliveryLimitError` instead of delivering it
+   * again, and no workflow code runs. Released leases do not count, and a
+   * newly recorded step or an acknowledgement resets the count. It must be a
+   * positive integer.
+   * @default no limit
+   */
+  maxExpiredDeliveries?: number;
 }
 
 /**
@@ -88,6 +98,7 @@ export class ExecutionDispatcher {
   private renewInterval: number;
   private abortGracePeriod: number;
   private filter: ExecutionClaimFilter | undefined;
+  private maxExpiredDeliveries: number | undefined;
   private running = false;
   private looping = false;
   private timer: ReturnType<typeof setTimeout> | undefined;
@@ -106,6 +117,7 @@ export class ExecutionDispatcher {
     this.renewInterval = options.renewInterval ?? this.leaseDuration / 3;
     this.abortGracePeriod = options.abortGracePeriod ?? DEFAULT_ABORT_GRACE_PERIOD;
     this.filter = options.filter;
+    this.maxExpiredDeliveries = options.maxExpiredDeliveries;
     if (!Number.isInteger(this.concurrency) || this.concurrency < 1) {
       throw new RangeError("concurrency must be a positive integer");
     }
@@ -117,6 +129,12 @@ export class ExecutionDispatcher {
     }
     if (!(this.abortGracePeriod >= 0)) {
       throw new RangeError("abortGracePeriod must not be negative");
+    }
+    if (
+      this.maxExpiredDeliveries !== undefined &&
+      !(Number.isInteger(this.maxExpiredDeliveries) && this.maxExpiredDeliveries >= 1)
+    ) {
+      throw new RangeError("maxExpiredDeliveries must be a positive integer");
     }
     if (this.filter?.executionIds?.length === 0) {
       throw new RangeError("filter.executionIds must not be empty");
@@ -156,6 +174,9 @@ export class ExecutionDispatcher {
         limit: slots,
         duration: this.leaseDuration,
         filter: this.filter,
+        ...(this.maxExpiredDeliveries !== undefined
+          ? { maxExpiredDeliveries: this.maxExpiredDeliveries }
+          : {}),
       });
     } finally {
       this.claiming -= slots;

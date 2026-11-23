@@ -11,6 +11,7 @@ export class MemoryHeapClient implements HeapClient {
   private isLeaseCurrent: (lease: ExecutionLease) => boolean;
   private onStepDone?: (step: { executionId: string; stepKey: string }) => void;
   private markCancellationDelivered?: (executionId: string) => void;
+  private onProgress?: (executionId: string) => void;
 
   constructor(params: {
     /**
@@ -29,10 +30,16 @@ export class MemoryHeapClient implements HeapClient {
      * execution has no request.
      */
     markCancellationDelivered?: (executionId: string) => void;
+    /**
+     * Called synchronously when a new step record is written, so the runtime
+     * resets the execution's delivery counts in the same write.
+     */
+    onProgress?: (executionId: string) => void;
   }) {
     this.isLeaseCurrent = params.isLeaseCurrent;
     this.onStepDone = params.onStepDone;
     this.markCancellationDelivered = params.markCancellationDelivered;
+    this.onProgress = params.onProgress;
   }
 
   getKey(params: { executionId: string; stepKey: string }) {
@@ -58,6 +65,7 @@ export class MemoryHeapClient implements HeapClient {
 
     const step = { executionId: lease.executionId, stepKey };
     const { record, inserted } = this.insert(step, stepAttempt, done, stepResponseJson);
+    if (inserted) this.onProgress?.(lease.executionId);
     if (inserted && done) {
       this.onStepDone?.(step);
       for (const other of params.deleteWaitersOf ?? []) {
@@ -87,6 +95,7 @@ export class MemoryHeapClient implements HeapClient {
     if (conflicting) return stored.map((record) => (record ? clone(record) : null));
     // Throws before any record is written when no request is recorded.
     this.markCancellationDelivered(lease.executionId);
+    if (steps.length > 0) this.onProgress?.(lease.executionId);
     return steps.map(({ stepKey, stepAttempt, stepResponseJson }) => {
       const step = { executionId: lease.executionId, stepKey };
       const { record } = this.insert(step, stepAttempt, true, stepResponseJson);

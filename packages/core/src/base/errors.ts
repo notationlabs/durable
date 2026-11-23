@@ -3,7 +3,7 @@ import {
   EffectDeliveryError,
   WorkflowEffectError,
 } from "./effect";
-import { WorkflowCancelledError, WorkflowStartError } from "./execution";
+import { DeliveryLimitError, WorkflowCancelledError, WorkflowStartError } from "./execution";
 import { WorkflowJoinError } from "./join";
 
 export type WorkflowValueErrorCode = "INVALID_STEP_VALUE" | "STEP_SCHEMA_INVALID";
@@ -98,5 +98,6 @@ const defaults: [string, ErrorClass][] = [
   ["WorkflowEffectError", WorkflowEffectError],
   ["EffectClientInvariantError", EffectClientInvariantError],
   ["EffectDeliveryError", EffectDeliveryError],
+  ["DeliveryLimitError", DeliveryLimitError],
 ];
 for (const [name, errorClass] of defaults) registerErrorClass(name, errorClass);

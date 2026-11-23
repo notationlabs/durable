@@ -300,6 +300,15 @@ export interface ExecutionClient {
     duration: number;
     /** When absent, any execution whose due time has passed may be claimed. */
     filter?: ExecutionClaimFilter;
+    /**
+     * The delivery limit. A claim over an expired lease that would make this
+     * many consecutive deliveries end with an expired lease instead records
+     * the execution `failed` with a `DeliveryLimitError`, in the same atomic
+     * write, and returns no lease for it. Released leases do not count, and a
+     * newly recorded step or an acknowledgement resets the count. When absent,
+     * there is no limit.
+     */
+    maxExpiredDeliveries?: number;
   }): Promise<ExecutionLease[]>;
 
   /**
@@ -432,6 +441,26 @@ export function isTerminalExecutionStatus(
   status: ExecutionStatus
 ): status is "completed" | "failed" | "cancelled" {
   return status === "completed" || status === "failed" || status === "cancelled";
+}
+
+/**
+ * The error of an execution that the runtime failed at claim time, because
+ * `deliveries` consecutive deliveries ended with an expired lease. No
+ * workflow code runs when it is recorded.
+ */
+export class DeliveryLimitError extends Error {
+  readonly code: "DELIVERY_LIMIT_REACHED";
+  /** The number of deliveries that ended with an expired lease. */
+  readonly deliveries: number;
+
+  constructor(deliveries: number) {
+    super(
+      `Execution was failed after ${deliveries} consecutive deliveries ended with an expired lease`
+    );
+    this.name = "DeliveryLimitError";
+    this.code = "DELIVERY_LIMIT_REACHED";
+    this.deliveries = deliveries;
+  }
 }
 
 /**

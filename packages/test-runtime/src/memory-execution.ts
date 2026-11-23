@@ -17,6 +17,7 @@ import {
   prepareExecutionListRequest,
   prepareExecutionStart,
   propagatedCancellation,
+  recordExecutionProgress,
   releaseExecutionLease,
   renewExecutionLease,
   requestExecutionCancellation,
@@ -62,27 +63,27 @@ export class MemoryExecutionClient implements ExecutionClient {
   private startRequests = new Map<string, StartRequestState>();
   private clock: () => number;
   private onTerminal?: (executionId: string) => void;
-  private onForceCancelled?: (executionId: string) => void;
+  private onEndedOutsideDelivery?: (executionId: string) => void;
 
   constructor(options?: {
     clock?: () => number;
     /**
-     * Called synchronously when an acknowledgement or a forced cancel makes
-     * an execution terminal, so the runtime wakes its join waiters in the
-     * same write.
+     * Called synchronously when an acknowledgement, a forced cancel or a
+     * claim that reaches the delivery limit makes an execution terminal, so
+     * the runtime wakes its join waiters in the same write.
      */
     onTerminal?: (executionId: string) => void;
     /**
-     * Called synchronously when a forced cancel makes an execution terminal,
-     * so the runtime deletes the store, effect and join waiters it holds in
-     * the same write.
+     * Called synchronously when a forced cancel or a claim that reaches the
+     * delivery limit makes an execution terminal, so the runtime deletes the
+     * store, effect and join waiters it holds in the same write.
      */
-    onForceCancelled?: (executionId: string) => void;
+    onEndedOutsideDelivery?: (executionId: string) => void;
   }) {
     // Read Date.now lazily so fake timers installed later still apply.
     this.clock = options?.clock ?? (() => Date.now());
     this.onTerminal = options?.onTerminal;
-    this.onForceCancelled = options?.onForceCancelled;
+    this.onEndedOutsideDelivery = options?.onEndedOutsideDelivery;
   }
 
   async admit(
@@ -187,7 +188,7 @@ export class MemoryExecutionClient implements ExecutionClient {
       result ??= applied.result;
       if (applied.state !== state) this.executions.set(state.executionId, applied.state);
       if (applied.terminal) {
-        this.onForceCancelled?.(state.executionId);
+        this.onEndedOutsideDelivery?.(state.executionId);
         this.onTerminal?.(state.executionId);
       }
       if (!applied.propagate) continue;
@@ -217,6 +218,17 @@ export class MemoryExecutionClient implements ExecutionClient {
     const state = this.executions.get(executionId);
     if (!state) throw new Error(`Execution "${executionId}" does not exist`);
     this.executions.set(executionId, markCancellationDelivered(state, this.clock()));
+  }
+
+  /**
+   * Resets an execution's delivery counts synchronously, in the same critical
+   * section as the step record whose write is the progress.
+   */
+  recordProgress(executionId: string) {
+    const state = this.executions.get(executionId);
+    if (!state) throw new Error(`Execution "${executionId}" does not exist`);
+    const next = recordExecutionProgress(state);
+    if (next !== state) this.executions.set(executionId, next);
   }
 
   /**
@@ -255,6 +267,7 @@ export class MemoryExecutionClient implements ExecutionClient {
     limit: number;
     duration: number;
     filter?: ExecutionClaimFilter;
+    maxExpiredDeliveries?: number;
   }): Promise<ExecutionLease[]> {
     const now = this.clock();
     const ids = request.filter?.executionIds && new Set(request.filter.executionIds);
@@ -272,11 +285,22 @@ export class MemoryExecutionClient implements ExecutionClient {
       )
       .slice(0, Math.max(0, request.limit));
 
-    return claimable.map(({ state }) => {
-      const claimed = claimExecution(state, { now, duration: request.duration });
+    const leases: ExecutionLease[] = [];
+    for (const { state } of claimable) {
+      const claimed = claimExecution(state, {
+        now,
+        duration: request.duration,
+        maxExpiredDeliveries: request.maxExpiredDeliveries,
+      });
       this.executions.set(state.executionId, claimed.state);
-      return claimed.lease;
-    });
+      if (claimed.lease === null) {
+        this.onEndedOutsideDelivery?.(state.executionId);
+        this.onTerminal?.(state.executionId);
+      } else {
+        leases.push(claimed.lease);
+      }
+    }
+    return leases;
   }
 
   async renew(request: {

@@ -3,6 +3,7 @@ export { createHttpSdkFactory } from "./exports/sdk-http";
 export { createWorkflowRouter } from "./exports/router";
 export { HttpRouteError, RetryableError } from "./exports/errors";
 export {
+  DeliveryLimitError,
   EffectClientInvariantError,
   EffectDeliveryError,
   ExecutionAdmissionError,

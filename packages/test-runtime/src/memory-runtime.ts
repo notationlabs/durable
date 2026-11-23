@@ -20,7 +20,7 @@ export class MemoryRuntime extends Runtime {
     this.executions = new MemoryExecutionClient({
       clock: this.clock,
       onTerminal: (executionId) => this.joins.wakeWaiters(executionId),
-      onForceCancelled: (executionId) => {
+      onEndedOutsideDelivery: (executionId) => {
         this.stores.deleteWaitersForExecution(executionId);
         this.effects.deleteWaitersForExecution(executionId);
         this.joins.deleteWaitersForExecution(executionId);
@@ -41,6 +41,7 @@ export class MemoryRuntime extends Runtime {
       },
       markCancellationDelivered: (executionId) =>
         this.executions.markCancellationDelivered(executionId),
+      onProgress: (executionId) => this.executions.recordProgress(executionId),
     });
   }
 }
