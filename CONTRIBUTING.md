@@ -157,7 +157,7 @@ The driver stops the ramp early, and gives the reason in the report, after a sta
 
 - more than a tenth of triggers rejected,
 - executions were still open at the settle timeout, or could not be listed until then, or
-- lag p50 was above `maxLagMs`, when that option is set.
+- lag p50 was above `maxLagMs`, when that option is set. With `waitEvery`, the rule uses waited lag instead.
 
 A trigger that rejects, such as a `503` from the routing Worker, is counted and sampled in the stage's report and is not tried again. A failed `list`, `wait` or probe call is counted and tried again until the settle timeout.
 
@@ -169,12 +169,13 @@ The local callers read these environment variables:
 | `LOAD_STAGE_MS` | `10000` | How long each stage sends triggers |
 | `LOAD_SETTLE_MS` | `60000` | How long a stage waits for its executions to end |
 | `LOAD_MAX_LAG_MS` | none | Stop after a stage whose lag p50 is above this |
+| `LOAD_WAIT_EVERY` | none | Time every nth execution from the client with `wait` |
 | `LOAD_PREFILL` | `0` | Single-step executions to run before the first stage |
 | `LOAD_PREFILL_CONCURRENCY` | `20` | Pre-fill triggers in flight at once |
 | `LOAD_SEED` | the clock | Seeds the gaps and the choice of kind |
 | `LOAD_OUT` | `test/load/reports/<runtime>-<run ID>.json` | Where the JSON report goes |
 
-The Cloudflare scenario reads the same options with an `E2E_` prefix: `E2E_LOAD_STAGES`, `E2E_LOAD_STAGE_MS`, `E2E_LOAD_SETTLE_MS`, `E2E_LOAD_MAX_LAG_MS`, `E2E_LOAD_PREFILL`, `E2E_LOAD_PREFILL_CONCURRENCY` (default `50`) and `E2E_LOAD_OUT`. `E2E_LOAD_LIST_LIMIT` sets the page size of `list` (default `1000`). Each request sends the `x-e2e-secret` header and has a time limit of 30 seconds.
+The Cloudflare scenario reads the same options with an `E2E_` prefix: `E2E_LOAD_STAGES`, `E2E_LOAD_STAGE_MS`, `E2E_LOAD_SETTLE_MS`, `E2E_LOAD_MAX_LAG_MS`, `E2E_LOAD_WAIT_EVERY` (default `20`), `E2E_LOAD_PREFILL`, `E2E_LOAD_PREFILL_CONCURRENCY` (default `50`) and `E2E_LOAD_OUT`. `E2E_LOAD_LIST_LIMIT` sets the page size of `list` (default `1000`). Each request sends the `x-e2e-secret` header and has a time limit of 30 seconds.
 
 #### Running the Cloudflare scenario against a deployed Worker
 
@@ -197,10 +198,11 @@ Each run uses a new object unless `E2E_LOAD_OBJECT` names one. On local workerd,
 The callers print three tables and write the full report as JSON.
 
 - The first table has one row per stage. `sent/s` is the rate the driver reached. `trigger p50 / p99` is how long `trigger` took to resolve, measured by the driver. `ended` counts the stage's executions by status, children included. `lag` is `updatedAt - admittedAt` of each execution, less the time its delays take by design, read from the views that `list` returns. `settle ms` is the time from the stage's last trigger until every execution ended.
+- With `waitEvery`, the first table also has `waited lag`. The driver times every nth execution from when it sends the trigger until `wait` returns the execution terminal, less the time its delays take by design. It includes the network time of the trigger request and the last `wait` response. `(n)` is the number of executions timed.
 - The second table splits lag by kind. `child` is the children that `parent` starts; their lag counts from their own admission.
 - The third table shows the caller's probe values before and after each stage. In-memory reports the heap and RSS of the process. SQLite reports the row count of `executions`, the database size and the WAL size. Cloudflare reports the object's database size and the `rowsWritten` of the runtime's SQL cursors, counted by the test Worker. That counter is held in memory, so it starts again from zero when the object restarts. The probe also returns `constructedAt`, the time the object instance was constructed. When it changes during a stage, the report marks the stage `(restarted)`, and the `rowsWritten` figures of that stage do not give the rows the stage wrote.
 
-On Cloudflare, `Date.now()` advances only after I/O, and Durable Object SQL is not I/O. An execution that runs to the end within one request or one alarm therefore has the same `admittedAt` and `updatedAt`, and its lag reads 0. Lag there shows the time an execution waited across requests and alarms, such as the alarm after a delay, and not the time spent running it. Read it together with `trigger p50 / p99` and `settle ms`, which the driver measures with its own clock.
+On Cloudflare, `Date.now()` advances only after I/O, and Durable Object SQL is not I/O. An execution that runs to the end within one request or one alarm therefore has the same `admittedAt` and `updatedAt`, and its lag reads 0. Lag there shows the time an execution waited across requests and alarms, such as the alarm after a delay, and not the time spent running it. For this reason the Cloudflare scenario times every 20th execution from the client, and its `maxLagMs` rule uses that waited lag. The timed executions add `wait` requests to the object's load.
 
 The rate at which lag starts to climb from one stage to the next is the number to watch. With `LOAD_PREFILL`, compare lag against a run without pre-fill to see whether claims and lists slow down as the table grows. Finished executions are never deleted, so the table only grows.
 

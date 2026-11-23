@@ -65,6 +65,13 @@ export type LoadOptions = {
    */
   maxLagMs?: number;
   /**
+   * Times every nth triggered execution from the client: from sending the
+   * trigger until `wait` returns it terminal. Use it where the runtime's own
+   * timestamps cannot show lag, as on Cloudflare. When set, `maxLagMs` applies
+   * to this measure. Each timed execution adds `wait` requests to the load.
+   */
+  waitEvery?: number;
+  /**
    * Single-step executions to run to the end before the first stage, so the
    * stages run against a runtime that already holds finished executions.
    * @default 0
@@ -112,6 +119,12 @@ export type LoadStageReport = {
    */
   lagMs: Distribution;
   lagMsByKind: Partial<Record<LoadKind, Distribution>>;
+  /**
+   * With `waitEvery`: time from sending the trigger until `wait` returned the
+   * execution terminal, less the time its delays take by design. Includes the
+   * network time of the trigger request and of the last `wait` response.
+   */
+  waitedLagMs?: Distribution;
   /** Time from the stage's last trigger until every execution ended or the settle timeout passed. */
   settleMs: number;
   settled: boolean;
@@ -297,6 +310,25 @@ export async function runLoad(target: LoadTarget, options: LoadOptions): Promise
     const roots = new Map<string, LoadKind>();
     const triggerMs: number[] = [];
     const pending = new Set<Promise<void>>();
+    const waitedLags: number[] = [];
+    const waitDeadline = Date.now() + options.stageMs + settleTimeoutMs;
+
+    const timeUntilEnd = async (executionId: string, kind: LoadKind, sent: number) => {
+      while (Date.now() < waitDeadline) {
+        try {
+          const result = await sdk.wait(executionId, {
+            timeout: Math.min(10_000, waitDeadline - Date.now()),
+          });
+          if (result && result.status !== "timed-out") {
+            waitedLags.push(performance.now() - sent - loadKinds[kind].delayMs);
+            return;
+          }
+        } catch (err) {
+          errors.add(err);
+          await sleep(1000);
+        }
+      }
+    };
 
     const launch = (n: number) => {
       const kind = pickKind();
@@ -305,9 +337,10 @@ export async function runLoad(target: LoadTarget, options: LoadOptions): Promise
       const work = sdk
         .trigger({ workflowId: loadKinds[kind].workflowId, executionId })
         .then(
-          () => {
+          async () => {
             triggerMs.push(performance.now() - sent);
             roots.set(executionId, kind);
+            if (options.waitEvery && n % options.waitEvery === 0) await timeUntilEnd(executionId, kind, sent);
           },
           (err) => triggerErrors.add(err)
         )
@@ -357,6 +390,7 @@ export async function runLoad(target: LoadTarget, options: LoadOptions): Promise
       lagMsByKind: Object.fromEntries(
         kinds.map((kind) => [kind, distribution(lags.filter((l) => l.kind === kind).map((l) => l.lag))])
       ),
+      ...(options.waitEvery ? { waitedLagMs: distribution(waitedLags) } : {}),
       settleMs,
       settled,
       unexpected: unexpected.length,
@@ -370,9 +404,10 @@ export async function runLoad(target: LoadTarget, options: LoadOptions): Promise
     if (stage.unexpected) report.ok = false;
     report.stages.push(stage);
     log(
-      `stage ${index + 1}: ${stage.triggered} triggered, ${stage.triggerErrors} trigger errors, lag p50 ${stage.lagMs.p50} ms, p99 ${stage.lagMs.p99} ms, settled ${settled} in ${settleMs} ms`
+      `stage ${index + 1}: ${stage.triggered} triggered, ${stage.triggerErrors} trigger errors, lag p50 ${stage.lagMs.p50} ms, p99 ${stage.lagMs.p99} ms${stage.waitedLagMs ? `, waited lag p50 ${stage.waitedLagMs.p50} ms (n ${stage.waitedLagMs.n})` : ""}, settled ${settled} in ${settleMs} ms`
     );
 
+    const watchedLag = stage.waitedLagMs ?? stage.lagMs;
     const last = index === options.stages.length - 1;
     const attempts = stage.triggered + stage.triggerErrors;
     const stop =
@@ -382,8 +417,8 @@ export async function runLoad(target: LoadTarget, options: LoadOptions): Promise
           ? `the executions of the ${rate}/s stage could not be listed before the settle timeout, for example: ${stage.observeErrorSamples[0]}`
           : !settled
             ? `executions of the ${rate}/s stage were still open ${settleTimeoutMs} ms after its last trigger`
-            : options.maxLagMs !== undefined && (stage.lagMs.p50 ?? 0) > options.maxLagMs
-              ? `lag p50 of the ${rate}/s stage was ${stage.lagMs.p50} ms, above maxLagMs ${options.maxLagMs}`
+            : options.maxLagMs !== undefined && (watchedLag.p50 ?? 0) > options.maxLagMs
+              ? `${stage.waitedLagMs ? "waited lag" : "lag"} p50 of the ${rate}/s stage was ${watchedLag.p50} ms, above maxLagMs ${options.maxLagMs}`
               : undefined;
     if (stop && !last) {
       report.stoppedEarly = stop;
@@ -507,8 +542,20 @@ export function formatLoadReport(report: LoadReport): string {
   const quartet = (d: Distribution) => `${show(d.p50)} / ${show(d.p90)} / ${show(d.p99)} / ${show(d.max)}`;
   const sections: string[][][] = [];
 
+  const waited = report.stages.some((s) => s.waitedLagMs);
   sections.push([
-    ["rate/s", "sent/s", "triggered", "errors", "trigger p50 / p99 ms", "ended", "lag p50 / p90 / p99 / max ms", "settle ms", "unexpected"],
+    [
+      "rate/s",
+      "sent/s",
+      "triggered",
+      "errors",
+      "trigger p50 / p99 ms",
+      "ended",
+      "lag p50 / p90 / p99 / max ms",
+      ...(waited ? ["waited lag p50 / p90 / p99 / max ms (n)"] : []),
+      "settle ms",
+      "unexpected",
+    ],
     ...report.stages.map((s) => [
       String(s.rate),
       String(round(s.sentRate)),
@@ -520,6 +567,7 @@ export function formatLoadReport(report: LoadReport): string {
         .map(([status, n]) => `${status} ${n}`)
         .join(", "),
       quartet(s.lagMs),
+      ...(waited ? [s.waitedLagMs ? `${quartet(s.waitedLagMs)} (${s.waitedLagMs.n})` : "-"] : []),
       `${s.settleMs}${s.settled ? "" : " (timed out)"}`,
       String(s.unexpected),
     ]),

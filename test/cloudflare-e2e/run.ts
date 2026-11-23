@@ -912,6 +912,9 @@ Object.assign(scenarios, {
         stageMs: Number(env.E2E_LOAD_STAGE_MS ?? 10_000),
         settleTimeoutMs: Number(env.E2E_LOAD_SETTLE_MS ?? 60_000),
         ...(env.E2E_LOAD_MAX_LAG_MS ? { maxLagMs: Number(env.E2E_LOAD_MAX_LAG_MS) } : {}),
+        // Lag read from the object's own timestamps is 0 on Cloudflare, so a
+        // sample is timed from here instead.
+        waitEvery: Number(env.E2E_LOAD_WAIT_EVERY ?? 20),
         prefill: Number(env.E2E_LOAD_PREFILL ?? 0),
         prefillConcurrency: Number(env.E2E_LOAD_PREFILL_CONCURRENCY ?? 50),
         listLimit: Number(env.E2E_LOAD_LIST_LIMIT ?? 1000),
