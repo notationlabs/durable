@@ -11,7 +11,8 @@ const logger = pino({ level: process.env.LOAD_LOG_LEVEL ?? "error" });
 const db = await openDb();
 const runtime = new SqliteRuntime(db);
 const invoker = createWorkflowInvoker({
-  workerPath: new URL("sqlite-worker.ts", import.meta.url).href,
+  // The Node caller points this at the bundled worker.
+  workerPath: process.env.LOAD_WORKER_PATH ?? new URL("sqlite-worker.ts", import.meta.url).href,
   logger,
 });
 const concurrency = process.env.LOAD_CONCURRENCY ? Number(process.env.LOAD_CONCURRENCY) : undefined;

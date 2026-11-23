@@ -135,10 +135,10 @@ The load suite measures how long executions take to end as the trigger rate rise
 ```sh
 pok load memory   # the in-memory runtime, in one process
 pok load bun      # SQLite on Bun: an HTTP server with worker processes
-pok load node     # SQLite on Node: the same server under Node with tsx
+pok load node     # SQLite on Node: the same server, bundled first
 ```
 
-The SQLite callers start the server in a child process, with a new database in a temporary directory, and stop it at the end. The dispatcher uses its default concurrency of 10, and each delivery runs in a forked worker process. `LOAD_CONCURRENCY` changes the concurrency.
+The SQLite callers start the server in a child process, with a new database in a temporary directory, and stop it at the end. The dispatcher uses its default concurrency of 10, and each delivery runs in a forked worker process. `LOAD_CONCURRENCY` changes the concurrency. Bun runs the server and the workers from source. For Node, the caller first bundles the server and the worker with `Bun.build`, so no Node process loads TypeScript through tsx at start-up.
 
 The Cloudflare caller is the `load` scenario of the e2e runner. It uses its own Durable Object, named by `E2E_LOAD_OBJECT` or `load-<time>`. Against local workerd:
 

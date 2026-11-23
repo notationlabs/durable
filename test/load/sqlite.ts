@@ -14,17 +14,25 @@ if (runtime !== "bun" && runtime !== "node") {
 }
 
 const dir = mkdtempSync(join(tmpdir(), "durable-load-"));
-const serverPath = join(import.meta.dirname, "sqlite-server.ts");
-// The server and its worker processes load the private packages' source, which
-// Node reads through tsx.
-const server = spawn(
-  runtime === "bun" ? "bun" : "node",
-  runtime === "bun" ? [serverPath] : ["--import", "tsx", serverPath],
-  {
-    env: { ...process.env, LOAD_DB: join(dir, "load.sqlite") },
-    stdio: ["ignore", "pipe", "inherit"],
-  }
-);
+const env: Record<string, string | undefined> = { ...process.env, LOAD_DB: join(dir, "load.sqlite") };
+let command: string[];
+if (runtime === "bun") {
+  command = ["bun", join(import.meta.dirname, "sqlite-server.ts")];
+} else {
+  // Node runs the server and every worker from a bundle, so that no process
+  // loads TypeScript source at start-up. The Bun driver stays out of the
+  // bundle, because Node cannot load `bun:sqlite`.
+  const build = await Bun.build({
+    entrypoints: ["sqlite-server.ts", "sqlite-worker.ts"].map((file) => join(import.meta.dirname, file)),
+    outdir: join(dir, "build"),
+    target: "node",
+    external: ["@durable/sqlite-runtime/bun"],
+  });
+  if (!build.success) throw new AggregateError(build.logs, "Bundling the Node server failed");
+  command = ["node", join(dir, "build", "sqlite-server.js")];
+  env.LOAD_WORKER_PATH = join(dir, "build", "sqlite-worker.js");
+}
+const server = spawn(command[0], command.slice(1), { env, stdio: ["ignore", "pipe", "inherit"] });
 
 try {
   const port = await new Promise<number>((resolve, reject) => {
