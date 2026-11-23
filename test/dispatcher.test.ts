@@ -6,7 +6,9 @@ import { afterEach, expect, test, vi } from "vitest";
 import type { Logger } from "pino";
 import {
   DEFAULT_LEASE_DURATION,
+  DeliveryLimitError,
   ExecutionDispatcher,
+  REDELIVERY_DELAY_MAX,
   InfrastructureError,
   WorkerExitedError,
   WorkflowRunner,
@@ -468,6 +470,59 @@ test("leaves the lease to expire when the worker exits without replying, then de
   expect(deliver).toHaveBeenCalledTimes(2);
   // The expired lease counts as one unacknowledged delivery.
   expect((await runtime.executions.get("exits"))?.unacknowledgedDeliveryCount).toBe(1);
+});
+
+// Delivery limit
+
+test.each([0, -1, 1.5, Number.NaN])("rejects maxExpiredDeliveries %s", (maxExpiredDeliveries) => {
+  const { runtime } = clocked();
+  const { invoker } = stubInvoker(async () => ({ status: "suspended" }));
+  expect(
+    () => new ExecutionDispatcher(runtime, { invoker, logger, maxExpiredDeliveries })
+  ).toThrow(RangeError);
+});
+
+test("fails an execution whose deliveries keep ending with an expired lease once it reaches maxExpiredDeliveries", async () => {
+  const { runtime, clock } = clocked();
+  const { invoker, stats } = stubInvoker(async () => {
+    throw new WorkerExitedError("Worker process exited before replying (code 1)");
+  });
+  const dispatcher = dispatcherFor(runtime, invoker, { maxExpiredDeliveries: 2 });
+  await admit(runtime, "exits");
+
+  for (let delivery = 1; delivery <= 3; delivery++) {
+    await dispatcher.tick();
+    await dispatcher.drain();
+    clock.now += DEFAULT_LEASE_DURATION + REDELIVERY_DELAY_MAX;
+  }
+  expect(stats.delivered).toEqual(["exits", "exits"]);
+  const record = await runtime.executions.get("exits");
+  expect(record?.status).toBe("failed");
+  expect(record?.outcome).toMatchObject({
+    status: "failed",
+    error: expect.any(DeliveryLimitError),
+  });
+  expect(record?.outcome).toMatchObject({ error: { deliveries: 2 } });
+});
+
+test("does not count deliveries whose lease the dispatcher releases", async () => {
+  const { runtime, clock } = clocked();
+  const { invoker, stats } = stubInvoker(async () => {
+    throw new InfrastructureError(new Error("database is locked"));
+  });
+  const dispatcher = dispatcherFor(runtime, invoker, { maxExpiredDeliveries: 1 });
+  await admit(runtime, "released");
+
+  for (let delivery = 1; delivery <= 3; delivery++) {
+    await dispatcher.tick();
+    await dispatcher.drain();
+    clock.now += REDELIVERY_DELAY_MAX;
+  }
+  expect(stats.delivered).toEqual(["released", "released", "released"]);
+  expect(await runtime.executions.get("released")).toMatchObject({
+    status: "admitted",
+    unacknowledgedDeliveryCount: 3,
+  });
 });
 
 // Driver

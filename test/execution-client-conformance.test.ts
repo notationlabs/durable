@@ -124,6 +124,49 @@ test("a database created before list lists its executions in insertion order", a
   }
 });
 
+test("a database created before the delivery limit gains the expired delivery count", async () => {
+  const db = createSqliteDb({ path: ":memory:", wal: false });
+  try {
+    db.run(`
+      CREATE TABLE executions (
+        execution_id TEXT PRIMARY KEY,
+        workflow_id TEXT NOT NULL,
+        params TEXT NOT NULL,
+        context TEXT NOT NULL,
+        status TEXT NOT NULL,
+        outcome TEXT,
+        admitted_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        due_at INTEGER,
+        claimed_due_at INTEGER,
+        lease_token INTEGER NOT NULL DEFAULT 0,
+        lease_expires_at INTEGER,
+        unacknowledged_delivery_count INTEGER NOT NULL DEFAULT 0,
+        redeliver_at INTEGER,
+        next_claim_at INTEGER,
+        parent_execution_id TEXT,
+        parent_step_key TEXT
+      );
+      INSERT INTO executions (
+        execution_id, workflow_id, params, context, status, admitted_at, updated_at,
+        claimed_due_at, lease_token, lease_expires_at, unacknowledged_delivery_count,
+        next_claim_at
+      )
+      VALUES ('old', 'charge-order', '{}', '[]', 'admitted', 0, 0, 0, 4, 10, 3, 8010);
+    `);
+
+    const now = 1_000_000;
+    const runtime = new SqliteRuntime(db, { clock: () => now });
+    // The old row reads as no expired deliveries, so a limit of 2 lets one
+    // more claim through.
+    const claim = () =>
+      runtime.executions.claimDue({ limit: 1, duration: 30_000, maxExpiredDeliveries: 2 });
+    expect(await claim()).toMatchObject([{ executionId: "old", token: 5 }]);
+  } finally {
+    db.close();
+  }
+});
+
 test("filtered list queries read the workflow_id and status indexes in rowid order", () => {
   const db = createSqliteDb({ path: ":memory:", wal: false });
   try {

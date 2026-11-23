@@ -1,6 +1,6 @@
 import { expect, test } from "vitest";
 import { WorkflowValueError } from "../base/errors";
-import { WorkflowStartError } from "../base/execution";
+import { DeliveryLimitError, WorkflowStartError } from "../base/execution";
 import { ReadOnlyMap } from "../utils/map";
 import {
   acknowledgeExecution,
@@ -19,6 +19,8 @@ import {
   prepareExecutionCancel,
   prepareExecutionStart,
   propagatedCancellation,
+  recordExecutionProgress,
+  releaseExecutionLease,
   requestExecutionCancellation,
   toExecutionRecord,
   type ExecutionState,
@@ -544,4 +546,103 @@ test("cancelled outcomes round trip without absent fields", () => {
     expect(decoded).toEqual(outcome);
     expect(Object.keys(decoded).sort()).toEqual(Object.keys(outcome).sort());
   }
+});
+
+/** Claims `state` at `now` with a 1 s lease and lets the lease expire. */
+function claimAndExpire(state: ExecutionState, now: number, maxExpiredDeliveries?: number) {
+  const claimed = claimExecution(state, { now, duration: 1_000, maxExpiredDeliveries });
+  if (claimed.lease === null) throw new Error("expected a lease");
+  return claimed.state;
+}
+
+test("a claim over an expired lease counts it, and a release does not", () => {
+  const expired = claimAndExpire(admitted(), 0);
+  expect(expired.expiredDeliveryCount).toBe(0);
+  const second = claimExecution(expired, { now: 10_000, duration: 1_000 });
+  expect(second.state).toMatchObject({
+    expiredDeliveryCount: 1,
+    unacknowledgedDeliveryCount: 1,
+  });
+  const released = releaseExecutionLease(second.state, { lease: second.lease, now: 10_001 });
+  expect(released.state).toMatchObject({
+    expiredDeliveryCount: 1,
+    unacknowledgedDeliveryCount: 2,
+  });
+});
+
+test("a claim that reaches the limit records failed with DeliveryLimitError and takes no lease", () => {
+  let state = admitted();
+  let now = 0;
+  for (let i = 0; i < 3; i++) {
+    state = claimAndExpire(state, now, 3);
+    now += 1_000_000;
+  }
+  expect(state.expiredDeliveryCount).toBe(2);
+  const claimed = claimExecution(state, { now, duration: 1_000, maxExpiredDeliveries: 3 });
+  expect(claimed.lease).toBeNull();
+  expect(claimed.state).toMatchObject({
+    status: "failed",
+    dueAt: null,
+    claimedDueAt: null,
+    leaseExpiresAt: null,
+    leaseToken: state.leaseToken,
+    redeliverAt: null,
+    unacknowledgedDeliveryCount: 0,
+    expiredDeliveryCount: 0,
+    updatedAt: now,
+  });
+  const outcome = toExecutionRecord(claimed.state, now).outcome;
+  for (const recorded of ["outcome" in claimed ? claimed.outcome : undefined, outcome]) {
+    if (recorded?.status !== "failed") throw new Error("expected failed");
+    expect(recorded.error).toBeInstanceOf(DeliveryLimitError);
+    expect(recorded.error).toMatchObject({
+      name: "DeliveryLimitError",
+      code: "DELIVERY_LIMIT_REACHED",
+      deliveries: 3,
+    });
+  }
+});
+
+test("a first claim and a claim after a release are not stopped by the limit", () => {
+  const first = claimExecution(admitted(), { now: 0, duration: 1_000, maxExpiredDeliveries: 1 });
+  if (first.lease === null) throw new Error("expected a lease");
+  const released = releaseExecutionLease(first.state, { lease: first.lease, now: 1 }).state;
+  expect(
+    claimExecution(released, { now: 10_000, duration: 1_000, maxExpiredDeliveries: 1 }).lease
+  ).not.toBeNull();
+});
+
+test("without a limit, claims over expired leases keep returning leases", () => {
+  let state = admitted();
+  for (let i = 0; i < 20; i++) state = claimAndExpire(state, i * 1_000_000);
+  expect(state.expiredDeliveryCount).toBe(19);
+});
+
+test("progress, an acknowledgement and a forced cancel reset both counts", () => {
+  const counted = claimExecution(claimAndExpire(admitted(), 0), { now: 10_000, duration: 1_000 });
+  expect(counted.state).toMatchObject({ expiredDeliveryCount: 1, unacknowledgedDeliveryCount: 1 });
+
+  expect(recordExecutionProgress(counted.state)).toMatchObject({
+    expiredDeliveryCount: 0,
+    unacknowledgedDeliveryCount: 0,
+    leaseExpiresAt: counted.state.leaseExpiresAt,
+  });
+  const acknowledged = acknowledgeExecution(counted.state, {
+    lease: counted.lease,
+    outcome: { status: "suspended" },
+    now: 10_001,
+  });
+  expect(acknowledged.state).toMatchObject({
+    expiredDeliveryCount: 0,
+    unacknowledgedDeliveryCount: 0,
+  });
+  expect(requestExecutionCancellation(counted.state, { force: true }, 10_001).state).toMatchObject({
+    expiredDeliveryCount: 0,
+    unacknowledgedDeliveryCount: 0,
+  });
+});
+
+test("recordExecutionProgress returns the same state when both counts are 0", () => {
+  const state = admitted();
+  expect(recordExecutionProgress(state)).toBe(state);
 });
