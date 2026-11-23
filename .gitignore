@@ -182,3 +182,6 @@ dist
 # Wrangler local state and secrets
 .wrangler
 .dev.vars
+
+# Load suite reports
+test/load/reports

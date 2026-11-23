@@ -13,6 +13,7 @@
     "@durable/core": "workspace:*",
     "@durable/http-server": "workspace:*",
     "@durable/runtime-conformance": "workspace:*",
+    "@durable/runtime-load": "workspace:*",
     "@durable/sdk": "workspace:*",
     "@durable/sqlite-runtime": "workspace:*",
     "@durable/test-invoker": "workspace:*",
