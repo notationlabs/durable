@@ -19,40 +19,26 @@ The last two rows matter most. On Bun or Node each delivery runs in a worker pro
 
 ## Setup
 
-`createWorkflowObject` from `@notation/durable/cloudflare` builds the runtime, the dispatcher and the HTTP routes from the object's `ctx`. The Durable Object class forwards `fetch` and `alarm` to it:
+`WorkflowObject` from `@notation/durable/cloudflare` returns a Durable Object class. The class builds the runtime, the dispatcher and the HTTP routes from the object's `ctx`, serves the routes from `fetch`, and resumes executions from `alarm`. The Worker forwards requests to one instance of it:
 
 ::code-group
 
 ```ts [src/worker.ts]
-import { DurableObject } from "cloudflare:workers";
-import { createWorkflowObject } from "@notation/durable/cloudflare";
+import { WorkflowObject } from "@notation/durable/cloudflare";
 import { ownExecutionsOnly, requireUser } from "./auth";
 import { router } from "./workflows/router";
 
-export class Workflows extends DurableObject {
-  durable = createWorkflowObject(this.ctx, {
-    router,
-    basePath: "/durable",
-    middleware: [requireUser], // runs on /trigger
-    observationMiddleware: [ownExecutionsOnly], // runs on /poll, /wait, /list, /events and /cancel
-    maxExpiredDeliveries: 10,
-  });
-
-  fetch(request: Request) {
-    return this.durable.fetch(request);
-  }
-
-  alarm() {
-    return this.durable.alarm();
-  }
-}
+export class Workflows extends WorkflowObject({
+  router,
+  basePath: "/durable",
+  middleware: [requireUser], // runs on /trigger
+  observationMiddleware: [ownExecutionsOnly], // runs on /poll, /wait, /list, /events and /cancel
+  maxExpiredDeliveries: 10,
+}) {}
 
 export default {
-  fetch(request: Request, env: Env) {
-    const object = env.WORKFLOWS.get(env.WORKFLOWS.idFromName("default"));
-    return object.fetch(request);
-  },
-};
+  fetch: (request, env) => env.WORKFLOWS.getByName("default").fetch(request),
+} satisfies ExportedHandler<Env>;
 ```
 
 ```jsonc [wrangler.jsonc]
@@ -72,7 +58,6 @@ export default {
 
 Each of these settings is required:
 
-- **`alarm`** – Without the `alarm` handler nothing resumes an execution after a `step.delay`, a retry or an eviction.
 - **`middleware` and `observationMiddleware`** – The Worker forwards every request to the object. Without middleware, anyone who can reach the Worker's URL can start workflows, read every execution's params and results with `/list`, and cancel executions. `requireUser` and `ownExecutionsOnly` are the functions from [HTTP Server](./http-server.md#auth-and-execution-privacy).
 - **`maxExpiredDeliveries`** – Without a limit, a step that exceeds the CPU limit runs again forever, and each attempt stops every other delivery in the object. See [Limiting redelivery](#limiting-redelivery).
 - **`nodejs_compat`** – The SDK imports `node:events` and `node:crypto`.
@@ -89,7 +74,7 @@ import type { Router } from "./workflows/router";
 const createSdk = createHttpSdkFactory<Router>();
 
 export async function signup(env: Env, email: string, sessionToken: string) {
-  const object = env.WORKFLOWS.get(env.WORKFLOWS.idFromName("default"));
+  const object = env.WORKFLOWS.getByName("default");
   const sdk = createSdk({
     url: "http://workflows/durable", // only the path is used
     fetch: (input, init) => object.fetch(input, init),
@@ -162,10 +147,7 @@ By default the object delivers an execution again every time its lease expires, 
 `maxExpiredDeliveries` sets how many consecutive deliveries of one execution may end with an expired lease:
 
 ```ts [src/worker.ts]
-export class Workflows extends DurableObject {
-  durable = createWorkflowObject(this.ctx, { router, maxExpiredDeliveries: 10 });
-  // ...
-}
+export class Workflows extends WorkflowObject({ router, maxExpiredDeliveries: 10 }) {}
 ```
 
 The claim that would reach the limit records the execution `failed` with a `DeliveryLimitError`, and no workflow code runs. A completed step or a suspension resets the count, so only an execution that makes no progress reaches the limit.
@@ -182,4 +164,4 @@ One object runs every execution in one isolate and one database:
 | Throughput | A test on a deployed Worker kept up with 50 triggers per second, and fell behind at 100 per second with a median lag of 37 seconds |
 | Storage | Cloudflare limits a SQLite-backed object to 10 GB. Finished executions stay in the database. A one-hour test stored about 1.3 KB per execution |
 
-For more throughput or storage, give each tenant its own object with `idFromName(tenantId)`. Executions in different objects cannot join each other or share stores.
+For more throughput or storage, give each tenant its own object with `getByName(tenantId)`. Executions in different objects cannot join each other or share stores.

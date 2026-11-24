@@ -3,24 +3,29 @@
 `@notation/durable/cloudflare` runs the SQLite runtime on a Durable Object's SQLite storage and drives deliveries from the object's alarm. See [Cloudflare Workers](../core/cloudflare.md) for setup.
 
 ```ts [src/worker.ts]
-import { DurableObject } from "cloudflare:workers";
-import { createWorkflowObject } from "@notation/durable/cloudflare";
+import { WorkflowObject } from "@notation/durable/cloudflare";
 import { router } from "./workflows/router";
 
-export class Workflows extends DurableObject {
-  durable = createWorkflowObject(this.ctx, { router });
-
-  fetch(request: Request) {
-    return this.durable.fetch(request);
-  }
-
-  alarm() {
-    return this.durable.alarm();
-  }
-}
+export class Workflows extends WorkflowObject({ router }) {}
 ```
 
+## WorkflowObject
+
+```ts [@notation/durable/cloudflare]
+export function WorkflowObject<Router extends WorkflowRouter>(
+  options: WorkflowObjectOptions<Router>
+): new (ctx: DurableObjectStateLike, env: unknown) => {
+  readonly durable: ReturnType<typeof createWorkflowObject<Router>>;
+  fetch(request: Request): Promise<Response>;
+  alarm(): Promise<void>;
+};
+```
+
+Returns a Durable Object class. Its constructor calls `createWorkflowObject(ctx, options)` and stores the result as `durable`. `fetch` and `alarm` call `durable.fetch` and `durable.alarm`. Export the class, or a class that extends it, under the `class_name` in `wrangler.jsonc`. A subclass can override `fetch` to serve other paths, and can call the local SDK on `this.durable.runtime`.
+
 ## createWorkflowObject
+
+Builds the host that `WorkflowObject` uses. Call it directly to write the Durable Object class yourself, for example to extend `DurableObject` from `cloudflare:workers` for RPC. The class must forward `fetch` and `alarm` to it.
 
 ```ts [@notation/durable/cloudflare]
 export function createWorkflowObject<Router extends WorkflowRouter>(

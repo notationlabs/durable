@@ -1,0 +1,18 @@
+{
+  "name": "durable-example-cloudflare-worker",
+  "version": "0.9.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "types": "wrangler types",
+    "typecheck": "wrangler types && tsc"
+  },
+  "dependencies": {
+    "@notation/durable": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3",
+    "wrangler": "4.151.0"
+  }
+}

@@ -289,3 +289,35 @@ export function createWorkflowObject<Router extends WorkflowRouter>(
     },
   };
 }
+
+/**
+ * Returns a Durable Object class that runs workflows. Export it under the
+ * `class_name` that `wrangler.jsonc` binds:
+ *
+ * ```ts
+ * export class Workflows extends WorkflowObject({ router }) {}
+ * ```
+ *
+ * The class serves the HTTP routes from `fetch`, resumes executions from
+ * `alarm`, and exposes the host as `durable`, such as `this.durable.runtime`
+ * for the local SDK.
+ */
+export function WorkflowObject<Router extends WorkflowRouter>(
+  options: WorkflowObjectOptions<Router>
+) {
+  return class WorkflowObject {
+    readonly durable: ReturnType<typeof createWorkflowObject<Router>>;
+
+    constructor(ctx: DurableObjectStateLike, _env: unknown) {
+      this.durable = createWorkflowObject(ctx, options);
+    }
+
+    fetch(request: Request) {
+      return this.durable.fetch(request);
+    }
+
+    alarm() {
+      return this.durable.alarm();
+    }
+  };
+}

@@ -4,6 +4,7 @@ export {
   toPositionalSql,
 } from "./do-sqlite-driver";
 export {
+  WorkflowObject,
   createWorkflowObject,
   type WorkflowObjectOptions,
 } from "./workflow-object";
