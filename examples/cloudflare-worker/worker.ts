@@ -10,10 +10,10 @@ const router = createWorkflowRouter({
 
 export type WorkflowRouter = typeof router;
 
+// Serves /durable/trigger, /durable/wait and the other routes to anyone. Pass
+// `middleware` and `observationMiddleware` before exposing them.
 export class Workflows extends WorkflowObject({ router, basePath: "/durable" }) {}
 
 export default {
-  // Serves /durable/trigger, /durable/wait and the other routes. Add
-  // authentication here before exposing them.
   fetch: (request, env) => env.WORKFLOWS.getByName("default").fetch(request),
 } satisfies ExportedHandler<Env>;
