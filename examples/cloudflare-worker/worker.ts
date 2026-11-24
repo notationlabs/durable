@@ -20,7 +20,7 @@ type Env = {
   };
 };
 
-// One object holds every execution. Its SQLite storage is the runtime.
+// Objects hold executions. Its SQLite storage is the runtime.
 export class Workflows {
   private durable;
 

@@ -150,7 +150,7 @@ export interface SqliteDriver {
 }
 ```
 
-`transaction` is optional. A driver without it gets `BEGIN IMMEDIATE`, `COMMIT` and `ROLLBACK` through `run`. A driver whose database rejects those statements implements `transaction` to commit when `fn` returns and roll back when `fn` throws; the [Durable Object driver](./cloudflare.md) does.
+`transaction` is optional. A driver without it gets `BEGIN IMMEDIATE`, `COMMIT` and `ROLLBACK` through `run`. Some databases reject these statements, so their drivers must implement `transaction`. It commits when `fn` returns and rolls back when `fn` throws. The [Durable Object driver](./cloudflare.md) is one such driver.
 
 `@notation/durable/sqlite/bun` and `@notation/durable/sqlite/node` also export their concrete driver classes:
 
