@@ -62,7 +62,9 @@ The object that receives requests is the one that holds the runtime and claims e
 - **Names** – The object finds the namespace of its own class in `ctx.exports` or `env`, and gets each instance with `idFromName` from its own ID and a slot number. An object in a jurisdiction creates its instances in the same one.
 - **Pool** – A slot runs one delivery at a time, and the object uses the lowest free slot. So the number of instances is the most deliveries that have run at once, which `concurrency` limits.
 - **Storage** – An instance that runs a delivery reads and writes nothing in its own storage. Every runtime call goes to the object that claimed the delivery.
-- **Stopping** – The object aborts the instance when the delivery loses its lease. The instance aborts itself when the object that claimed the delivery has stopped.
+- **Stopping** – The object aborts the instance when the delivery loses its lease. The instance aborts itself when the object that claimed the delivery has stopped, which it learns from a call it makes every third of the lease duration.
+- **Step records** – The object sends the execution's step records with each delivery, up to one million characters of them, so the instance replays finished steps without a call. It reads the records beyond that from the object, one call each.
+- **A failed call** – When the call to an instance fails, the object logs the error. After an error that Cloudflare marks `retryable`, it stops the instance and releases the lease, so the execution is delivered again after the redelivery delay. After any other error, such as a CPU reset, it leaves the lease to expire, which counts towards `maxExpiredDeliveries`.
 
 The class has two more methods, `durableRunDelivery` and `durableStopDelivery`, which the object calls on these instances. A subclass must not define methods with these names.
 
@@ -129,6 +131,8 @@ export interface DurableObjectStorageLike {
   getAlarm(): Promise<number | null>;
   setAlarm(scheduledTime: number | Date): Promise<void>;
   deleteAlarm(): Promise<void>;
+  // Awaited before a delivery runs in the object, so a reset cannot discard its claim.
+  sync?(): Promise<void>;
 }
 
 export interface DurableObjectStateLike {

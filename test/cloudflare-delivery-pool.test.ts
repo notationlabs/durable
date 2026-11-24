@@ -113,3 +113,57 @@ test("an infrastructure error in the instance rejects without a WorkerExitedErro
   expect(pool.calls).toEqual(["stop 0", "run 0 a"]);
   pool.close();
 });
+
+test("after a lost connection, the instance is stopped and the lease is released", async () => {
+  let lost = 1;
+  const pool = createPool(async () => {
+    if (lost-- > 0) throw Object.assign(new Error("Network connection lost."), { retryable: true });
+    return suspended;
+  });
+
+  // Any error but a WorkerExitedError makes the dispatcher release the lease.
+  await expect(pool.start("a")).rejects.toMatchObject({
+    name: "Error",
+    message: expect.stringContaining("Network connection lost."),
+  });
+  await pool.start("a");
+
+  expect(pool.calls).toEqual(["stop 0", "run 0 a", "stop 0", "run 0 a"]);
+  pool.close();
+});
+
+test("after a lost connection and a stop that fails, the lease is left to expire", async () => {
+  const fake = createFakeStorage();
+  let stops = 0;
+  const deliver = createIsolatedDeliver({
+    runtime: new SqliteRuntime(createSqliteDb(fake.storage)),
+    getRunner: () => ({
+      async durableRunDelivery() {
+        throw Object.assign(new Error("Network connection lost."), { retryable: true });
+      },
+      async durableStopDelivery() {
+        if (stops++ > 0) throw new Error("Network connection lost.");
+      },
+    }),
+  });
+
+  await expect(
+    deliver({ workflowId: "w", executionId: "a", params: undefined, context: new Map() } as WorkflowEvent, {
+      lease: { executionId: "a", token: 1, expiresAt: Date.now() + 30_000 } as ExecutionLease,
+      signal: new AbortController().signal,
+    })
+  ).rejects.toMatchObject({ name: "WorkerExitedError" });
+  fake.close();
+});
+
+test("an instance that is overloaded is not treated as a lost connection", async () => {
+  const pool = createPool(async () => {
+    throw Object.assign(new Error("Durable Object exceeded its CPU time limit and was reset."), {
+      retryable: true,
+      overloaded: true,
+    });
+  });
+
+  await expect(pool.start("a")).rejects.toMatchObject({ name: "WorkerExitedError" });
+  pool.close();
+});

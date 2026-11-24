@@ -132,7 +132,7 @@ Worker ── fetch ──▶ Workflows "default"            runtime, routes, al
 
 ### What it costs
 
-- **A call for each write** – A step result is one call from the instance to the object, which answers when the write is durable. In a test on a deployed Worker, the next step started 13 ms after a step function returned, against under 1 ms with deliveries in the object. Reading a finished step costs no call: the object sends the execution's step records with each delivery.
+- **A call for each write** – A step result is one call from the instance to the object, which answers when the write is durable. In a test on a deployed Worker, the next step started 12 ms after a step function returned, against under 1 ms with deliveries in the object. Reading a finished step costs no call: the object sends the execution's step records with each delivery.
 - **Durable Object duration** – Cloudflare bills each instance as a Durable Object while it runs a delivery, in addition to the object that claimed it.
 
 ### Running deliveries in the object
@@ -170,13 +170,20 @@ On Cloudflare a step is interrupted in three situations:
 
 | Event | Steps that run again |
 | :--- | :--- |
-| A deploy | {{DEPLOY_ROW}} |
-| Cloudflare restarts the object or an instance | The steps that the restarted instance was running. When the object restarts, the instances that run its deliveries stop too, so a step never runs in two places at once |
+| A deploy | The steps that are still running when the old code stops. The object and its instances keep running the old code for a while first, so short steps finish |
+| Cloudflare restarts the object or an instance | The steps that the restarted instance was running. When the object restarts, the instances that run its deliveries stop within a third of the lease duration |
 | A delivery exceeds the CPU limit | The step that was running in that delivery. See [CPU-bound steps](#cpu-bound-steps) |
 
 An interrupted step starts again after its lease expires and the redelivery delay passes. With the default 30-second lease, the next attempt starts about 30 seconds after the interruption.
 
-{{DEPLOY_TEST}}
+One interruption is shorter. When the call to an instance fails with an error that Cloudflare marks as transient, such as `Network connection lost`, the object stops that instance and releases the lease, and the next attempt starts after the redelivery delay of one second. In a test of 11,342 executions on a deployed Worker, one delivery lost its connection this way, and no execution finished more than 4.6 seconds late.
+
+For example, in a test on a deployed Worker, `wrangler deploy` finished 28 seconds into a step:
+
+- **Steps of 60 and 180 seconds** finished on the old code, on their first attempt.
+- **Steps of 600 seconds** stopped about 295 seconds after the deploy. They ran again from the start on the new code, 31 seconds later. Each of those step functions started twice and finished once.
+
+No request to the object failed during the deploy. These times come from one test, so do not rely on the old code running for a fixed time after a deploy.
 
 ### A forced cancellation stops a step that is waiting
 
@@ -188,7 +195,7 @@ In a test on a deployed Worker, a step that waited 40 seconds was cancelled afte
 
 Two limits apply:
 
-- **The object notices at the next lease renewal**, up to a third of the lease duration after the cancellation: 10 seconds with the default lease.
+- **The object aborts the instance at the next lease renewal.** The execution is `cancelled` at once, and the step can carry on for up to a third of the lease duration: 10 seconds with the default lease.
 - **A step in a synchronous loop is not waiting**, so the abort reaches it only when the loop ends or the delivery exceeds the CPU limit.
 
 ## CPU-bound steps
@@ -216,7 +223,7 @@ What to do depends on the step:
   }
   ```
 
-  {{CPU_LIMIT_TEST}}
+  With this limit, steps that spun for 53 and 279 seconds finished on their first attempt in tests on a deployed Worker. None of the requests sent to the object in that time was slow or failed.
 - **One step that needs more than five minutes** cannot run in a Worker. Run the computation in another service, and call it from the step.
 - **A step that passes the limit on every attempt** is delivered again until `maxExpiredDeliveries` ends its execution. See [Limiting redelivery](#limiting-redelivery).
 
@@ -238,12 +245,12 @@ The claim that would reach the limit records the execution `failed` with a `Deli
 
 ## Capacity
 
-One object runs every execution in one isolate and one database:
+One object holds every execution in one database, and claims every delivery:
 
 | Limit | Value |
 | :--- | :--- |
 | Deliveries at once | `concurrency`, 10 by default. Each one runs in its own instance |
-| Throughput | A test on a deployed Worker kept up with 50 triggers per second, and fell behind at 100 per second with a median lag of 37 seconds |
+| Throughput | A three-minute test on a deployed Worker kept up with 50 triggers per second: executions finished a median of 0.4 seconds and at most 4.6 seconds behind schedule. At 100 per second it fell behind, with a median of 13 seconds. With [deliveries in the object](#running-deliveries-in-the-object), a two-minute test kept up with 100 per second, a median of 25 ms behind |
 | Storage | Cloudflare limits a SQLite-backed object to 10 GB. Finished executions stay in the database. A one-hour test stored about 1.3 KB per execution |
 
 For more throughput or storage, give each tenant its own object with `getByName(tenantId)`. Each object has its own instances for deliveries. Executions in different objects cannot join each other or share stores.

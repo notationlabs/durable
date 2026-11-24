@@ -97,6 +97,8 @@ export class SqliteEffectClient implements EffectClient {
 
 export class SqliteHeapClient implements HeapClient {
   constructor(db: SqliteDriver, options?: { clock?: () => number });
+  // The record readStep returns for every step of the execution that has one, by step key.
+  readSteps(executionId: string): Map<string, HeapRecord>;
 }
 
 export class SqliteJoinClient implements JoinClient {

@@ -10,6 +10,8 @@ export interface DurableObjectStorageLike {
   getAlarm(): Promise<number | null>;
   setAlarm(scheduledTime: number | Date): Promise<void>;
   deleteAlarm(): Promise<void>;
+  /** Resolves when every write so far is durable. Awaited before a delivery runs in the object. */
+  sync?(): Promise<void>;
 }
 
 /** The part of a Durable Object's `ctx` that the host uses. */

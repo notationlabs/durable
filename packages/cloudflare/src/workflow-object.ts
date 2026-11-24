@@ -16,6 +16,7 @@ import {
 } from "@durable/http-server";
 import { SqliteRuntime } from "@durable/sqlite-runtime";
 import {
+  DELIVERY_STOPPED,
   createIsolatedDeliver,
   runDelivery,
   type DeliveryHost,
@@ -24,7 +25,11 @@ import {
   type DeliveryRunner,
 } from "./delivery";
 import { DurableObjectSqliteDriver } from "./do-sqlite-driver";
-import type { DurableObjectNamespaceLike, DurableObjectStateLike } from "./storage";
+import type {
+  DurableObjectNamespaceLike,
+  DurableObjectStateLike,
+  DurableObjectStorageLike,
+} from "./storage";
 
 export type WorkflowObjectOptions<Router extends WorkflowRouter> = {
   router: Router;
@@ -141,7 +146,8 @@ function createHost<Router extends WorkflowRouter>(
   const runtime = new SqliteRuntime(db);
   const invoker: WorkflowInvoker = {
     workflowEndEmitter: new EventEmitter(),
-    deliver: createDeliver?.(runtime) ?? inlineDeliver(runtime, options.router, logger),
+    deliver:
+      createDeliver?.(runtime) ?? inlineDeliver(runtime, storage, options.router, logger),
   };
   // Never started: the pump below calls `tick` instead of the poll loop.
   const dispatcher = new ExecutionDispatcher(runtime, {
@@ -326,9 +332,22 @@ function createHost<Router extends WorkflowRouter>(
   };
 }
 
-function inlineDeliver(runtime: Runtime, router: WorkflowRouter, logger: Logger): Deliver {
+function inlineDeliver(
+  runtime: Runtime,
+  storage: DurableObjectStorageLike,
+  router: WorkflowRouter,
+  logger: Logger
+): Deliver {
   const runner = new WorkflowRunner(runtime, { router, logger });
-  return (event, delivery) => runner.run(event, delivery);
+  return async (event, delivery) => {
+    // A step that computes without awaiting can run until Cloudflare resets
+    // the object, and a reset discards the writes that are not yet flushed.
+    // The claim must not be one of them: without it the reset would not count
+    // as an expired delivery, and the execution would be delivered again
+    // whatever `maxExpiredDeliveries` is.
+    await storage.sync?.();
+    return runner.run(event, delivery);
+  };
 }
 
 // A service binding answers every property with an RPC method, so a namespace
@@ -469,7 +488,7 @@ export function WorkflowObject<Router extends WorkflowRouter>(
     }
 
     async durableStopDelivery() {
-      if (this.#delivering) this.ctx.abort?.("The delivery was stopped");
+      if (this.#delivering) this.ctx.abort?.(DELIVERY_STOPPED);
     }
   }
 

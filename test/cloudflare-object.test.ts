@@ -302,3 +302,36 @@ test("a new instance leaves an alarm that is already set to the claim time", asy
   await new Promise((resolve) => setTimeout(resolve, 50));
   expect(writes).toBe(0);
 });
+
+test("a delivery in the object starts after the claim is flushed", async () => {
+  const order: string[] = [];
+  const workflow = createWorkflow(async function* (step) {
+    return yield* step.run(() => {
+      order.push("step");
+      return "done";
+    });
+  });
+  const fake = createFakeStorage();
+  const host = createWorkflowObject(
+    {
+      storage: {
+        ...fake.storage,
+        async sync() {
+          const [{ token }] = fake.storage.sql
+            .exec("SELECT lease_token AS token FROM executions")
+            .toArray();
+          order.push(`sync with lease ${token}`);
+        },
+      },
+      waitUntil() {},
+    },
+    { router: { workflow }, logger }
+  );
+  const local = createLocalSdk<{ workflow: typeof workflow }>(host.runtime);
+
+  const { executionId } = await local.trigger({ workflowId: "workflow" });
+  await expect.poll(async () => (await local.poll(executionId))?.status).toBe("completed");
+
+  expect(order).toEqual(["sync with lease 1", "step"]);
+  fake.close();
+});

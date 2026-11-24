@@ -58,6 +58,9 @@ export type DeliveryReply =
   | { status: "outcome"; outcome: EncodedWorkflowRunOutcome }
   | ({ status: "error" } & EncodedError);
 
+/** The reason an instance aborts with when `durableStopDelivery` stops its delivery. */
+export const DELIVERY_STOPPED = "The delivery was stopped";
+
 /** The methods the instance that runs a delivery serves to the object that claimed it. */
 export interface DeliveryRunner {
   durableRunDelivery(request: DeliveryRequest, host: DeliveryHost): Promise<DeliveryReply>;
@@ -110,6 +113,16 @@ export async function runDelivery(
   }
 }
 
+const messageOf = (error: unknown) => (error instanceof Error ? error.message : String(error));
+
+// Cloudflare sets `retryable` on an error from a stub when the failure is
+// transient, and `overloaded` when the object must not be called again at
+// once, as after it exceeds the CPU limit.
+function isRetryable(error: unknown) {
+  const { retryable, overloaded } = (error ?? {}) as { retryable?: unknown; overloaded?: unknown };
+  return retryable === true && overloaded !== true;
+}
+
 /**
  * The most step record text sent with a delivery. A delivery reads the
  * records beyond it from the runtime, one call each.
@@ -138,9 +151,17 @@ function collectSteps(records: Iterable<[string, HeapRecord]>): StepRecords {
  *
  * When the delivery's signal aborts, `deliver` stops the instance, which
  * stops a step function that is awaiting, and rejects at once with an
- * `InfrastructureError`. When the instance stops before replying, such as
- * after it exceeds the CPU limit, `deliver` rejects with a
- * `WorkerExitedError`, so the dispatcher leaves the lease to expire.
+ * `InfrastructureError`.
+ *
+ * When the call to the instance fails, `deliver` rejects in one of two ways:
+ *
+ * - With a `WorkerExitedError`, so the dispatcher leaves the lease to expire
+ *   and counts an expired delivery. This is what follows a delivery that
+ *   exceeds the CPU limit.
+ * - With another error, so the dispatcher releases the lease and delivers the
+ *   execution again after the redelivery delay. This is what follows an
+ *   error that Cloudflare marks `retryable`, such as a lost connection, once
+ *   the instance is known to have stopped.
  */
 export function createIsolatedDeliver(params: {
   runtime: Runtime;
@@ -172,14 +193,19 @@ export function createIsolatedDeliver(params: {
     free.sort((a, b) => b - a);
     return free.pop()!;
   };
-  // The stop rejects when it aborts the instance, and the instance is idle
-  // either way once it settles.
+  // Resolves with whether the instance is known to be idle: the stop
+  // resolved, or it rejected because it aborted the instance. After any other
+  // rejection the instance may still be running a delivery.
   const stop = (slot: number) =>
     Promise.resolve()
       .then(() => getRunner(slot).durableStopDelivery())
-      .catch(() => {})
-      .then(() => {
-        idle.add(slot);
+      .then(
+        () => true,
+        (error) => messageOf(error).includes(DELIVERY_STOPPED)
+      )
+      .then((stopped) => {
+        if (stopped) idle.add(slot);
+        return stopped;
       });
 
   return async (event, { lease, signal, cancellation }) => {
@@ -203,7 +229,7 @@ export function createIsolatedDeliver(params: {
 
     return new Promise((resolve, reject) => {
       let settled = false;
-      const settle = (fn: () => void) => {
+      const settle = (fn: () => unknown) => {
         if (settled) return;
         settled = true;
         signal.removeEventListener("abort", onAbort);
@@ -235,16 +261,14 @@ export function createIsolatedDeliver(params: {
               }
             }),
           (error) =>
-            settle(() => {
+            settle(async () => {
               idle.delete(slot);
+              const message = `The Durable Object that ran the delivery stopped before replying: ${messageOf(error)}`;
+              // A step function may still be running after a lost connection.
+              // The lease is released only once it cannot be.
+              const released = isRetryable(error) && (await stop(slot));
               free.push(slot);
-              reject(
-                new WorkerExitedError(
-                  `The Durable Object that ran the delivery stopped before replying: ${
-                    error instanceof Error ? error.message : String(error)
-                  }`
-                )
-              );
+              reject(released ? new Error(message) : new WorkerExitedError(message));
             })
         );
     });
