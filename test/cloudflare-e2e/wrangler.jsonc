@@ -10,6 +10,10 @@
       { "name": "PROBE", "class_name": "Probe" }
     ]
   },
+  // The load router imports the SDK by its workspace name. In this Worker it
+  // must load the built package, so the workflows and the object share one
+  // copy of the classes.
+  "alias": { "@durable/sdk": "../../packages/durable/dist/index.js" },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Workflows", "Probe"] }],
   // The `spin` scenario runs a step for longer than the default 30 s of CPU time.
   "limits": { "cpu_ms": 300000 },

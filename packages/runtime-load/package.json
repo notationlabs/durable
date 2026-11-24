@@ -1,0 +1,15 @@
+{
+  "name": "@durable/runtime-load",
+  "version": "0.9.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./router": "./src/router.ts",
+    "./driver": "./src/driver.ts"
+  },
+  "dependencies": {
+    "@durable/core": "workspace:*",
+    "@durable/sdk": "workspace:*"
+  }
+}

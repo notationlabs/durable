@@ -66,6 +66,9 @@ export class Workflows {
   private constructedAt = Date.now();
   private alarms = 0;
   private object;
+  // Rows written by the runtime's SQL since this instance was constructed.
+  // The e2e tables are written through the unwrapped storage and are not counted.
+  private rowsWritten = 0;
 
   constructor(private ctx: State) {
     const { storage } = ctx;
@@ -84,7 +87,29 @@ export class Workflows {
       if (level !== "info") log(storage, this.instance, `log-${level}`, args.map(describe));
     };
     const logger = { info: record("info", "log"), warn: record("warn", "warn"), error: record("error", "error") };
-    this.durable = createWorkflowObject(ctx, { router, basePath: "/durable", logger: logger as never });
+    // The driver reads every cursor to the end with `toArray`, after which
+    // the cursor's `rowsWritten` is final.
+    const counted = {
+      storage: {
+        sql: {
+          exec: (query: string, ...bindings: unknown[]) => {
+            const cursor = storage.sql.exec(query, ...bindings);
+            return {
+              toArray: () => {
+                const rows = cursor.toArray();
+                this.rowsWritten += cursor.rowsWritten ?? 0;
+                return rows;
+              },
+            };
+          },
+        },
+        transactionSync: <R>(closure: () => R) => storage.transactionSync(closure),
+        setAlarm: (at: number | Date) => storage.setAlarm(at),
+        deleteAlarm: () => storage.deleteAlarm(),
+      },
+      waitUntil: (promise: Promise<unknown>) => ctx.waitUntil(promise),
+    };
+    this.durable = createWorkflowObject(counted, { router, basePath: "/durable", logger: logger as never });
   }
 
   fetch(request: Request) {
@@ -106,6 +131,7 @@ export class Workflows {
           alarm: await storage.getAlarm(),
           nextClaimAt: this.durable.runtime.executions.nextClaimAt(),
           databaseSize: storage.sql.databaseSize,
+          rowsWritten: this.rowsWritten,
           live,
         });
       case "/debug/sql": {
