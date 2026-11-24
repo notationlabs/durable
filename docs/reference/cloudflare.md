@@ -63,7 +63,7 @@ export type WorkflowObjectOptions<Router extends WorkflowRouter> = {
 | `runtime` | The `SqliteRuntime` over the object's storage, for the local SDK, stores and effects |
 | `invoker` | The in-process invoker; pass it to `createLocalSdk` so `wait` returns as soon as an outcome is recorded |
 | `fetch` | Serves the [HTTP routes](./http.md). Responds `404` to other paths and `405` to methods other than `POST` |
-| `alarm` | Claims due executions and resolves when no delivery is in flight. A rejection makes Cloudflare call the alarm again |
+| `alarm` | Claims due executions, and resolves when no delivery is in flight or after five minutes. If claiming fails, it sets the alarm to run again; it rejects only when it cannot set the alarm |
 
 `createWorkflowObject` creates the runtime's tables when it is called, so call it in the Durable Object's constructor or a field initializer.
 
