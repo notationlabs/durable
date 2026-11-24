@@ -132,7 +132,7 @@ Worker ── fetch ──▶ Workflows "default"            runtime, routes, al
 
 ### What it costs
 
-- **A call for each write** – A step result is one call from the instance to the object, which answers when the write is durable. In a test on a deployed Worker, the next step started 12 ms after a step function returned, against under 1 ms with deliveries in the object. Reading a finished step costs no call: the object sends the execution's step records with each delivery.
+- **A call for each write** – A step result is one call from the instance to the object, which answers when the write is durable. In tests on a deployed Worker, the next step started 12 to 21 ms after a step function returned, against under 1 ms with deliveries in the object. Reading a finished step costs no call: the object sends the execution's step records with each delivery.
 - **Durable Object duration** – Cloudflare bills each instance as a Durable Object while it runs a delivery, in addition to the object that claimed it.
 
 ### Running deliveries in the object
@@ -155,10 +155,10 @@ In a test on a deployed Worker, one step spun past the CPU limit next to five st
 
 | | Other instances (default) | In the object |
 | :--- | :--- | :--- |
-| The five waiting executions | All `completed`, and each step function started once | All `failed` with `DeliveryLimitError`, and each step function started three times |
+| The five waiting executions | All `completed`, and each step function started once | All `failed` with `DeliveryLimitError`, after three deliveries each |
 | The CPU-bound execution | `failed` with `DeliveryLimitError` | `failed` with `DeliveryLimitError` |
-| Requests to the object, sent one after another | 147 sent, all answered | 5 sent. Three of them waited 34 seconds and failed |
-| Times Cloudflare reset the object | 0 | 3 |
+| Requests to the object, sent one after another | 145 sent, and none took over 2 seconds | 26 sent, and two of them took 35 and 37 seconds |
+| Instances of the object that Cloudflare started | 1 | 7 |
 
 ## When a step runs again
 
