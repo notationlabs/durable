@@ -4,7 +4,7 @@ import {
   createWorkflowObject,
   type DurableObjectStateLike,
 } from "@durable/cloudflare";
-import { createWorkflow } from "@durable/sdk";
+import { createLocalSdk, createWorkflow } from "@durable/sdk";
 
 // The pool runs this module in the same isolate as the test files, so the
 // tests read these counters directly.
@@ -123,6 +123,21 @@ export class IsolatedWorkflows extends WorkflowObject({
   constructor(ctx: DurableObjectStateLike, env: unknown) {
     super(ctx, env);
     isolated.constructed++;
+  }
+
+  // An RPC method of a subclass, which triggers through the local SDK.
+  async double(n: number) {
+    const sdk = createLocalSdk<Router>(this.durable.runtime, { invoker: this.durable.invoker });
+    const { executionId } = await sdk.trigger({ workflowId: "double", params: { n } });
+    return executionId;
+  }
+
+  // Whether this instance has anything in its own storage.
+  tables() {
+    return this.ctx.storage.sql
+      .exec("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE '\\_cf%' ESCAPE '\\'")
+      .toArray()
+      .map((row) => row.name as string);
   }
 }
 

@@ -1,21 +1,19 @@
 # Cloudflare Workers
 
-Notation Durable runs on Cloudflare inside one Durable Object. The object's SQLite storage holds the runtime, the object's alarm takes the place of the dispatcher's poll loop, and every delivery runs in the object's own isolate. Workflow and router files are the same as on Bun and Node.
-
-Steps follow the same rule as on Bun and Node: a step that is interrupted runs again from the start. There is one difference to plan for. Every delivery shares the object's isolate, so a step that computes for longer than the CPU limit also interrupts the other steps running in the object. [CPU-bound steps](#cpu-bound-steps) shows how to recognise such a step and what to do about it.
+Notation Durable runs on Cloudflare in Durable Objects of one class. One object holds the runtime in its SQLite storage, serves the routes, and claims executions when its alarm fires. It runs each delivery in another instance of the same class, so every delivery has an isolate and a CPU limit to itself. Workflow and router files are the same as on Bun and Node.
 
 ## How the pieces map
 
-A Bun or Node deployment has a server process, worker processes and a SQLite file. On Cloudflare one Durable Object does all three jobs:
+A Bun or Node deployment has a server process, worker processes and a SQLite file. On Cloudflare, Durable Objects of one class do all three jobs:
 
 | Bun or Node | Cloudflare |
 | :--- | :--- |
 | SQLite file opened with `createSqliteDb` | The object's SQLite storage (`ctx.storage.sql`) |
 | `ExecutionDispatcher` polling every 10 ms | The object's alarm, set to the next time an execution is due |
-| Worker processes forked by `createWorkflowInvoker` | Deliveries run in the object's isolate |
+| Worker processes forked by `createWorkflowInvoker` | Other instances of the same class, one for each delivery in flight |
 | `createRoutes` mounted in `Bun.serve` or `node:http` | The object's `fetch` handler |
 
-The third row is the main difference. On Bun or Node each delivery runs in its own worker process. On Cloudflare every delivery runs in the object's isolate, next to the routes. Steps that await I/O take turns in the isolate, so most workflows run the same way on both. A step that computes for a long time without awaiting does not take turns, and [CPU-bound steps](#cpu-bound-steps) covers that case.
+The third row behaves like worker processes do. A step that fails, waits or uses a lot of CPU time affects its own delivery and no other, and the object can stop one delivery without stopping the rest. [Where deliveries run](#where-deliveries-run) describes these instances.
 
 ## Setup
 
@@ -59,9 +57,11 @@ export default {
 What each setting is for:
 
 - **`middleware` and `observationMiddleware`** – These decide who may call the routes. The Worker forwards every request to the object, so without them anyone who can reach the Worker's URL can start workflows, read every execution's params and results with `/list`, and cancel executions. `requireUser` and `ownExecutionsOnly` are the functions from [HTTP Server](./http-server.md#auth-and-execution-privacy).
-- **`maxExpiredDeliveries`** – This ends an execution as `failed` when its deliveries keep being interrupted, instead of delivering it again forever. It is optional, and worth setting on Cloudflare. See [Limiting redelivery](#limiting-redelivery).
+- **`maxExpiredDeliveries`** – This ends an execution as `failed` when its deliveries keep being interrupted, instead of delivering it again forever. It is optional. See [Limiting redelivery](#limiting-redelivery).
 - **`nodejs_compat`** – The SDK imports `node:events` and `node:crypto`.
 - **`new_sqlite_classes`** – The class must be SQLite-backed. A key-value-backed Durable Object has no `ctx.storage.sql`.
+
+The instances that run deliveries need no setup of their own. They are instances of `Workflows`, and the object finds them through the `WORKFLOWS` binding.
 
 ## Triggering executions
 
@@ -87,7 +87,20 @@ export async function signup(env: Env, email: string, sessionToken: string) {
 
 A request through the stub still runs the object's middleware, so it needs the same credentials as a request from outside.
 
-Code inside the Durable Object class can also call the [local SDK](./local-sdk.md) on `this.durable.runtime`. The local SDK writes to the runtime directly and runs no middleware. Any write to the runtime, from a route or from the local SDK, sets the alarm and starts deliveries, so there is nothing else to call.
+The class extends `DurableObject` from `cloudflare:workers`, so a subclass can add RPC methods. They can call the [local SDK](./local-sdk.md) on `this.durable.runtime`:
+
+```ts [src/worker.ts]
+import { createLocalSdk } from "@notation/durable";
+
+export class Workflows extends WorkflowObject({ router, basePath: "/durable" }) {
+  startOnboarding(email: string) {
+    const sdk = createLocalSdk<Router>(this.durable.runtime, { invoker: this.durable.invoker });
+    return sdk.trigger({ workflowId: "onboarding", params: { email } });
+  }
+}
+```
+
+Another Worker then calls `env.WORKFLOWS.getByName("default").startOnboarding(email)`. The local SDK writes to the runtime directly and runs no middleware. Any write to the runtime, from a route or from the local SDK, sets the alarm and starts deliveries, so there is nothing else to call.
 
 ## When deliveries run
 
@@ -99,67 +112,119 @@ The object does not poll. It claims executions at three moments:
 
 A delivery can run longer than one alarm handler. Cloudflare stops an alarm handler after 15 minutes, so `alarm` returns after five minutes and the delivery carries on. In a test on a deployed Worker, a 17-minute step finished on its first attempt with no requests to the object.
 
+## Where deliveries run
+
+The object that the Worker addresses, `getByName("default")` in the setup above, holds the runtime. For each delivery it calls another instance of `Workflows`:
+
+```text
+Worker ── fetch ──▶ Workflows "default"            runtime, routes, alarm
+                      ├── RPC ──▶ Workflows "<id>/delivery/0"    one delivery
+                      ├── RPC ──▶ Workflows "<id>/delivery/1"    one delivery
+                      └── …
+```
+
+- **One delivery at a time** – An instance runs one delivery, and the object uses the lowest-numbered instance that is free. So the object uses as many instances as deliveries have run at once, and `concurrency` limits that to 10 by default.
+- **Its own isolate** – Cloudflare gives each instance its own isolate. In a test on a deployed Worker, six deliveries that ran at once ran in six isolates, none of them the object's.
+- **No storage** – The instance runs the workflow function and its step functions. It sends each step result, store update and effect to the object, which writes it to SQLite. The instance writes nothing to its own storage.
+- **Stopped with its delivery** – The object aborts the instance when the delivery loses its lease. The instance aborts itself when the object stops, at most a third of the lease duration later.
+
+**The constructor runs in these instances too.** A subclass constructor or field initializer that writes to `this.ctx.storage` creates that storage in every instance that runs a delivery. Keep such code in the methods that use it.
+
+### What it costs
+
+- **A call for each write** – A step result is one call from the instance to the object. {{STEP_OVERHEAD}}
+- **Durable Object duration** – Cloudflare bills each instance as a Durable Object while it runs a delivery, in addition to the object that claimed it.
+
+### Running deliveries in the object
+
+`isolateDeliveries: false` runs every delivery in the object's own isolate, with no other instances:
+
+```ts [src/worker.ts]
+export class Workflows extends WorkflowObject({ router, isolateDeliveries: false }) {}
+```
+
+Steps that await I/O take turns in one isolate, so this works for workflows whose steps only wait on other services. It removes the call for each write and the second object's duration. In exchange, the deliveries share one CPU limit, and the object cannot stop one of them:
+
+| | Other instances (default) | In the object |
+| :--- | :--- | :--- |
+| A step computes without awaiting | Other deliveries and requests carry on | Every delivery and request waits |
+| A delivery exceeds the CPU limit | Cloudflare resets that delivery's instance | Cloudflare resets the object, with every delivery in it |
+| A forced cancellation during a step | The step stops at its `await` | The step function runs to its end |
+
+In a test on a deployed Worker, one step spun past the CPU limit next to five steps that waited two minutes, with `maxExpiredDeliveries: 3`:
+
+| | Other instances (default) | In the object |
+| :--- | :--- | :--- |
+| The five waiting executions | All `completed`, and each step function started once | All `failed` with `DeliveryLimitError`, and each step function started three times |
+| The CPU-bound execution | `failed` with `DeliveryLimitError` | `failed` with `DeliveryLimitError` |
+| Requests to the object, one per second | 147 of 147 answered | 2 of 5 answered. The other three waited 34 seconds and failed |
+| Times the object was reset | 0 | 3 |
+
 ## When a step runs again
 
 `step.run` runs a step body at least once on every host. If the process stops while a step is running, the step does not finish. Its lease expires, and the next delivery replays the steps that finished and **runs the interrupted step from the start**. [Running a Server](./running-a-server.md#graceful-shutdown) describes this for a server crash on Bun and Node.
 
 So the practice is the same on every host: **write every `step.run` body so that running it twice is safe.** Use [`step.effect`](./external-effects.md) for an operation that must not happen twice, such as charging a card.
 
-On Cloudflare the object stops in three situations. Each one interrupts a different set of steps:
+On Cloudflare a step is interrupted in three situations:
 
 | Event | Steps that run again |
 | :--- | :--- |
-| A deploy | Steps that are still running when the old code stops. The object keeps running the old code for a while first, so short steps finish |
-| Cloudflare restarts the object | Steps that are running at that moment. The object's alarm keeps it in memory while a delivery is in flight: in a test, a 17-minute step finished on its first attempt |
-| A step exceeds the CPU limit | Every step that is running in the object, not only the CPU-bound one. See [CPU-bound steps](#cpu-bound-steps) |
+| A deploy | {{DEPLOY_ROW}} |
+| Cloudflare restarts the object or an instance | The steps that the restarted instance was running. When the object restarts, the instances that run its deliveries stop too, so a step never runs in two places at once |
+| A delivery exceeds the CPU limit | The step that was running in that delivery. See [CPU-bound steps](#cpu-bound-steps) |
 
-An interrupted step starts again after its lease expires and the redelivery delay passes. With the default 30-second lease, the next attempt starts about 30 seconds after the object stopped.
+An interrupted step starts again after its lease expires and the redelivery delay passes. With the default 30-second lease, the next attempt starts about 30 seconds after the interruption.
 
-For example, in a test on a deployed Worker, `wrangler deploy` ran 18 seconds into a step:
+{{DEPLOY_TEST}}
 
-- **Steps of 60 and 180 seconds** finished on the old code, on their first attempt.
-- **Steps of 600 seconds** stopped about 300 seconds after the deploy. They ran again from the start on the new code, 31 seconds after their last lease renewal. Each of those step bodies started twice and finished once.
+### A forced cancellation stops a step that is waiting
 
-These times come from one test, so do not rely on the old code running for a fixed time after a deploy.
+A delivery can also lose its lease while the object keeps running, for example after a forced cancellation. On Bun or Node the dispatcher kills the worker process. On Cloudflare the object aborts the instance that runs the delivery, which stops a step function at the `await` it is waiting on.
 
-### A lost lease does not stop a step
+For example, `sdk.cancel(id, { force: true })` during a `step.run("charge", …)` that is waiting for a `fetch` ends the execution `cancelled`, and the code after the `await` never runs. The payment service may still process the request that was already sent.
 
-A delivery can also lose its lease while the object keeps running, for example after a forced cancellation. On Bun or Node the dispatcher kills the worker process. On Cloudflare nothing can stop the `await` inside a step body, so the body runs to its end. Its abort signal stops the workflow before the next step, and its lease token makes the runtime reject every later write.
+{{FORCE_CANCEL_TEST}}
 
-For example, `sdk.cancel(id, { force: true })` during a `step.run("charge", …)` ends the execution `cancelled`, but the charge request still completes.
+Two limits apply:
+
+- **The object notices at the next lease renewal**, up to a third of the lease duration after the cancellation: 10 seconds with the default lease.
+- **A step in a synchronous loop is not waiting**, so the abort reaches it only when the loop ends or the delivery exceeds the CPU limit.
 
 ## CPU-bound steps
 
-A step is CPU-bound when it computes for a long time without awaiting I/O, for example when it parses a large file in a loop. Time that a step spends waiting for `fetch`, a timer or another service is not CPU time. So a step that waits ten minutes for an API is not CPU-bound, and it lets other deliveries run while it waits.
+A step is CPU-bound when it computes for a long time without awaiting I/O, for example when it parses a large file in a loop. Time that a step spends waiting for `fetch`, a timer or another service is not CPU time. So a step that waits ten minutes for an API is not CPU-bound.
 
-A CPU-bound step affects the rest of the object in two ways:
+Cloudflare gives each delivery 30 seconds of CPU time by default. The limit counts every step function the delivery runs, one after another, until the workflow ends or waits for a delay, a store, a join or an effect.
 
-- **Nothing else runs while it computes.** The isolate runs one thing at a time, so the other deliveries and every request to the object wait until the step ends or awaits.
-- **Cloudflare resets the object when the step passes the CPU limit.** The limit is 30 seconds by default. The reset interrupts every step that is running in the object, and each of them [runs again](#when-a-step-runs-again). The CPU-bound step runs again too, and passes the limit again unless something changes.
+**A delivery that passes the limit affects only itself.** Cloudflare resets the instance that runs it. The object logs the reset and leaves the delivery's lease to expire, and the next delivery runs the interrupted step again:
 
-A reset writes this message to the Worker's logs: "Durable Object exceeded its CPU time limit and was reset." In a test on a deployed Worker, a step that spun for about 40 seconds was reset at 30 seconds of CPU time. Its attempts started at 0.7, 35.1 and 67.1 seconds, and requests sent to the object during a spin returned HTTP 500 or 503.
-
-Three things help, the most effective first:
-
-1. **Move the computation out of the object.** Put it in a separate Worker or service, and call that from the step. The step then awaits I/O, so it does not block the other deliveries and does not use the object's CPU time.
-2. **Raise the CPU limit** when a step needs a little more than 30 seconds. The maximum is five minutes. The step still blocks the other deliveries while it computes.
-3. **Set [`maxExpiredDeliveries`](#limiting-redelivery)**, so that a step that passes the limit on every attempt ends as `failed` and stops resetting the object.
-
-The CPU limit is set in `wrangler.jsonc`:
-
-```jsonc [wrangler.jsonc]
-{
-  "limits": { "cpu_ms": 300000 }
-}
+```text
+Worker exited without replying; the lease will expire and the execution will be redelivered
+  WorkerExitedError: The Durable Object that ran the delivery stopped before replying:
+  Durable Object exceeded its CPU time limit and was reset.
 ```
 
-With this limit, spins of up to 56 seconds finished on their first attempt in tests.
+What to do depends on the step:
+
+- **Several steps that together pass the limit** need no change. The steps that finished are not run again, so each delivery carries on from the last finished step. {{SPIN_STEPS_TEST}}
+- **One step that needs more than 30 seconds** needs a higher limit. The maximum is five minutes:
+
+  ```jsonc [wrangler.jsonc]
+  {
+    "limits": { "cpu_ms": 300000 }
+  }
+  ```
+
+  {{CPU_LIMIT_TEST}}
+- **One step that needs more than five minutes** cannot run in a Worker. Run the computation in another service, and call it from the step.
+- **A step that passes the limit on every attempt** is delivered again until `maxExpiredDeliveries` ends its execution. See [Limiting redelivery](#limiting-redelivery).
 
 ## Limiting redelivery
 
 By default the object delivers an execution again every time its lease expires. The delay before each new delivery doubles from one second up to five minutes. After a deploy or a restart this is what recovers the execution, because the next delivery finishes the step.
 
-The default does not help a step that passes the CPU limit on every attempt. That step is delivered again about every five minutes, and each attempt resets the object.
+The default does not help a step that passes the CPU limit on every attempt. That step is delivered again about every five minutes for as long as the execution exists.
 
 `maxExpiredDeliveries` sets how many consecutive deliveries of one execution may end with an expired lease:
 
@@ -169,7 +234,7 @@ export class Workflows extends WorkflowObject({ router, maxExpiredDeliveries: 10
 
 The claim that would reach the limit records the execution `failed` with a `DeliveryLimitError`, and no workflow code runs. A completed step or a suspension resets the count, so only an execution that makes no progress reaches the limit.
 
-**Choose a limit with long steps in mind.** A reset, a deploy or a restart adds one to the count of every execution that has a step running at that moment, not only the execution that caused it. An execution with short steps finishes a step between interruptions, and its count returns to zero. An execution with one long step can be interrupted several times during that step, and can reach the limit without any fault of its own. So set the limit well above the number of deploys, restarts and resets that your longest step is likely to meet.
+**Choose a limit with deploys in mind.** A CPU reset adds one to the count of the execution whose delivery was reset, and to no other. A deploy or a restart of the object adds one to the count of every execution that has a step running at that moment. An execution with one long step can meet several deploys during that step, so set the limit above the number of deploys and restarts that your longest step is likely to meet.
 
 ## Capacity
 
@@ -177,8 +242,8 @@ One object runs every execution in one isolate and one database:
 
 | Limit | Value |
 | :--- | :--- |
-| Deliveries at once | `concurrency`, 10 by default |
+| Deliveries at once | `concurrency`, 10 by default. Each one runs in its own instance |
 | Throughput | A test on a deployed Worker kept up with 50 triggers per second, and fell behind at 100 per second with a median lag of 37 seconds |
 | Storage | Cloudflare limits a SQLite-backed object to 10 GB. Finished executions stay in the database. A one-hour test stored about 1.3 KB per execution |
 
-For more throughput or storage, give each tenant its own object with `getByName(tenantId)`. A separate object also has its own isolate, so a CPU reset in one tenant's object does not interrupt another tenant's steps. Executions in different objects cannot join each other or share stores.
+For more throughput or storage, give each tenant its own object with `getByName(tenantId)`. Each object has its own instances for deliveries. Executions in different objects cannot join each other or share stores.

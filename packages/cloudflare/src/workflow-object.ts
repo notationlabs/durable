@@ -18,12 +18,12 @@ import { SqliteRuntime } from "@durable/sqlite-runtime";
 import {
   createIsolatedDeliver,
   runDelivery,
+  type DeliveryHost,
   type DeliveryReply,
   type DeliveryRequest,
   type DeliveryRunner,
 } from "./delivery";
 import { DurableObjectSqliteDriver } from "./do-sqlite-driver";
-import type { RuntimeCall } from "./remote-runtime";
 import type { DurableObjectNamespaceLike, DurableObjectStateLike } from "./storage";
 
 export type WorkflowObjectOptions<Router extends WorkflowRouter> = {
@@ -131,7 +131,7 @@ function createHost<Router extends WorkflowRouter>(
   ctx: DurableObjectStateLike,
   options: WorkflowHostOptions<Router>,
   // Runs each delivery somewhere other than this isolate.
-  createDeliver?: (runtime: Runtime) => Deliver
+  createDeliver?: (runtime: SqliteRuntime) => Deliver
 ) {
   const logger = options.logger ?? consoleLogger;
   const concurrency = options.concurrency ?? DEFAULT_DISPATCHER_CONCURRENCY;
@@ -433,9 +433,11 @@ export function WorkflowObject<Router extends WorkflowRouter>(
         );
       }
       const id = this.ctx.id!.toString();
-      return (runtime: Runtime) =>
+      return (runtime: SqliteRuntime) =>
         createIsolatedDeliver({
           runtime,
+          readSteps: (executionId) => runtime.heap.readSteps(executionId),
+          leaseDuration: options.leaseDuration,
           // A stub stays broken after its instance aborts, so each call gets one.
           getRunner: (slot) =>
             namespace.get(namespace.idFromName(`${id}/delivery/${slot}`)) as DeliveryRunner,
@@ -452,13 +454,14 @@ export function WorkflowObject<Router extends WorkflowRouter>(
 
     async durableRunDelivery(
       request: DeliveryRequest,
-      call: RuntimeCall
+      host: DeliveryHost
     ): Promise<DeliveryReply> {
       this.#delivering = true;
       try {
-        return await runDelivery(request, call, {
+        return await runDelivery(request, host, {
           router: options.router,
           logger: options.logger ?? consoleLogger,
+          onOrphaned: () => this.ctx.abort?.("The object that claimed the delivery stopped"),
         });
       } finally {
         this.#delivering = false;

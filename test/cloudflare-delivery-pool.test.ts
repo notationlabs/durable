@@ -102,6 +102,7 @@ test("an infrastructure error in the instance rejects without a WorkerExitedErro
   const pool = createPool(async () => ({
     status: "error",
     error: encodeThrownValue(new TypeError("heap write failed")),
+    infrastructure: false,
   }));
 
   // The dispatcher releases the lease after any other rejection.

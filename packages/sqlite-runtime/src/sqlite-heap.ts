@@ -64,6 +64,23 @@ export class SqliteHeapClient implements HeapClient {
   }
 
   /**
+   * The record `readStep` returns for every step of an execution that has
+   * one, by step key. A host that runs a delivery away from the database
+   * sends these with the delivery, so the delivery reads them without a call.
+   */
+  readSteps(executionId: string): Map<string, HeapRecord> {
+    return new Map(
+      this.stepResponsesDao.getLatestStepResponses(executionId).map((row) => [
+        row.step_key,
+        {
+          stepResponseJson: row.step_response,
+          meta: { attempt: row.step_attempt, done: Boolean(row.step_done) },
+        },
+      ])
+    );
+  }
+
+  /**
    * Checks the lease against the `executions` row and writes the step record
    * in one IMMEDIATE transaction, so no claim can interleave between them. A
    * new record resets the execution's delivery counts in the same transaction.

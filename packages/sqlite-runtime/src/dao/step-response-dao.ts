@@ -57,6 +57,20 @@ export class StepResponsesDao {
     return result;
   }
 
+  /** The latest attempt of every step of an execution. */
+  getLatestStepResponses(executionId: string) {
+    return this.db
+      .query<StepReponseRow>(
+        `SELECT * FROM step_responses AS latest
+         WHERE execution_id = $executionId
+         AND step_attempt = (
+           SELECT MAX(step_attempt) FROM step_responses
+           WHERE execution_id = latest.execution_id AND step_key = latest.step_key
+         )`
+      )
+      .all({ $executionId: executionId });
+  }
+
   getStepResponse(executionId: string, stepKey: string, stepAttempt: number) {
     return this.db
       .query<StepReponseRow>(

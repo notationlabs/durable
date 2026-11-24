@@ -1,23 +1,33 @@
 import type { Logger } from "pino";
 import {
+  DEFAULT_LEASE_DURATION,
   InfrastructureError,
   WorkerExitedError,
   WorkflowRunner,
   decodeExecutionEvent,
-  decodeThrownValue,
   decodeWorkflowRunOutcome,
   encodeExecutionEvent,
-  encodeThrownValue,
   encodeWorkflowRunOutcome,
   type EncodedWorkflowRunOutcome,
   type ExecutionCancellation,
   type ExecutionLease,
+  type HeapRecord,
   type Runtime,
   type WorkflowEvent,
   type WorkflowInvoker,
   type WorkflowRouter,
 } from "@durable/core";
-import { RemoteRuntime, serveRuntime, type RuntimeCall } from "./remote-runtime";
+import {
+  RemoteRuntime,
+  decodeError,
+  encodeError,
+  serveRuntime,
+  type EncodedError,
+  type RuntimeCall,
+  type StepRecords,
+} from "./remote-runtime";
+
+export type { RuntimeCall };
 
 export type DeliveryRequest = {
   /** `params` and `context` as encoded by `encodeExecutionEvent`. */
@@ -27,6 +37,17 @@ export type DeliveryRequest = {
   };
   lease: ExecutionLease;
   cancellation?: ExecutionCancellation;
+  /** Milliseconds between the instance's calls to `DeliveryHost.ping`. */
+  heartbeat: number;
+  /** The execution's step records, when the object that claimed it sends them. */
+  steps?: StepRecords;
+};
+
+/** What the object that claimed a delivery serves to the instance that runs it. */
+export type DeliveryHost = {
+  call: RuntimeCall;
+  /** Rejects once the object that claimed the delivery has stopped. */
+  ping(): Promise<void>;
 };
 
 /**
@@ -35,11 +56,11 @@ export type DeliveryRequest = {
  */
 export type DeliveryReply =
   | { status: "outcome"; outcome: EncodedWorkflowRunOutcome }
-  | { status: "error"; error: string };
+  | ({ status: "error" } & EncodedError);
 
 /** The methods the instance that runs a delivery serves to the object that claimed it. */
 export interface DeliveryRunner {
-  durableRunDelivery(request: DeliveryRequest, call: RuntimeCall): Promise<DeliveryReply>;
+  durableRunDelivery(request: DeliveryRequest, host: DeliveryHost): Promise<DeliveryReply>;
   /**
    * Aborts the instance if it is running a delivery, which rejects this call
    * and the delivery's. Resolves when the instance is idle.
@@ -48,18 +69,34 @@ export interface DeliveryRunner {
 }
 
 /**
- * Runs one delivery in this isolate, against the runtime that `call` reaches.
- * The instance that claimed the delivery stops it by aborting this instance,
- * so the delivery's signal never aborts here.
+ * Runs one delivery in this isolate, against the runtime that `host.call`
+ * reaches. The object that claimed the delivery stops it by aborting this
+ * instance, so the delivery's signal never aborts here.
+ *
+ * That object renews the delivery's lease. If it stops, nothing renews the
+ * lease and another delivery of the execution follows, so `onOrphaned` is
+ * called at the first `host.ping` that rejects, to abort this instance before
+ * then.
  */
 export async function runDelivery(
   request: DeliveryRequest,
-  call: RuntimeCall,
-  options: { router: WorkflowRouter; logger: Logger }
+  host: DeliveryHost,
+  options: {
+    router: WorkflowRouter;
+    logger: Logger;
+    onOrphaned: () => void;
+    /** The clock the delivery reads, such as for the end of a delay. @default Date.now */
+    clock?: () => number;
+  }
 ): Promise<DeliveryReply> {
-  const runner = new WorkflowRunner(new RemoteRuntime(call), options);
-  const { signal } = new AbortController();
   const { event, lease, cancellation } = request;
+  const steps = request.steps && { executionId: event.executionId, records: request.steps };
+  const runtime = new RemoteRuntime(host.call, { steps, clock: options.clock });
+  const runner = new WorkflowRunner(runtime, options);
+  const { signal } = new AbortController();
+  const heartbeat = setInterval(() => {
+    host.ping().catch(options.onOrphaned);
+  }, request.heartbeat);
   try {
     const outcome = await runner.run(
       { ...event, ...decodeExecutionEvent(event) },
@@ -67,7 +104,9 @@ export async function runDelivery(
     );
     return { status: "outcome", outcome: encodeWorkflowRunOutcome(outcome) };
   } catch (error) {
-    return { status: "error", error: encodeThrownValue(error) };
+    return { status: "error", ...encodeError(error) };
+  } finally {
+    clearInterval(heartbeat);
   }
 }
 
@@ -77,18 +116,50 @@ export async function runDelivery(
  * slot runs one delivery at a time, so each delivery has an isolate to
  * itself. The pool grows to the most deliveries that have run at once.
  *
+ * `deliver` must be called with the delivery's lease already held, as the
+ * dispatcher calls it: the step records it sends are those of the lease
+ * holder.
+ *
  * When the delivery's signal aborts, `deliver` stops the instance, which
  * stops a step function that is awaiting, and rejects at once with an
  * `InfrastructureError`. When the instance stops before replying, such as
  * after it exceeds the CPU limit, `deliver` rejects with a
  * `WorkerExitedError`, so the dispatcher leaves the lease to expire.
  */
+/**
+ * The most step record text sent with a delivery. A delivery reads the
+ * records beyond it from the runtime, one call each.
+ */
+const MAX_STEP_RECORD_CHARACTERS = 1_000_000;
+
+function collectSteps(records: Iterable<[string, HeapRecord]>): StepRecords {
+  const steps: StepRecords = {};
+  let characters = 0;
+  for (const [stepKey, record] of records) {
+    characters += record.stepResponseJson.length;
+    steps[stepKey] = characters <= MAX_STEP_RECORD_CHARACTERS ? record : null;
+  }
+  return steps;
+}
+
 export function createIsolatedDeliver(params: {
   runtime: Runtime;
   getRunner: (slot: number) => DeliveryRunner;
+  /**
+   * Returns the record `HeapClient.readStep` would return for every step of
+   * an execution that has one. With it, each delivery starts with the
+   * execution's records and replays its finished steps without a call for
+   * each.
+   * @default the delivery reads each step from the runtime
+   */
+  readSteps?: (executionId: string) => Iterable<[string, HeapRecord]>;
+  /** @default 30_000 */
+  leaseDuration?: number;
 }): WorkflowInvoker["deliver"] {
   const { getRunner } = params;
-  const call = serveRuntime(params.runtime);
+  const host: DeliveryHost = { call: serveRuntime(params.runtime), async ping() {} };
+  // An instance whose object has stopped aborts well before the lease expires.
+  const heartbeat = (params.leaseDuration ?? DEFAULT_LEASE_DURATION) / 3;
   const free: number[] = [];
   let size = 0;
   // The slots whose instance is known to be idle. An instance may still be
@@ -117,9 +188,14 @@ export function createIsolatedDeliver(params: {
       event: { ...event, ...encodeExecutionEvent(event) },
       lease,
       ...(cancellation ? { cancellation } : {}),
+      heartbeat,
     };
     const slot = acquire();
     if (!idle.has(slot)) await stop(slot);
+    // Read after the wait above, and in the same turn as the call below.
+    if (params.readSteps && !signal.aborted) {
+      request.steps = collectSteps(params.readSteps(event.executionId));
+    }
     if (signal.aborted) {
       free.push(slot);
       throw new InfrastructureError(signal.reason);
@@ -143,13 +219,13 @@ export function createIsolatedDeliver(params: {
         });
       signal.addEventListener("abort", onAbort, { once: true });
       Promise.resolve()
-        .then(() => getRunner(slot).durableRunDelivery(request, call))
+        .then(() => getRunner(slot).durableRunDelivery(request, host))
         .then(
           (reply) =>
             settle(() => {
               free.push(slot);
               if (reply.status === "error") {
-                reject(decodeThrownValue(reply.error));
+                reject(decodeError(reply));
                 return;
               }
               try {

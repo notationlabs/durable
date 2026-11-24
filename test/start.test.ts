@@ -14,6 +14,7 @@ import {
 import { createWorkflowInvoker } from "@durable/test-invoker";
 import { MemoryRuntime } from "@durable/test-runtime";
 import { WorkflowStartError, createLocalSdk, workflow } from "@durable/sdk";
+import { ISOLATED_DELIVERIES } from "./isolated-test-invoker";
 
 const logger = { info() {}, error() {}, warn() {} } as unknown as Logger;
 
@@ -238,7 +239,9 @@ test("INVALID_START_PARAMETERS is recorded and thrown after one client call", as
     type: "step-error",
     err: { code: "INVALID_START_PARAMETERS" },
   });
-  expect(start).toHaveBeenCalledTimes(1);
+  // A delivery in another instance checks the request before sending it,
+  // and records the same rejection without calling the client.
+  expect(start).toHaveBeenCalledTimes(ISOLATED_DELIVERIES ? 0 : 1);
 });
 
 test("a throwing client records no step, cannot be caught, and the next attempt calls the client again", async () => {

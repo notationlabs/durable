@@ -7,11 +7,23 @@
   "durable_objects": {
     "bindings": [
       { "name": "WORKFLOWS", "class_name": "Workflows" },
+      { "name": "INLINE", "class_name": "InlineWorkflows" },
+      { "name": "LIMITED", "class_name": "LimitedWorkflows" },
+      { "name": "INLINE_LIMITED", "class_name": "InlineLimitedWorkflows" },
       { "name": "PROBE", "class_name": "Probe" }
     ]
   },
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Workflows", "Probe"] }],
-  // The `spin` scenario runs a step for longer than the default 30 s of CPU time.
-  "limits": { "cpu_ms": 300000 },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": [
+        "Workflows",
+        "InlineWorkflows",
+        "LimitedWorkflows",
+        "InlineLimitedWorkflows",
+        "Probe"
+      ]
+    }
+  ],
   "observability": { "enabled": true }
 }

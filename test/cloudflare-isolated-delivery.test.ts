@@ -99,7 +99,7 @@ class DurableObjectNamespace {
 
   get(id: { toString(): string }) {
     return {
-      durableRunDelivery: async (request: any, call: unknown) => {
+      durableRunDelivery: async (request: any, host: unknown) => {
         const { instance, runner, stopped } = this.instanceOf(id);
         const { executionId } = request.event;
         runner.deliveries.push(executionId);
@@ -107,7 +107,7 @@ class DurableObjectNamespace {
         this.attempts.set(executionId, attempt);
         const error = this.reset(executionId, attempt);
         if (error) throw error;
-        const reply = instance.durableRunDelivery(structuredClone(request), call);
+        const reply = instance.durableRunDelivery(structuredClone(request), host);
         return structuredClone(await Promise.race([reply, stopped]));
       },
       durableStopDelivery: async () => {
@@ -300,4 +300,35 @@ test("with isolateDeliveries off, deliveries run in the object and need no names
   expect(await execution.waitForResult()).toBe("done");
   expect(object.alarms.length).toBeGreaterThanOrEqual(1);
   expect(object.host.durable.runtime.executions.nextClaimAt()).toBeNull();
+});
+
+test("an instance whose object has stopped aborts at its next heartbeat", async () => {
+  let finished = false;
+  const workflow = createWorkflow(async function* (step) {
+    return yield* step.run(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 60_000));
+      finished = true;
+    });
+  });
+  const Workflows = WorkflowObject({ router: { workflow }, logger });
+  const namespace = new DurableObjectNamespace("workflows", (ctx, env) => new Workflows(ctx, env));
+  const runner = namespace.get(namespace.idFromName("orphan"));
+  const run = runner.durableRunDelivery(
+    {
+      event: { workflowId: "workflow", executionId: "held", params: "null", context: "[]" },
+      lease: { executionId: "held", token: 1, expiresAt: Date.now() + 30_000 },
+      heartbeat: 20,
+    },
+    {
+      // The step function starts, and then the object is gone.
+      call: async () => ({ ok: true, value: "null" }),
+      ping: async () => {
+        throw new Error("The Durable Object was reset");
+      },
+    }
+  );
+
+  await expect(run).rejects.toThrow("The object that claimed the delivery stopped");
+  expect(namespace.runners[0].aborted).toBe("The object that claimed the delivery stopped");
+  expect(finished).toBe(false);
 });

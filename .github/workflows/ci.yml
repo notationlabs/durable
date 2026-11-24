@@ -22,6 +22,9 @@ jobs:
       - run: pnpm exec pok build
       - run: pnpm exec pok typecheck
       - run: pnpm exec pok test bun
+      # The same suites, with every delivery sent through the remote runtime
+      # that a Cloudflare object uses to run it in another instance.
+      - run: pnpm exec pok test isolated
       # Node cannot resolve the extensionless imports in the private packages'
       # source. tsx loads it, in the suite and in the processes the suite starts.
       - run: node ./node_modules/vitest/vitest.mjs run

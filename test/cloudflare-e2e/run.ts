@@ -6,8 +6,16 @@ import type { Router } from "./workflows";
 // Usage: E2E_URL=http://localhost:8799 [E2E_SECRET=...] tsx run.ts [scenario ...]
 // With no scenario names, runs the quick set. `E2E_OBJECT` picks the Durable
 // Object name, so runs against a deployed Worker can start from a clean object.
+// `E2E_MODE` picks the class: `isolated` runs each delivery in another
+// instance, `inline` runs it in the object, and `isolated-limit` and
+// `inline-limit` also fail an execution at its third expired delivery.
 const base = process.env.E2E_URL ?? "http://localhost:8799";
-const object = process.env.E2E_OBJECT ?? `run-${Date.now()}`;
+// The suffix keeps apart two runs that start in the same millisecond.
+const object =
+  process.env.E2E_OBJECT ?? `run-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+const mode = process.env.E2E_MODE ?? "isolated";
+// The jurisdiction of the object, such as `eu`.
+const jurisdiction = process.env.E2E_JURISDICTION;
 const headers: Record<string, string> = {};
 if (process.env.E2E_SECRET) headers["x-e2e-secret"] = process.env.E2E_SECRET;
 
@@ -23,6 +31,8 @@ globalThis.fetch = ((input: string | URL | Request, init?: RequestInit) => {
   if (typeof input === "string" && input.startsWith(base)) {
     const url = new URL(input);
     url.searchParams.set("object", object);
+    url.searchParams.set("mode", mode);
+    if (jurisdiction) url.searchParams.set("jurisdiction", jurisdiction);
     input = url.toString();
   }
   return originalFetch(input, init);
@@ -31,6 +41,8 @@ globalThis.fetch = ((input: string | URL | Request, init?: RequestInit) => {
 async function debug(path: string, body?: unknown): Promise<any> {
   const url = new URL(base + path);
   url.searchParams.set("object", object);
+  url.searchParams.set("mode", mode);
+  if (jurisdiction) url.searchParams.set("jurisdiction", jurisdiction);
   const res = await originalFetch(url, {
     method: body === undefined ? "GET" : "POST",
     headers: { ...headers, "content-type": "application/json" },
@@ -261,7 +273,10 @@ const scenarios: Record<string, () => Promise<unknown>> = {
   async abort() {
     const tag = `abort-${Date.now()}`;
     const t0 = Date.now();
-    const ack = await sdk.trigger({ workflowId: "inflight", params: { tag, ms: 5_000 } });
+    const ack = await sdk.trigger({
+      workflowId: "inflight",
+      params: { tag, ms: Number(process.env.E2E_HOLD_MS ?? 5_000) },
+    });
     await sleep(1000);
     const before = await debug("/debug/state");
     const aborted = await debug("/debug/abort");
@@ -647,6 +662,167 @@ Object.assign(scenarios, {
       changes,
       errors,
       ...found,
+    };
+  },
+
+  // The time from the end of one step function to the start of the next, on
+  // the clock of the instance that runs them. Recording the first step's
+  // result is the only work in between.
+  async "step-cost"() {
+    const n = Number(process.env.E2E_REPEATS ?? 30);
+    const gaps: number[] = [];
+    for (let i = 0; i < n; i++) {
+      const ack = await sdk.trigger({ workflowId: "soak", params: {} });
+      const { result } = await waitDone(ack.executionId);
+      check(result?.status === "completed", `status ${result?.status}`);
+      const value = (result as any).result;
+      gaps.push(value.b - value.a);
+    }
+    gaps.sort((x, y) => x - y);
+    return { mode, n, p50: percentile(gaps, 50), p90: percentile(gaps, 90), max: gaps[gaps.length - 1] };
+  },
+
+  // Forces a cancellation while a step waits, and checks whether the step
+  // function carried on to its end.
+  async "force-cancel"() {
+    const tag = `force-${Date.now()}`;
+    const ms = Number(process.env.E2E_HOLD_MS ?? 40_000);
+    const t0 = Date.now();
+    const ack = await sdk.trigger({ workflowId: "inflight", params: { tag, ms } });
+    const events = async (name: string) =>
+      (await debug("/debug/log")).filter(
+        (l: any) => l.event === name && String(l.detail).includes(tag)
+      );
+    while ((await events("hold-start")).length === 0) await sleep(500);
+    const cancelSentAfterMs = Date.now() - t0;
+    await sdk.cancel(ack.executionId, { force: true });
+    const { result } = await waitDone(ack.executionId, 60_000);
+    const cancelledAfterMs = Date.now() - t0;
+    check(result?.status === "cancelled", `status ${result?.status}`);
+    await sleep(Math.max(0, t0 + ms + 8_000 - Date.now()));
+    const started = await events("hold-start");
+    const finished = await events("hold-end");
+    return {
+      mode,
+      holdMs: ms,
+      cancelSentAfterMs,
+      cancelledAfterMs,
+      checkedAfterMs: Date.now() - t0,
+      bodyStarted: started.length,
+      bodyFinished: finished.length,
+    };
+  },
+
+  // A workflow whose steps together use more CPU time than the limit allows
+  // one delivery. Reports how many times each step function started.
+  async "spin-steps"() {
+    const tag = `spinsteps-${Date.now()}`;
+    const steps = Number(process.env.E2E_SPIN_STEPS ?? 6);
+    const rounds = Number(process.env.E2E_SPIN_ROUNDS ?? 3);
+    const t0 = Date.now();
+    const ack = await sdk.trigger({ workflowId: "spinSteps", params: { tag, steps, rounds } });
+    const { result } = await waitDone(ack.executionId, Number(process.env.E2E_SPIN_TIMEOUT_MS ?? 15 * 60_000));
+    const log = (await debug("/debug/log")).filter((l: any) => l.at >= t0 - 1000);
+    return {
+      mode,
+      steps,
+      rounds,
+      status: result?.status,
+      error: (result as any)?.error && String((result as any).error),
+      startsOfEachStep: (result as any)?.result,
+      totalMs: Date.now() - t0,
+      resets: log.filter((l: any) => String(l.detail).includes("exceeded its CPU time limit")).length,
+      objectsConstructed: log.filter((l: any) => l.event === "constructed").length,
+    };
+  },
+
+  // Reports the instance that claims and the instance that runs a step. With
+  // `E2E_JURISDICTION` the object is created in that jurisdiction.
+  async where() {
+    const ack = await sdk.trigger({ workflowId: "where" });
+    const { result } = await waitDone(ack.executionId);
+    check(result?.status === "completed", `status ${result?.status}: ${JSON.stringify(result)}`);
+    const state = await debug("/debug/state");
+    const step = (result as any).result;
+    if (mode.startsWith("isolated")) {
+      check(step.jurisdiction === state.id.jurisdiction, `step ran in jurisdiction ${step.jurisdiction}`);
+      check(step.isolate !== state.isolateId, "the step ran in the object's isolate");
+    }
+    return { mode, object: { ...state.id, isolate: state.isolateId }, step };
+  },
+
+  // A step that spins past the CPU limit, next to `E2E_NEIGHBOURS` steps that
+  // wait for `E2E_HOLD_MS`. Reports how many times each neighbour's step
+  // function started, how each execution ended, how many objects served the
+  // requests, and the requests that failed or were slow. Run it against a
+  // Worker with the default CPU limit, in a mode with a delivery limit.
+  async "spin-neighbours"() {
+    const tag = `nb-${Date.now()}`;
+    const neighbours = Number(process.env.E2E_NEIGHBOURS ?? 5);
+    const holdMs = Number(process.env.E2E_HOLD_MS ?? 120_000);
+    const timeout = Number(process.env.E2E_SPIN_TIMEOUT_MS ?? 15 * 60_000);
+    const t0 = Date.now();
+    const holds = await Promise.all(
+      Array.from({ length: neighbours }, (_, i) =>
+        sdk.trigger({ workflowId: "inflight", params: { tag: `${tag}-n${i}`, ms: holdMs } })
+      )
+    );
+    const spin = await sdk.trigger({
+      workflowId: "spin",
+      params: { tag, rounds: Number(process.env.E2E_SPIN_ROUNDS ?? 100_000), maxAttempts: 99 },
+    });
+    const ids = [...holds.map((ack) => ack.executionId), spin.executionId];
+    const views = new Map<string, any>();
+    const instances = new Map<string, number>();
+    const requests: { t: number; ms: number; error?: string }[] = [];
+    const terminal = (view: any) => ["completed", "failed", "cancelled"].includes(view?.status);
+    while (Date.now() - t0 < timeout && !ids.every((id) => terminal(views.get(id)))) {
+      const sent = Date.now();
+      const state = await debug("/debug/state").catch((err) => ({ text: String(err) }));
+      const ms = Date.now() - sent;
+      if (state.instance === undefined) {
+        requests.push({ t: sent - t0, ms, error: JSON.stringify(state).slice(0, 160) });
+      } else {
+        requests.push({ t: sent - t0, ms });
+        const seen = `${state.isolateId}/${state.instance}`;
+        if (!instances.has(seen)) instances.set(seen, sent - t0);
+        for (const id of ids) {
+          if (terminal(views.get(id))) continue;
+          const view = await sdk.poll(id).catch(() => undefined);
+          if (view) views.set(id, { ...view, seenAt: Date.now() - t0 });
+        }
+      }
+      await sleep(1000);
+    }
+    const describe = async (id: string, counter: string) => {
+      const view = views.get(id);
+      const [row] = await sql("SELECT count FROM e2e_counters WHERE name = ?", counter);
+      return {
+        status: view?.status,
+        error: view?.error && `${view.error.name}: ${view.error.message}`,
+        bodyStarted: row?.count ?? 0,
+        ranIn: view?.result?.ranIn,
+        endedBy: view?.seenAt,
+      };
+    };
+    const log = (await debug("/debug/log")).filter((l: any) => l.at >= t0 - 1000);
+    const failed = requests.filter((r) => r.error);
+    return {
+      mode,
+      neighbours: await Promise.all(holds.map((ack, i) => describe(ack.executionId, `${tag}-n${i}:hold`))),
+      spin: await describe(spin.executionId, `${tag}:spin`),
+      objectsThatServedRequests: [...instances].map(([instance, t]) => ({ instance, firstSeen: t })),
+      objectsConstructed: log.filter((l: any) => l.event === "constructed").length,
+      isolatesThatRanSteps: [
+        ...new Set(log.map((l: any) => l.detail && JSON.parse(l.detail)?.ranIn).filter(Boolean)),
+      ].length,
+      requests: requests.length,
+      failedRequests: failed.length,
+      firstFailures: failed.slice(0, 3),
+      slowRequests: requests.filter((r) => !r.error && r.ms > 2000).map((r) => ({ t: r.t, ms: r.ms })),
+      hostErrors: log
+        .filter((l: any) => l.event === "log-error" || l.event === "log-warn")
+        .map((l: any) => ({ t: l.at - t0, d: String(l.detail).slice(0, 220) })),
     };
   },
 

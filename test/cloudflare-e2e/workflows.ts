@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import * as workers from "cloudflare:workers";
 import { padding } from "./padding";
 import {
   WorkflowCancelledError,
@@ -9,23 +10,22 @@ import {
 } from "../../packages/durable/dist/index.js";
 
 type Sql = { exec(query: string, ...bindings: unknown[]): { toArray(): any[] } };
-type Scope = { sql: Sql; sync(): Promise<void>; isolate: string; instance: string };
+export type Scope = {
+  storage: { sql: Sql };
+  isolate: string;
+  instance: string;
+  id: { toString(): string; name?: string; jurisdiction?: string };
+};
 
 // One isolate can hold several objects of the class, so a module variable
-// would point every workflow at the storage of the object constructed last.
+// would point every log line at the storage of the object constructed last.
 // The object's storage travels with the async context of its requests and
-// alarms instead, and the deliveries they start inherit it.
-const scope = new AsyncLocalStorage<Scope>();
+// alarms instead.
+export const scope = new AsyncLocalStorage<Scope>();
 
-export function inObject<R>(object: Scope, fn: () => R): R {
-  return scope.run(object, fn);
-}
-
-function current(): Scope {
-  const object = scope.getStore();
-  if (!object) throw new Error("No Durable Object in the async context");
-  return object;
-}
+// Random values are not allowed in global scope, so the ID is made on first use.
+let isolate: string | undefined;
+export const isolateId = () => (isolate ??= crypto.randomUUID().slice(0, 8));
 
 export function createTables(sql: Sql) {
   sql.exec(
@@ -36,31 +36,33 @@ export function createTables(sql: Sql) {
   );
 }
 
-// Counts how many times a step function body ran, durably, so reruns after
-// a restart or redeploy are visible.
-export function bump(name: string): number {
-  const [row] = current()
-    .sql.exec(
-      "INSERT INTO e2e_counters (name, count) VALUES (?, 1) ON CONFLICT (name) DO UPDATE SET count = count + 1 RETURNING count",
-      name
-    )
-    .toArray();
-  return row.count;
+type Recorder = {
+  e2eBump(name: string): Promise<{ count: number; instance: string }>;
+  e2eMark(event: string, detail: unknown): Promise<void>;
+  e2eLive(delta: number): Promise<void>;
+};
+type Recorded = { context: ReadonlyMap<string, unknown> };
+
+// A step function may run in another instance than the object that admitted
+// its execution. The trigger middleware recorded that object in the context,
+// and the step sends its evidence there, where the debug routes read it.
+function recorder(event: Recorded): Recorder {
+  const jurisdiction = event.context.get("jurisdiction") as string | undefined;
+  const binding = (workers as any).env[event.context.get("binding") as string];
+  const namespace = jurisdiction ? binding.jurisdiction(jurisdiction) : binding;
+  return namespace.get(namespace.idFromName(event.context.get("object")));
 }
 
-// Writes a row to the debug log from inside a step, with the object instance
-// that ran it.
-function mark(event: string, detail?: unknown) {
-  const { sql, isolate, instance } = current();
-  sql.exec(
-    "INSERT INTO e2e_log (at, isolate, instance, event, detail) VALUES (?, ?, ?, ?, ?)",
-    Date.now(),
-    isolate,
-    instance,
-    event,
-    detail === undefined ? null : JSON.stringify(detail)
-  );
-}
+// Counts how many times a step function body ran, durably, so reruns after
+// a restart or redeploy are visible. `instance` is the object that counted.
+const count = (event: Recorded, name: string) => recorder(event).e2eBump(name);
+
+export const bump = async (event: Recorded, name: string) => (await count(event, name)).count;
+
+// Writes a row to the object's debug log from inside a step, with the isolate
+// the step ran in.
+const mark = (event: Recorded, name: string, detail: Record<string, unknown>) =>
+  recorder(event).e2eMark(name, { ...detail, ranIn: isolateId() });
 
 export const live = { active: 0, maxActive: 0 };
 
@@ -80,11 +82,11 @@ type Tagged = { tag: string };
 
 const steps = workflow<Tagged & { delayMs?: number }>(async function* (step, event) {
   const tag = event.params.tag;
-  const a = yield* step.run(() => ({ n: bump(`${tag}:a`), at: Date.now() }));
-  const b = yield* step.run(() => ({ n: bump(`${tag}:b`), at: Date.now() }));
-  const keyed = yield* step.run("keyed", () => bump(`${tag}:keyed`));
+  const a = yield* step.run(async () => ({ n: await bump(event, `${tag}:a`), at: Date.now() }));
+  const b = yield* step.run(async () => ({ n: await bump(event, `${tag}:b`), at: Date.now() }));
+  const keyed = yield* step.run("keyed", () => bump(event, `${tag}:keyed`));
   yield* step.delay(event.params.delayMs ?? 1000);
-  const c = yield* step.run(() => ({ n: bump(`${tag}:c`), at: Date.now() }));
+  const c = yield* step.run(async () => ({ n: await bump(event, `${tag}:c`), at: Date.now() }));
   return { a, b, keyed, c, padding };
 });
 
@@ -120,24 +122,23 @@ const parent = workflow(async function* (step) {
 
 const slow = workflow<{ ms: number }>(async function* (step, event) {
   return yield* step.run("work", async () => {
-    live.active++;
-    live.maxActive = Math.max(live.maxActive, live.active);
+    await recorder(event).e2eLive(1);
     try {
       await sleep(event.params.ms);
     } finally {
-      live.active--;
+      await recorder(event).e2eLive(-1);
     }
     return Date.now();
   });
 });
 
 const cancellable = workflow<Tagged>(async function* (step, event) {
-  yield* step.run("started", () => bump(`${event.params.tag}:started`));
+  yield* step.run("started", () => bump(event, `${event.params.tag}:started`));
   try {
     yield* step.delay("long", 10 * 60_000);
   } catch (err) {
     if (err instanceof WorkflowCancelledError) {
-      yield* step.run("cleanup", () => bump(`${event.params.tag}:cleanup`));
+      yield* step.run("cleanup", () => bump(event, `${event.params.tag}:cleanup`));
     }
     throw err;
   }
@@ -171,11 +172,11 @@ const fetcher = workflow<{ url: string }>(async function* (step, event) {
 // Holds one delivery open well past the request that triggered it.
 const inflight = workflow<Tagged & { ms: number }>(async function* (step, event) {
   const r = yield* step.run("hold", async () => {
-    const attempt = bump(`${event.params.tag}:hold`);
-    mark("hold-start", { tag: event.params.tag, attempt, padding });
+    const { count: attempt, instance } = await count(event, `${event.params.tag}:hold`);
+    await mark(event, "hold-start", { tag: event.params.tag, attempt, padding });
     await sleep(event.params.ms);
-    mark("hold-end", { tag: event.params.tag, attempt, padding });
-    return { attempt, at: Date.now(), instance: current().instance };
+    await mark(event, "hold-end", { tag: event.params.tag, attempt, padding });
+    return { attempt, at: Date.now(), instance, ranIn: isolateId() };
   });
   return r;
 });
@@ -185,7 +186,7 @@ const inflight = workflow<Tagged & { ms: number }>(async function* (step, event)
 const alarmHold = workflow<Tagged & { ms: number }>(async function* (step, event) {
   yield* step.delay("before-hold", 3_000);
   return yield* step.run("hold", async () => {
-    const attempt = bump(`${event.params.tag}:hold`);
+    const attempt = await bump(event, `${event.params.tag}:hold`);
     await sleep(event.params.ms);
     return { attempt, at: Date.now() };
   });
@@ -194,10 +195,12 @@ const alarmHold = workflow<Tagged & { ms: number }>(async function* (step, event
 // A long delay between two steps that record the object instance they ran in.
 const evict = workflow<Tagged & { delayMs: number }>(async function* (step, event) {
   const { tag, delayMs } = event.params;
-  const stamp = (name: string) => {
-    const n = bump(`${tag}:${name}`);
-    mark(`evict-${name}`, { tag, n });
-    return { n, at: Date.now(), instance: current().instance };
+  // `instance` is the object that claimed the delivery, which is the one an
+  // eviction replaces.
+  const stamp = async (name: string) => {
+    const { count: n, instance } = await count(event, `${tag}:${name}`);
+    await mark(event, `evict-${name}`, { tag, n });
+    return { n, at: Date.now(), instance };
   };
   const before = yield* step.run("before", () => stamp("before"));
   yield* step.delay("wait", delayMs);
@@ -215,14 +218,11 @@ const spin = workflow<Tagged & { rounds: number; maxAttempts?: number }>(async f
   const { tag, rounds, maxAttempts = 3 } = event.params;
   yield* step.delay("before-spin", 1_000);
   return yield* step.run("spin", async () => {
-    const attempt = bump(`${tag}:spin`);
-    // Cloudflare may reset the object during the loop. Without this, the
-    // writes above the loop would be lost with it, and the attempt limit
-    // below would never be reached.
-    await current().sync();
+    // Each of these writes is confirmed before the loop starts, so a reset
+    // during the loop does not lose the attempt count.
+    const attempt = await bump(event, `${tag}:spin`);
     const startedAt = Date.now();
-    mark("spin-start", { tag, attempt });
-    await current().sync();
+    await mark(event, "spin-start", { tag, attempt });
     if (attempt > maxAttempts) return { attempt, gaveUp: true, startedAt };
     let x = 1;
     for (let round = 0; round < rounds; round++) {
@@ -231,10 +231,42 @@ const spin = workflow<Tagged & { rounds: number; maxAttempts?: number }>(async f
     const clockAfterLoop = Date.now();
     await sleep(1);
     const clockAfterTimer = Date.now();
-    await current().sync();
     const endedAt = Date.now();
-    mark("spin-end", { tag, attempt, startedAt, clockAfterLoop, clockAfterTimer, endedAt });
+    await mark(event, "spin-end", { tag, attempt, startedAt, clockAfterLoop, clockAfterTimer, endedAt });
     return { attempt, gaveUp: false, x, startedAt, clockAfterLoop, clockAfterTimer, endedAt };
+  });
+});
+
+function burn(rounds: number) {
+  let x = 1;
+  for (let round = 0; round < rounds; round++) {
+    for (let i = 0; i < SPIN_ROUND; i++) x = (x * 1103515245 + 12345 + i) % 2147483647;
+  }
+  return x;
+}
+
+// Several steps that each spin for part of the CPU limit. Returns how many
+// times each step function started.
+const spinSteps = workflow<Tagged & { steps: number; rounds: number }>(async function* (step, event) {
+  const { tag, steps: n, rounds } = event.params;
+  const attempts: number[] = [];
+  for (let i = 0; i < n; i++) {
+    attempts.push(
+      yield* step.run(`spin-${i}`, async () => {
+        const attempt = await bump(event, `${tag}:spin-${i}`);
+        burn(rounds);
+        return attempt;
+      })
+    );
+  }
+  return attempts;
+});
+
+// Reports the instance a step function runs in.
+const where = workflow(async function* (step) {
+  return yield* step.run("where", () => {
+    const { id } = scope.getStore()!;
+    return { isolate: isolateId(), name: id.name, jurisdiction: id.jurisdiction, id: id.toString() };
   });
 });
 
@@ -259,6 +291,8 @@ export const router = createWorkflowRouter({
   alarmHold,
   evict,
   spin,
+  spinSteps,
+  where,
   soak,
 });
 

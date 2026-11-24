@@ -5,6 +5,7 @@ import {
   decodeThrownValue,
   durableValueCodec,
   encodeThrownValue,
+  isLeaseLost,
   prepareEffectBegin,
   prepareEffectSettle,
   prepareEffectWatch,
@@ -12,6 +13,7 @@ import {
   type EffectClient,
   type ExecutionClient,
   type HeapClient,
+  type HeapRecord,
   type JoinClient,
   type RuntimeOptions,
   type StoreDefinition,
@@ -44,9 +46,25 @@ const METHODS = {
 
 type ClientName = keyof typeof METHODS;
 
-export type RuntimeReply =
-  | { ok: true; value: string }
-  | { ok: false; error: string; infrastructure: boolean };
+export type RuntimeReply = { ok: true; value: string } | ({ ok: false } & EncodedError);
+
+/**
+ * An `encodeThrownValue` encoding. For an `InfrastructureError`, which the
+ * codec would decode as a plain `Error`, `error` encodes its cause and
+ * `infrastructure` is true.
+ */
+export type EncodedError = { error: string; infrastructure: boolean };
+
+export function encodeError(error: unknown): EncodedError {
+  return InfrastructureError.is(error)
+    ? { error: encodeThrownValue(error.cause), infrastructure: true }
+    : { error: encodeThrownValue(error), infrastructure: false };
+}
+
+export function decodeError(encoded: EncodedError): Error {
+  const error = decodeThrownValue(encoded.error);
+  return encoded.infrastructure ? new InfrastructureError(error) : error;
+}
 
 /**
  * Calls one method of one runtime client. `args` and the reply's `value` are
@@ -93,11 +111,7 @@ export function serveRuntime(runtime: Runtime): RuntimeCall {
       const value = await target[method](...(decode(args, `The call to ${name}`) as unknown[]));
       return { ok: true, value: encode(value, `The result of ${name}`) };
     } catch (err) {
-      return {
-        ok: false,
-        error: encodeThrownValue(err),
-        infrastructure: InfrastructureError.is(err),
-      };
+      return { ok: false, ...encodeError(err) };
     }
   };
 }
@@ -106,8 +120,7 @@ async function invoke(call: RuntimeCall, client: ClientName, method: string, arg
   const name = `${client}.${method}`;
   const reply = await call(client, method, encode(args, `The call to ${name}`));
   if (reply.ok) return decode(reply.value, `The result of ${name}`);
-  const error = decodeThrownValue(reply.error);
-  throw reply.infrastructure ? new InfrastructureError(error) : error;
+  throw decodeError(reply);
 }
 
 // A method that no delivery calls rejects, so a new use fails where it is made.
@@ -132,6 +145,56 @@ function remoteClient<Client extends object>(
       };
     },
   }) as Client;
+}
+
+/**
+ * The latest record of each step of one execution when its delivery started,
+ * by step key. `null` stands for a record that was too large to send, which
+ * the delivery reads from the runtime. A step without an entry has no record.
+ */
+export type StepRecords = Record<string, HeapRecord | null>;
+
+/**
+ * Reads the steps of one execution from `records` and from what the delivery
+ * has written since, without a call. This is correct only for the delivery
+ * that holds the execution's lease: every write to the execution's records
+ * carries that lease, so no other writer changes them during the delivery.
+ */
+function cachedHeap(remote: HeapClient, executionId: string, records: StepRecords): HeapClient {
+  const known = new Map<string, HeapRecord | null>(Object.entries(records));
+  return {
+    async readStep(params) {
+      if (params.executionId !== executionId) return remote.readStep(params);
+      const record = known.get(params.stepKey);
+      if (record === undefined) return null;
+      if (record !== null) return record;
+      const read = await remote.readStep(params);
+      if (read) known.set(params.stepKey, read);
+      else known.delete(params.stepKey);
+      return read;
+    },
+    async writeStep(params) {
+      const written = await remote.writeStep(params);
+      if (params.lease.executionId === executionId && !isLeaseLost(written)) {
+        const latest = known.get(params.stepKey);
+        // `readStep` returns the latest attempt. Without the record that was
+        // too large to send, the latest attempt is not known here.
+        if (latest === undefined || (latest && latest.meta.attempt <= written.meta.attempt)) {
+          known.set(params.stepKey, written);
+        }
+      }
+      return written;
+    },
+    async recordCancellation(params) {
+      const result = await remote.recordCancellation(params);
+      // The call wrote the records or found conflicting ones. Either way the
+      // next read of these steps comes from the runtime.
+      if (params.lease.executionId === executionId) {
+        for (const { stepKey } of params.steps) known.set(stepKey, null);
+      }
+      return result;
+    },
+  } as HeapClient;
 }
 
 // A definition holds a schema and an `initial` function. The runtime's store
@@ -224,7 +287,13 @@ export class RemoteRuntime extends Runtime {
   readonly joins: JoinClient;
   readonly stores: CasStoreClient;
 
-  constructor(call: RuntimeCall, options: RuntimeOptions = {}) {
+  constructor(
+    call: RuntimeCall,
+    options: RuntimeOptions & {
+      /** The records of the execution that the delivery runs. */
+      steps?: { executionId: string; records: StepRecords };
+    } = {}
+  ) {
     super();
     this.clock = options.clock ?? (() => Date.now());
     const send = <Result>(client: ClientName, method: string, request: unknown) =>
@@ -252,7 +321,9 @@ export class RemoteRuntime extends Runtime {
         return send("effects", "watch", request);
       },
     });
-    this.heap = remoteClient<HeapClient>(call, "heap");
+    const heap = remoteClient<HeapClient>(call, "heap");
+    const { steps } = options;
+    this.heap = steps ? cachedHeap(heap, steps.executionId, steps.records) : heap;
     this.joins = remoteClient<JoinClient>(call, "joins");
     this.stores = new RemoteStoreClient(call);
   }

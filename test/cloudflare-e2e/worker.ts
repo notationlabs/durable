@@ -1,8 +1,9 @@
 import { createHash } from "crypto";
 import { EventEmitter } from "node:events";
-import { createWorkflowObject } from "../../packages/durable/dist/cloudflare.js";
+import { WorkflowObject } from "../../packages/durable/dist/cloudflare.js";
+import type { MiddlewareFunction } from "../../packages/durable/dist/runtime.js";
 import { padding } from "./padding";
-import { createTables, inObject, live, router } from "./workflows";
+import { createTables, isolateId, live, router, scope, type Scope } from "./workflows";
 
 type Storage = {
   sql: {
@@ -21,14 +22,25 @@ type State = {
   storage: Storage;
   waitUntil(promise: Promise<unknown>): void;
   abort(reason?: string): void;
+  id: Scope["id"];
 };
 type Stub = { fetch(request: Request | string, init?: RequestInit): Promise<Response> };
-type Namespace = { idFromName(name: string): unknown; get(id: unknown): Stub };
-type Env = { WORKFLOWS: Namespace; PROBE: Namespace; E2E_SECRET?: string };
+type Namespace = {
+  idFromName(name: string): unknown;
+  get(id: unknown): Stub;
+  jurisdiction(jurisdiction: string): Namespace;
+};
+type Env = Record<Binding | "PROBE", Namespace> & { E2E_SECRET?: string };
 
-// Random values are not allowed in global scope, so the ID is made on first use.
-let isolate: string | undefined;
-const isolateId = () => (isolate ??= crypto.randomUUID().slice(0, 8));
+// `?mode=` picks the class. Each mode has its own namespace, so an object
+// name can be used in every mode.
+const MODES = {
+  isolated: "WORKFLOWS",
+  inline: "INLINE",
+  "isolated-limit": "LIMITED",
+  "inline-limit": "INLINE_LIMITED",
+} as const;
+type Binding = (typeof MODES)[keyof typeof MODES];
 const json = (value: unknown, status = 200) =>
   new Response(JSON.stringify(value, null, 2), {
     status,
@@ -60,98 +72,174 @@ function describe(value: unknown): unknown {
   return value;
 }
 
-export class Workflows {
-  private durable;
-  private instance = crypto.randomUUID().slice(0, 8);
-  private constructedAt = Date.now();
-  private alarms = 0;
-  private object;
+// Warnings and errors from the host also go to the debug log of the object
+// that logged them, so a run can count them afterwards without a tail session.
+// A delivery that runs in another instance logs to the console only.
+const record = (level: string, method: "log" | "warn" | "error") => (...args: unknown[]) => {
+  console[method](...args);
+  const object = scope.getStore();
+  if (level !== "info" && object) log(object.storage as Storage, object.instance, `log-${level}`, args.map(describe));
+};
+const logger = { info: record("info", "log"), warn: record("warn", "warn"), error: record("error", "error") };
 
-  constructor(private ctx: State) {
-    const { storage } = ctx;
-    createTables(storage.sql);
-    this.object = {
-      sql: storage.sql,
-      sync: () => storage.sync(),
-      isolate: isolateId(),
-      instance: this.instance,
-    };
-    log(storage, this.instance, "constructed");
-    // Warnings and errors from the host also go to the debug log, so a run
-    // can count them afterwards without a tail session.
-    const record = (level: string, method: "log" | "warn" | "error") => (...args: unknown[]) => {
-      console[method](...args);
-      if (level !== "info") log(storage, this.instance, `log-${level}`, args.map(describe));
-    };
-    const logger = { info: record("info", "log"), warn: record("warn", "warn"), error: record("error", "error") };
-    this.durable = createWorkflowObject(ctx, { router, basePath: "/durable", logger: logger as never });
-  }
+// Records which object admitted the execution, so that a step can send its
+// evidence there from whichever instance runs it.
+const tagObject = (binding: Binding): MiddlewareFunction => async (req, event, next) => {
+  event.context.set("binding", binding);
+  const { searchParams } = new URL(req.url);
+  event.context.set("object", searchParams.get("object") ?? "default");
+  const jurisdiction = searchParams.get("jurisdiction");
+  if (jurisdiction) event.context.set("jurisdiction", jurisdiction);
+  return next();
+};
 
-  fetch(request: Request) {
-    return inObject(this.object, () => this.handle(request));
-  }
+function createClass(binding: Binding, options: { isolateDeliveries: boolean; maxExpiredDeliveries?: number }) {
+  const Base = WorkflowObject({
+    router,
+    basePath: "/durable",
+    logger: logger as never,
+    middleware: [tagObject(binding)],
+    observationMiddleware: [],
+    ...options,
+  });
+  // Not part of the class's published type.
+  const runDelivery = (Base.prototype as any).durableRunDelivery as (...args: unknown[]) => Promise<unknown>;
+  return class extends Base {
+    private instance = crypto.randomUUID().slice(0, 8);
+    private constructedAt = Date.now();
+    private alarms = 0;
+    private ready = false;
 
-  private async handle(request: Request) {
-    const url = new URL(request.url);
-    if (url.pathname.startsWith("/durable/")) return this.durable.fetch(request);
-    const { storage } = this.ctx;
-    switch (url.pathname) {
-      case "/debug/state":
-        return json({
-          isolateId: isolateId(),
-          instance: this.instance,
-          constructedAt: this.constructedAt,
-          padding,
-          now: Date.now(),
-          alarm: await storage.getAlarm(),
-          nextClaimAt: this.durable.runtime.executions.nextClaimAt(),
-          databaseSize: storage.sql.databaseSize,
-          live,
-        });
-      case "/debug/sql": {
-        const { query, bindings = [] } = (await request.json()) as {
-          query: string;
-          bindings?: unknown[];
-        };
-        try {
-          return json(storage.sql.exec(query, ...bindings).toArray());
-        } catch (err) {
-          return json({ error: String(err) }, 400);
-        }
-      }
-      case "/debug/log":
-        return json(
-          storage.sql
-            .exec("SELECT * FROM e2e_log WHERE id > ? ORDER BY id", Number(url.searchParams.get("after") ?? 0))
-            .toArray()
-        );
-      case "/debug/reset-live":
-        live.active = 0;
-        live.maxActive = 0;
-        return json(live);
-      case "/debug/abort":
-        log(storage, this.instance, "abort");
-        this.ctx.abort("e2e abort");
-        return json({ aborted: true });
+    private get state() {
+      return this.ctx as unknown as State;
     }
-    return new Response("Not found", { status: 404 });
-  }
 
-  alarm() {
-    return inObject(this.object, async () => {
-      const n = ++this.alarms;
-      log(this.ctx.storage, this.instance, "alarm-start", { n });
-      try {
-        await this.durable.alarm();
-      } finally {
-        log(this.ctx.storage, this.instance, "alarm-end", {
-          n,
-          alarm: await this.ctx.storage.getAlarm(),
-        });
+    // Not in the constructor: the instances that run deliveries construct the
+    // class too, and they must not create tables of their own.
+    private enter<R>(fn: () => R): R {
+      const { storage } = this.state;
+      if (!this.ready) {
+        this.ready = true;
+        createTables(storage.sql);
+        log(storage, this.instance, "constructed");
       }
-    });
-  }
+      return scope.run(this.scope, fn);
+    }
+
+    private get scope(): Scope {
+      const { storage, id } = this.state;
+      return { storage, isolate: isolateId(), instance: this.instance, id };
+    }
+
+    // An instance that runs a delivery. Its steps read which instance that
+    // is from the async context, and nothing here touches its storage.
+    durableRunDelivery(...args: unknown[]) {
+      return scope.run(this.scope, () => runDelivery.apply(this, args));
+    }
+
+    fetch(request: Request) {
+      return this.enter(() => this.handle(request));
+    }
+
+    // Called by step functions, from this instance or from the one that runs
+    // the delivery.
+    e2eBump(name: string) {
+      return this.enter(() => {
+        const [row] = this.state.storage.sql
+          .exec(
+            "INSERT INTO e2e_counters (name, count) VALUES (?, 1) ON CONFLICT (name) DO UPDATE SET count = count + 1 RETURNING count",
+            name
+          )
+          .toArray();
+        return { count: row.count as number, instance: this.instance };
+      });
+    }
+
+    e2eMark(event: string, detail: unknown) {
+      this.enter(() => log(this.state.storage, this.instance, event, detail));
+    }
+
+    e2eLive(delta: number) {
+      live.active += delta;
+      live.maxActive = Math.max(live.maxActive, live.active);
+    }
+
+    private async handle(request: Request) {
+      const url = new URL(request.url);
+      if (url.pathname.startsWith("/durable/")) return super.fetch(request);
+      const { storage } = this.state;
+      switch (url.pathname) {
+        case "/debug/state":
+          return json({
+            isolateId: isolateId(),
+            instance: this.instance,
+            constructedAt: this.constructedAt,
+            id: { name: this.state.id.name, jurisdiction: this.state.id.jurisdiction },
+            padding,
+            now: Date.now(),
+            alarm: await storage.getAlarm(),
+            nextClaimAt: this.durable.runtime.executions.nextClaimAt(),
+            databaseSize: storage.sql.databaseSize,
+            live,
+          });
+        case "/debug/sql": {
+          const { query, bindings = [] } = (await request.json()) as {
+            query: string;
+            bindings?: unknown[];
+          };
+          try {
+            return json(storage.sql.exec(query, ...bindings).toArray());
+          } catch (err) {
+            return json({ error: String(err) }, 400);
+          }
+        }
+        case "/debug/log":
+          return json(
+            storage.sql
+              .exec("SELECT * FROM e2e_log WHERE id > ? ORDER BY id", Number(url.searchParams.get("after") ?? 0))
+              .toArray()
+          );
+        case "/debug/reset-live":
+          live.active = 0;
+          live.maxActive = 0;
+          return json(live);
+        case "/debug/abort":
+          log(storage, this.instance, "abort");
+          this.state.abort("e2e abort");
+          return json({ aborted: true });
+      }
+      return new Response("Not found", { status: 404 });
+    }
+
+    alarm() {
+      return this.enter(async () => {
+        const { storage } = this.state;
+        const n = ++this.alarms;
+        log(storage, this.instance, "alarm-start", { n });
+        try {
+          await super.alarm();
+        } finally {
+          log(storage, this.instance, "alarm-end", {
+            n,
+            alarm: await storage.getAlarm(),
+          });
+        }
+      });
+    }
+  };
 }
+
+export class Workflows extends createClass("WORKFLOWS", { isolateDeliveries: true }) {}
+export class InlineWorkflows extends createClass("INLINE", { isolateDeliveries: false }) {}
+// The limit a CPU-bound step reaches in the `spin-neighbours` scenario.
+export class LimitedWorkflows extends createClass("LIMITED", {
+  isolateDeliveries: true,
+  maxExpiredDeliveries: 3,
+}) {}
+export class InlineLimitedWorkflows extends createClass("INLINE_LIMITED", {
+  isolateDeliveries: false,
+  maxExpiredDeliveries: 3,
+}) {}
 
 function attempt(fn: () => unknown) {
   try {
@@ -484,8 +572,12 @@ export default {
     if (url.pathname.startsWith("/probe/")) {
       return env.PROBE.get(env.PROBE.idFromName(name)).fetch(request);
     }
+    const binding = env[MODES[(url.searchParams.get("mode") ?? "isolated") as keyof typeof MODES]];
+    if (!binding) return new Response("Unknown mode", { status: 400 });
+    const jurisdiction = url.searchParams.get("jurisdiction");
+    const namespace = jurisdiction ? binding.jurisdiction(jurisdiction) : binding;
     try {
-      return await env.WORKFLOWS.get(env.WORKFLOWS.idFromName(name)).fetch(request);
+      return await namespace.get(namespace.idFromName(name)).fetch(request);
     } catch (err) {
       // What Cloudflare reports when it resets the object or refuses the request.
       const { retryable, overloaded, durableObjectReset } = err as Record<string, unknown>;
