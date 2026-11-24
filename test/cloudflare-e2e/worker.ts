@@ -3,7 +3,7 @@ import { EventEmitter } from "node:events";
 import { WorkflowObject } from "../../packages/durable/dist/cloudflare.js";
 import type { MiddlewareFunction } from "../../packages/durable/dist/runtime.js";
 import { padding } from "./padding";
-import { createTables, isolateId, live, router, scope, type Scope } from "./workflows";
+import { createTables, isolateId, live, router, scope, type Recorder, type Scope } from "./workflows";
 
 type Storage = {
   sql: {
@@ -123,13 +123,19 @@ function createClass(binding: Binding, options: { isolateDeliveries: boolean; ma
         createTables(storage.sql);
         log(storage, this.instance, "constructed");
       }
-      return scope.run(this.scope, fn);
+      return scope.run({ ...this.scope, recorder: this.recorder }, fn);
     }
 
     private get scope(): Scope {
       const { storage, id } = this.state;
       return { storage, isolate: isolateId(), instance: this.instance, id };
     }
+
+    private recorder: Recorder = {
+      e2eBump: async (name) => this.e2eBump(name),
+      e2eMark: async (event, detail) => this.e2eMark(event, detail),
+      e2eLive: async (delta) => this.e2eLive(delta),
+    };
 
     // An instance that runs a delivery. Its steps read which instance that
     // is from the async context, and nothing here touches its storage.

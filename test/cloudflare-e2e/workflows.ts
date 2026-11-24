@@ -15,6 +15,8 @@ export type Scope = {
   isolate: string;
   instance: string;
   id: { toString(): string; name?: string; jurisdiction?: string };
+  /** Set in the object that holds the runtime, and not in an instance that runs a delivery. */
+  recorder?: Recorder;
 };
 
 // One isolate can hold several objects of the class, so a module variable
@@ -36,7 +38,7 @@ export function createTables(sql: Sql) {
   );
 }
 
-type Recorder = {
+export type Recorder = {
   e2eBump(name: string): Promise<{ count: number; instance: string }>;
   e2eMark(event: string, detail: unknown): Promise<void>;
   e2eLive(delta: number): Promise<void>;
@@ -45,8 +47,13 @@ type Recorded = { context: ReadonlyMap<string, unknown> };
 
 // A step function may run in another instance than the object that admitted
 // its execution. The trigger middleware recorded that object in the context,
-// and the step sends its evidence there, where the debug routes read it.
+// and the step sends its evidence there, where the debug routes read it. A
+// step that runs in the object itself records directly: a call from the
+// object to its own stub counts towards Cloudflare's subrequest depth limit,
+// and a delivery started during one such call inherits its depth.
 function recorder(event: Recorded): Recorder {
+  const local = scope.getStore()?.recorder;
+  if (local) return local;
   const jurisdiction = event.context.get("jurisdiction") as string | undefined;
   const binding = (workers as any).env[event.context.get("binding") as string];
   const namespace = jurisdiction ? binding.jurisdiction(jurisdiction) : binding;

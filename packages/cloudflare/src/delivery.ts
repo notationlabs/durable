@@ -111,22 +111,6 @@ export async function runDelivery(
 }
 
 /**
- * Returns a `deliver` that runs each delivery in one of a pool of instances.
- * `getRunner(slot)` returns a stub for the instance with that number, and a
- * slot runs one delivery at a time, so each delivery has an isolate to
- * itself. The pool grows to the most deliveries that have run at once.
- *
- * `deliver` must be called with the delivery's lease already held, as the
- * dispatcher calls it: the step records it sends are those of the lease
- * holder.
- *
- * When the delivery's signal aborts, `deliver` stops the instance, which
- * stops a step function that is awaiting, and rejects at once with an
- * `InfrastructureError`. When the instance stops before replying, such as
- * after it exceeds the CPU limit, `deliver` rejects with a
- * `WorkerExitedError`, so the dispatcher leaves the lease to expire.
- */
-/**
  * The most step record text sent with a delivery. A delivery reads the
  * records beyond it from the runtime, one call each.
  */
@@ -142,6 +126,22 @@ function collectSteps(records: Iterable<[string, HeapRecord]>): StepRecords {
   return steps;
 }
 
+/**
+ * Returns a `deliver` that runs each delivery in one of a pool of instances.
+ * `getRunner(slot)` returns a stub for the instance with that number, and a
+ * slot runs one delivery at a time, so each delivery has an isolate to
+ * itself. The pool grows to the most deliveries that have run at once.
+ *
+ * `deliver` must be called with the delivery's lease already held, as the
+ * dispatcher calls it: the step records it sends are those of the lease
+ * holder.
+ *
+ * When the delivery's signal aborts, `deliver` stops the instance, which
+ * stops a step function that is awaiting, and rejects at once with an
+ * `InfrastructureError`. When the instance stops before replying, such as
+ * after it exceeds the CPU limit, `deliver` rejects with a
+ * `WorkerExitedError`, so the dispatcher leaves the lease to expire.
+ */
 export function createIsolatedDeliver(params: {
   runtime: Runtime;
   getRunner: (slot: number) => DeliveryRunner;
@@ -192,7 +192,7 @@ export function createIsolatedDeliver(params: {
     };
     const slot = acquire();
     if (!idle.has(slot)) await stop(slot);
-    // Read after the wait above, and in the same turn as the call below.
+    // Read after the wait above, with no wait between the read and the call.
     if (params.readSteps && !signal.aborted) {
       request.steps = collectSteps(params.readSteps(event.executionId));
     }

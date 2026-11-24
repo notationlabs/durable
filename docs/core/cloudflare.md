@@ -124,7 +124,7 @@ Worker ── fetch ──▶ Workflows "default"            runtime, routes, al
 ```
 
 - **One delivery at a time** – An instance runs one delivery, and the object uses the lowest-numbered instance that is free. So the object uses as many instances as deliveries have run at once, and `concurrency` limits that to 10 by default.
-- **Its own isolate** – Cloudflare gives each instance its own isolate. In a test on a deployed Worker, six deliveries that ran at once ran in six isolates, none of them the object's.
+- **Its own isolate** – Each instance runs in an isolate of its own. In a test on a deployed Worker, five steps that waited at the same time ran in five isolates, none of them the object's.
 - **No storage** – The instance runs the workflow function and its step functions. It sends each step result, store update and effect to the object, which writes it to SQLite. The instance writes nothing to its own storage.
 - **Stopped with its delivery** – The object aborts the instance when the delivery loses its lease. The instance aborts itself when the object stops, at most a third of the lease duration later.
 
@@ -132,7 +132,7 @@ Worker ── fetch ──▶ Workflows "default"            runtime, routes, al
 
 ### What it costs
 
-- **A call for each write** – A step result is one call from the instance to the object. {{STEP_OVERHEAD}}
+- **A call for each write** – A step result is one call from the instance to the object, which answers when the write is durable. In a test on a deployed Worker, the next step started 13 ms after a step function returned, against under 1 ms with deliveries in the object. Reading a finished step costs no call: the object sends the execution's step records with each delivery.
 - **Durable Object duration** – Cloudflare bills each instance as a Durable Object while it runs a delivery, in addition to the object that claimed it.
 
 ### Running deliveries in the object
@@ -157,8 +157,8 @@ In a test on a deployed Worker, one step spun past the CPU limit next to five st
 | :--- | :--- | :--- |
 | The five waiting executions | All `completed`, and each step function started once | All `failed` with `DeliveryLimitError`, and each step function started three times |
 | The CPU-bound execution | `failed` with `DeliveryLimitError` | `failed` with `DeliveryLimitError` |
-| Requests to the object, one per second | 147 of 147 answered | 2 of 5 answered. The other three waited 34 seconds and failed |
-| Times the object was reset | 0 | 3 |
+| Requests to the object, sent one after another | 147 sent, all answered | 5 sent. Three of them waited 34 seconds and failed |
+| Times Cloudflare reset the object | 0 | 3 |
 
 ## When a step runs again
 
@@ -184,7 +184,7 @@ A delivery can also lose its lease while the object keeps running, for example a
 
 For example, `sdk.cancel(id, { force: true })` during a `step.run("charge", …)` that is waiting for a `fetch` ends the execution `cancelled`, and the code after the `await` never runs. The payment service may still process the request that was already sent.
 
-{{FORCE_CANCEL_TEST}}
+In a test on a deployed Worker, a step that waited 40 seconds was cancelled after one second. Its step function started once and never finished. With [deliveries in the object](#running-deliveries-in-the-object), the same step function ran to its end.
 
 Two limits apply:
 
@@ -207,7 +207,7 @@ Worker exited without replying; the lease will expire and the execution will be 
 
 What to do depends on the step:
 
-- **Several steps that together pass the limit** need no change. The steps that finished are not run again, so each delivery carries on from the last finished step. {{SPIN_STEPS_TEST}}
+- **Several steps that together pass the limit** need no change. The steps that finished are not run again, so each delivery carries on from the last finished step. In a test on a deployed Worker, six steps of about 10 seconds of CPU time each completed in 89 seconds with one reset, and only the step that the reset interrupted ran twice.
 - **One step that needs more than 30 seconds** needs a higher limit. The maximum is five minutes:
 
   ```jsonc [wrangler.jsonc]
