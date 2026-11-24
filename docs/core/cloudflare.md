@@ -125,4 +125,3 @@ Every execution in the object shares one isolate, so a reset also expires the le
 
 - **No process isolation.** A delivery whose lease is lost cannot be killed. Its abort signal stops it before the next step, and its lease token rejects every later write.
 - **One object, one thread.** Every execution in the object shares one isolate and one database. For more throughput, route by tenant with `idFromName(tenantId)`; executions in different objects cannot join each other or share stores.
-- **Long deliveries.** The object stays in memory while a step is pending, and Cloudflare bills that time. `alarm` returns after five minutes if deliveries are still in flight, because Cloudflare stops an alarm handler after 15 minutes; the deliveries carry on.
