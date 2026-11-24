@@ -273,6 +273,12 @@ export {
 export type { StepSchemaVerdict } from "./base/step";
 
 export { WorkflowRunner } from "./lib/workflow-runner";
+export type { EncodedWorkflowRunOutcome } from "./lib/outcome-codec";
+export {
+  decodeThrownValue,
+  decodeWorkflowRunOutcome,
+  encodeWorkflowRunOutcome,
+} from "./lib/outcome-codec";
 
 export { ReadOnlyMap, FreezableMap } from "./utils/map";
 export { errorWithOriginalStack } from "./utils/error";

@@ -3,5 +3,6 @@
   "compilerOptions": {
     "types": ["node", "bun"]
   },
-  "include": ["**/*.ts"]
+  // The declaration of `cloudflare:workers` that the Cloudflare package compiles against.
+  "include": ["**/*.ts", "../packages/cloudflare/src/cloudflare-workers.d.ts"]
 }

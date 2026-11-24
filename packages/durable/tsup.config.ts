@@ -24,7 +24,8 @@ export default defineConfig({
   dts: true,
   splitting: true,
   clean: true,
-  external: ["bun:sqlite"],
+  // workerd provides cloudflare:workers, and only the cloudflare entry imports it.
+  external: ["bun:sqlite", "cloudflare:workers"],
   // node:sqlite has no unprefixed form, so the prefix must survive the build.
   removeNodeProtocol: false,
   esbuildPlugins: [declaredImportsOnly(here)],

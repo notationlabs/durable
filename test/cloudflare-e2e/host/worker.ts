@@ -1,5 +1,9 @@
 import type { Logger } from "pino";
-import { createWorkflowObject, type DurableObjectStateLike } from "@durable/cloudflare";
+import {
+  WorkflowObject,
+  createWorkflowObject,
+  type DurableObjectStateLike,
+} from "@durable/cloudflare";
 import { createWorkflow } from "@durable/sdk";
 
 // The pool runs this module in the same isolate as the test files, so the
@@ -54,7 +58,20 @@ const stuckOnce = createWorkflow(async function* (step, event: { params: { key: 
   });
 });
 
-export const router = { double, delayed, slow, child, parent, stuckOnce };
+// The step records that it started, waits, and records that it finished.
+export const held = { started: new Set<string>(), finished: new Set<string>() };
+export const HOLD = 1_200;
+
+const hold = createWorkflow(async function* (step, event: { params: { key: string } }) {
+  return yield* step.run(async () => {
+    held.started.add(event.params.key);
+    await sleep(HOLD);
+    held.finished.add(event.params.key);
+    return "held";
+  });
+});
+
+export const router = { double, delayed, slow, child, parent, stuckOnce, hold };
 export type Router = typeof router;
 
 export const CONCURRENCY = 2;
@@ -90,6 +107,22 @@ export class Workflows {
 export class ShortLeaseWorkflows extends Workflows {
   constructor(ctx: DurableObjectStateLike, env?: unknown) {
     super(ctx, env, SHORT_LEASE);
+  }
+}
+
+export const isolated = { constructed: 0 };
+
+// Runs each delivery in another instance of the class. The lease is short, so
+// the object learns of a lost lease at a renewal a test can wait for.
+export class IsolatedWorkflows extends WorkflowObject({
+  router,
+  logger: silent,
+  basePath: "/durable",
+  leaseDuration: SHORT_LEASE,
+}) {
+  constructor(ctx: DurableObjectStateLike, env: unknown) {
+    super(ctx, env);
+    isolated.constructed++;
   }
 }
 

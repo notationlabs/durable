@@ -6,8 +6,9 @@
   "durable_objects": {
     "bindings": [
       { "name": "WORKFLOWS", "class_name": "Workflows" },
-      { "name": "SHORT_LEASE", "class_name": "ShortLeaseWorkflows" }
+      { "name": "SHORT_LEASE", "class_name": "ShortLeaseWorkflows" },
+      { "name": "ISOLATED", "class_name": "IsolatedWorkflows" }
     ]
   },
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Workflows", "ShortLeaseWorkflows"] }]
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Workflows", "ShortLeaseWorkflows", "IsolatedWorkflows"] }]
 }

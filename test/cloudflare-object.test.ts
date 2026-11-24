@@ -1,7 +1,6 @@
 import pino from "pino";
 import { afterEach, expect, test } from "vitest";
 import {
-  WorkflowObject,
   createSqliteDb,
   createWorkflowObject,
   toPositionalSql,
@@ -71,25 +70,6 @@ test("a delay ends the pump, and the alarm resumes the workflow", async () => {
   const execution = await sdk.trigger({ workflowId: "workflow" });
   expect(await execution.waitForResult()).toBeGreaterThanOrEqual(55);
   expect(object.alarms.length).toBeGreaterThanOrEqual(1);
-});
-
-test("a class from WorkflowObject serves the routes and resumes from the alarm", async () => {
-  const workflow = createWorkflow(async function* (step) {
-    yield* step.delay(60);
-    return yield* step.run(() => "done");
-  });
-  const Workflows = WorkflowObject({ router: { workflow }, logger, basePath: "/durable" });
-  const object = createFakeObject((ctx) => new Workflows(ctx, {}));
-  stops.push(object.stop);
-  const sdk = createHttpSdkFactory<{ workflow: typeof workflow }>()({
-    url: "http://object/durable",
-    fetch: (input, init) => object.host.fetch(new Request(input, init)),
-  });
-
-  const execution = await sdk.trigger({ workflowId: "workflow" });
-  expect(await execution.waitForResult()).toBe("done");
-  expect(object.alarms.length).toBeGreaterThanOrEqual(1);
-  expect(object.host.durable.runtime.executions.nextClaimAt()).toBeNull();
 });
 
 test("the alarm is set to the end of a delay that follows the first delivery", async () => {

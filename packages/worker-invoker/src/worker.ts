@@ -1,18 +1,16 @@
 import type { Logger } from "pino";
 import type {
+  EncodedWorkflowRunOutcome,
   EventContext,
   ExecutionCancellation,
   ExecutionLease,
   WorkflowEvent,
-  WorkflowRunOutcome,
   WorkflowRunner,
 } from "@durable/core";
 import {
-  WORKFLOW_RESULT_STEP_KEY,
-  WorkflowValueError,
   decodeExecutionEvent,
-  durableValueCodec,
   encodeThrownValue,
+  encodeWorkflowRunOutcome,
 } from "@durable/core";
 
 let context: EventContext;
@@ -47,11 +45,7 @@ export type WorkerDelivery = {
 
 export type WorkerRequest = WorkerDelivery;
 
-export type SerializedOutcome =
-  | Extract<WorkflowRunOutcome, { status: "suspended" }>
-  | Extract<WorkflowRunOutcome, { status: "cancelled" }>
-  | { status: "completed"; result: string }
-  | { status: "failed"; error: string };
+export type SerializedOutcome = EncodedWorkflowRunOutcome;
 
 /** The exit code of a worker whose runtime process has gone. */
 export const WORKER_ORPHANED_EXIT_CODE = 75;
@@ -91,7 +85,7 @@ export function createWorkflowWorker(
             ...(cancellation ? { cancellation } : {}),
             logger,
           });
-          send({ status: "outcome", outcome: serializeOutcome(outcome) });
+          send({ status: "outcome", outcome: encodeWorkflowRunOutcome(outcome) });
         } catch (error: any) {
           send({ status: "error", error: encodeThrownValue(error) });
         }
@@ -99,22 +93,4 @@ export function createWorkflowWorker(
       send({ status: "ready" });
     },
   };
-}
-
-function serializeOutcome(outcome: WorkflowRunOutcome): SerializedOutcome {
-  if (outcome.status === "suspended" || outcome.status === "cancelled") return outcome;
-  if (outcome.status === "failed") {
-    return { status: "failed", error: encodeThrownValue(outcome.error) };
-  }
-  const result = durableValueCodec.encode(outcome.result);
-  if (result.status === "encoded") {
-    return { status: "completed", result: result.canonical };
-  }
-  // As acknowledgement would record it.
-  const error = new WorkflowValueError(
-    "INVALID_STEP_VALUE",
-    WORKFLOW_RESULT_STEP_KEY,
-    `Workflow result is not a durable value: ${result.message}`
-  );
-  return { status: "failed", error: encodeThrownValue(error) };
 }
