@@ -266,34 +266,30 @@ export class ExecutionsDao {
     return Number(result.changes) === 1;
   }
 
-  /** Leaves the parent link as inserted: it is immutable. */
-  updateState(state: ExecutionState) {
+  /**
+   * Writes the columns that differ between `before`, the state the row was
+   * read as, and `after`. An UPDATE writes every index on a column it sets,
+   * whether or not the value changes, and Durable Object storage bills each
+   * index entry as a row written. So a column that keeps its value is left
+   * out, and a transition that changes no column runs no statement. The
+   * parent link is never written: it is immutable.
+   */
+  updateState(before: ExecutionState, after: ExecutionState) {
+    const previous = toBindings(before);
+    const next = toBindings(after);
+    const changed = UPDATED_COLUMNS.filter(
+      ([parameter]) => previous[parameter] !== next[parameter]
+    );
+    if (changed.length === 0) return;
+    const bindings: SqliteParameters = { $executionId: after.executionId };
+    for (const [parameter] of changed) bindings[parameter] = next[parameter];
     this.db
       .query(
         `UPDATE executions SET
-           workflow_id = $workflowId,
-           params = $params,
-           context = $context,
-           status = $status,
-           outcome = $outcome,
-           admitted_at = $admittedAt,
-           updated_at = $updatedAt,
-           due_at = $dueAt,
-           claimed_due_at = $claimedDueAt,
-           lease_token = $leaseToken,
-           lease_expires_at = $leaseExpiresAt,
-           unacknowledged_delivery_count = $unacknowledgedDeliveryCount,
-           expired_delivery_count = $expiredDeliveryCount,
-           redeliver_at = $redeliverAt,
-           next_claim_at = $nextClaimAt,
-           cancellation_reason = $cancellationReason,
-           cancellation_source = $cancellationSource,
-           cancellation_forced = $cancellationForced,
-           cancellation_requested_at = $cancellationRequestedAt,
-           cancellation_delivered_at = $cancellationDeliveredAt
+           ${changed.map(([parameter, column]) => `${column} = ${parameter}`).join(", ")}
          WHERE execution_id = $executionId`
       )
-      .run(toBindings(state));
+      .run(bindings);
   }
 }
 
@@ -361,6 +357,32 @@ function toBindings(state: ExecutionState) {
     $cancellationDeliveredAt: state.cancellation?.deliveredAt ?? null,
   };
 }
+
+type Bindings = ReturnType<typeof toBindings>;
+
+// Every column but the ID and the parent link, by the parameter that binds it.
+const UPDATED_COLUMNS: readonly (readonly [keyof Bindings, string])[] = [
+  ["$workflowId", "workflow_id"],
+  ["$params", "params"],
+  ["$context", "context"],
+  ["$status", "status"],
+  ["$outcome", "outcome"],
+  ["$admittedAt", "admitted_at"],
+  ["$updatedAt", "updated_at"],
+  ["$dueAt", "due_at"],
+  ["$claimedDueAt", "claimed_due_at"],
+  ["$leaseToken", "lease_token"],
+  ["$leaseExpiresAt", "lease_expires_at"],
+  ["$unacknowledgedDeliveryCount", "unacknowledged_delivery_count"],
+  ["$expiredDeliveryCount", "expired_delivery_count"],
+  ["$redeliverAt", "redeliver_at"],
+  ["$nextClaimAt", "next_claim_at"],
+  ["$cancellationReason", "cancellation_reason"],
+  ["$cancellationSource", "cancellation_source"],
+  ["$cancellationForced", "cancellation_forced"],
+  ["$cancellationRequestedAt", "cancellation_requested_at"],
+  ["$cancellationDeliveredAt", "cancellation_delivered_at"],
+];
 
 function toNumberOrNull(value: number | null) {
   return value === null ? null : Number(value);

@@ -291,7 +291,7 @@ export class SqliteStoreClient extends CasStoreClient {
         step_key TEXT NOT NULL,
         result TEXT NOT NULL,
         PRIMARY KEY (store_name, store_id, execution_id, step_key)
-      );
+      ) WITHOUT ROWID;
     `);
   }
 

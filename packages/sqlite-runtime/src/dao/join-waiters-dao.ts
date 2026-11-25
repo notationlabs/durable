@@ -27,7 +27,7 @@ export class JoinWaitersDao {
         execution_id TEXT NOT NULL,
         step_key TEXT NOT NULL,
         PRIMARY KEY (target_execution_id, execution_id, step_key)
-      );
+      ) WITHOUT ROWID;
       CREATE INDEX IF NOT EXISTS idx_join_waiters_step
       ON join_waiters(execution_id, step_key);
     `);
