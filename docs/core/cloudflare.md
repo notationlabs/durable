@@ -106,9 +106,15 @@ Another Worker then calls `env.WORKFLOWS.getByName("default").startOnboarding(em
 
 The object does not poll. It claims executions at three moments:
 
-1. **After a write.** A trigger, a cancel, a store commit or an effect settlement commits to SQLite. In the same turn the object sets its alarm to the earliest time any execution is due, and claims what is due now.
+1. **After a write.** A trigger, a cancel, a store commit or an effect settlement commits to SQLite. In the same turn the object makes sure its alarm covers the earliest time any execution is due, and claims what is due now.
 2. **While deliveries are in flight.** The object claims again when a delivery settles and when the next due time arrives.
 3. **When the alarm fires.** Once no delivery is in flight the object stops. The alarm starts it again at the next due time, such as the end of a `step.delay`.
+
+Cloudflare bills each alarm write as a row written, so the object writes the alarm only when it has to:
+
+- **An execution that is due now** – The object claims it at once, and the alarm is needed only if the object stops first. The object sets the alarm one lease ahead (`leaseDuration`, 30 seconds by default), which is also where the alarm must be while the delivery runs. If every delivery slot is busy, it sets the alarm to the current time instead.
+- **An execution that is due later** – The object sets the alarm to that time.
+- **Nothing left to claim** – The object leaves an alarm that is at most a lease ahead. It fires once, finds nothing, and sets no other alarm. That call to `alarm` costs less than the write that would delete the alarm, and an execution that arrives before it fires needs no alarm write. The object deletes an alarm that is further ahead.
 
 A delivery can run longer than one alarm handler. Cloudflare stops an alarm handler after 15 minutes, so `alarm` returns after five minutes and the delivery carries on. In a test on a deployed Worker, a 17-minute step finished on its first attempt with no requests to the object.
 

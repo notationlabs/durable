@@ -115,7 +115,7 @@ export class SqliteHeapClient implements HeapClient {
       // waiter they registered.
       if (inserted && done) {
         const next = recordExecutionProgress(state);
-        if (next !== state) this.executionsDao.updateState(next);
+        if (next !== state) this.executionsDao.updateState(state, next);
         this.deleteStepWaiters(executionId, stepKey);
         for (const other of params.deleteWaitersOf ?? []) {
           this.deleteStepWaiters(executionId, other);
@@ -156,7 +156,7 @@ export class SqliteHeapClient implements HeapClient {
         return record;
       });
       // Throws, and so rolls back, when no request is recorded.
-      this.executionsDao.updateState(markCancellationDelivered(state, this.clock()));
+      this.executionsDao.updateState(state, markCancellationDelivered(state, this.clock()));
       return records;
     });
   }

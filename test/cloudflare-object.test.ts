@@ -50,12 +50,98 @@ test("a trigger over the object's routes runs the workflow without an alarm firi
     const doubled = yield* step.run(() => event.params.n * 2);
     return doubled + 1;
   });
-  const { object, sdk } = createObject({ workflow });
+  const { object, sdk } = createObject({ workflow }, { leaseDuration: 200 });
 
   const execution = await sdk.trigger({ workflowId: "workflow", params: { n: 20 } });
   expect(await execution.waitForResult()).toBe(41);
-  // Nothing is left to claim, so the alarm is deleted.
+  // Nothing is left to claim. The alarm that covered the lease is left to
+  // fire, and no alarm follows it.
+  expect(object.alarms).toHaveLength(0);
+  await expect.poll(() => object.alarms.length, { timeout: 3_000 }).toBe(1);
   await expect.poll(() => object.fake.alarmAt).toBeNull();
+});
+
+// Counts the calls that Cloudflare bills as a row written each.
+function countAlarmWrites(fake: ReturnType<typeof createFakeStorage>) {
+  const writes = { set: 0, deleted: 0 };
+  const { setAlarm, deleteAlarm } = fake.storage;
+  fake.storage.setAlarm = (at) => (writes.set++, setAlarm(at));
+  fake.storage.deleteAlarm = () => (writes.deleted++, deleteAlarm());
+  return writes;
+}
+
+test("executions that finish within a lease of the first write the alarm once", async () => {
+  const workflow = createWorkflow(async function* (step, event: { params: { n: number } }) {
+    return yield* step.run(() => event.params.n * 2);
+  });
+  const fake = createFakeStorage();
+  const writes = countAlarmWrites(fake);
+  const { object, sdk } = createObject({ workflow }, undefined, fake);
+
+  const first = await sdk.trigger({ workflowId: "workflow", params: { n: 1 } });
+  expect(await first.waitForResult()).toBe(2);
+  // One write covers the admission and the lease that follows it, and it is
+  // not deleted. The alarm is one lease ahead of the admission.
+  expect(writes).toEqual({ set: 1, deleted: 0 });
+  expect(fake.alarmAt).toBeGreaterThan(Date.now() + 25_000);
+  expect(fake.alarmAt).toBeLessThanOrEqual(Date.now() + 30_000);
+
+  const second = await sdk.trigger({ workflowId: "workflow", params: { n: 2 } });
+  expect(await second.waitForResult()).toBe(4);
+  expect(writes).toEqual({ set: 1, deleted: 0 });
+  expect(object.alarms).toHaveLength(0);
+});
+
+test("an alarm further ahead than a lease is deleted when nothing is left to claim", async () => {
+  const workflow = createWorkflow(async function* (step) {
+    yield* step.delay(120_000);
+  });
+  const fake = createFakeStorage();
+  const writes = countAlarmWrites(fake);
+  const { sdk } = createObject({ workflow }, undefined, fake);
+
+  const { executionId } = await sdk.trigger({ workflowId: "workflow" });
+  await expect.poll(async () => (await sdk.poll(executionId))?.status).toBe("suspended");
+  expect(fake.alarmAt).toBeGreaterThan(Date.now() + 100_000);
+
+  await sdk.cancel(executionId, { force: true });
+  expect((await sdk.poll(executionId))?.status).toBe("cancelled");
+  await expect.poll(() => fake.alarmAt).toBeNull();
+  expect(writes.deleted).toBe(1);
+});
+
+test("an execution that is due with every slot busy sets the alarm to the clock", async () => {
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const workflow = createWorkflow(async function* (step, event: { params: { hold: boolean } }) {
+    return yield* step.run(async () => {
+      if (event.params.hold) await held;
+      return "ran";
+    });
+  });
+  const fake = createFakeStorage();
+  // No alarm fires here, so the alarm time is whatever the object last wrote.
+  const host = createWorkflowObject(
+    { storage: fake.storage, waitUntil() {} },
+    { router: { workflow }, logger, concurrency: 1 }
+  );
+  const local = createLocalSdk<{ workflow: typeof workflow }>(host.runtime);
+
+  const first = await local.trigger({ workflowId: "workflow", params: { hold: true } });
+  await expect.poll(async () => (await local.poll(first.executionId))?.status).toBe("running");
+  expect(fake.alarmAt).toBeGreaterThan(Date.now() + 25_000);
+
+  // Nothing in this instance can claim the second execution until the first
+  // settles, so its alarm is not left a lease away.
+  const second = await local.trigger({ workflowId: "workflow", params: { hold: false } });
+  await expect.poll(() => fake.alarmAt).toBeLessThanOrEqual(Date.now() + 1);
+
+  release();
+  await expect
+    .poll(async () => (await local.poll(second.executionId))?.status)
+    .toBe("completed");
 });
 
 test("a delay ends the pump, and the alarm resumes the workflow", async () => {

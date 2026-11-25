@@ -171,7 +171,7 @@ export class SqliteExecutionClient implements ExecutionClient {
       const next = requestExecutionWake(state, request.wakeAt, this.clock());
       if (!next) return { status: "ignored" };
 
-      this.executionsDao.updateState(next);
+      this.executionsDao.updateState(state, next);
       return { status: "requested" };
     });
   }
@@ -195,7 +195,7 @@ export class SqliteExecutionClient implements ExecutionClient {
         const { state, request } = pending.shift()!;
         const applied = requestExecutionCancellation(state, request, now);
         result ??= applied.result;
-        if (applied.state !== state) this.executionsDao.updateState(applied.state);
+        if (applied.state !== state) this.executionsDao.updateState(state, applied.state);
         if (applied.terminal) this.onEndedOutsideDelivery(state.executionId);
         if (!applied.propagate) continue;
         const propagated = propagatedCancellation(applied.state);
@@ -256,7 +256,7 @@ export class SqliteExecutionClient implements ExecutionClient {
           duration: request.duration,
           maxExpiredDeliveries: request.maxExpiredDeliveries,
         });
-        this.executionsDao.updateState(claimed.state);
+        this.executionsDao.updateState(state, claimed.state);
         if (claimed.lease === null) {
           this.onEndedOutsideDelivery(executionId);
           failed.push({ executionId, deliveries: expiredDeliveryCountAt(state, now) });
@@ -334,7 +334,7 @@ export class SqliteExecutionClient implements ExecutionClient {
         // acknowledgement that made it terminal. Its join waiters stay
         // registered until each joiner records its step.
         if (next.state !== state) {
-          this.executionsDao.updateState(next.state);
+          this.executionsDao.updateState(state, next.state);
           if (isTerminalExecutionStatus(next.state.status)) {
             this.wakeJoinWaiters(state.executionId);
           }
@@ -355,6 +355,6 @@ export class SqliteExecutionClient implements ExecutionClient {
     if (!state) return;
 
     const next = requestExecutionWake(state, wakeAt, this.clock());
-    if (next) this.executionsDao.updateState(next);
+    if (next) this.executionsDao.updateState(state, next);
   }
 }

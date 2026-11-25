@@ -35,7 +35,7 @@ export class StoreWaitersDao {
         since_version INTEGER NOT NULL,
         read_paths TEXT NOT NULL,
         PRIMARY KEY (store_name, store_id, execution_id, step_key)
-      );
+      ) WITHOUT ROWID;
       CREATE INDEX IF NOT EXISTS idx_store_waiters_step
       ON store_waiters(execution_id, step_key);
     `);

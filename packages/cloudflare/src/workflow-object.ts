@@ -3,7 +3,9 @@ import { DurableObject } from "cloudflare:workers";
 import type { Logger } from "pino";
 import {
   DEFAULT_DISPATCHER_CONCURRENCY,
+  DEFAULT_LEASE_DURATION,
   ExecutionDispatcher,
+  REDELIVERY_DELAY_BASE,
   WorkflowRunner,
   type MiddlewareFunction,
   type Runtime,
@@ -84,7 +86,7 @@ const MAX_ALARM_WAIT = 5 * 60_000;
 
 /**
  * An alarm this close to the clock is written again when the claim time
- * moves, instead of being left to fire early.
+ * moves later, instead of being left to fire early.
  */
 const ALARM_MARGIN = 1_000;
 
@@ -105,13 +107,16 @@ const consoleLogger = {
  * Runs workflows inside one Durable Object. The object's SQLite storage holds
  * the runtime, and deliveries run in the object's own isolate.
  *
- * The object does not poll. After every write to the runtime it sets the
- * object's alarm to the earliest time an execution can be claimed, in the same
- * turn as the write, and claims what is due. While deliveries are in flight
- * it claims again when one settles, when a write changes that time, and when
- * that time arrives. When none is in flight it stops, and the alarm starts it
- * again. If the object is evicted during a delivery, the delivery's lease
- * expires and the alarm delivers the execution again.
+ * The object does not poll. After every write to the runtime it makes sure
+ * the object's alarm covers the earliest time an execution can be claimed, in
+ * the same turn as the write, and claims what is due. While deliveries are in
+ * flight it claims again when one settles, when a write changes that time,
+ * and when that time arrives. When none is in flight it stops, and the alarm
+ * starts it again. If the object is evicted during a delivery, the delivery's
+ * lease expires and the alarm delivers the execution again.
+ *
+ * With nothing left to claim, an alarm that is at most a lease ahead is left
+ * to fire once. `alarm` then finds nothing to claim and sets no other alarm.
  *
  * `WorkflowObject` builds a class on it and runs each delivery in its own
  * instance. Call `createWorkflowObject` directly only to write the class
@@ -140,6 +145,10 @@ function createHost<Router extends WorkflowRouter>(
 ) {
   const logger = options.logger ?? consoleLogger;
   const concurrency = options.concurrency ?? DEFAULT_DISPATCHER_CONCURRENCY;
+  const leaseDuration = options.leaseDuration ?? DEFAULT_LEASE_DURATION;
+  // The alarm that covers a lease is set this far ahead: when the lease
+  // expires, plus the redelivery delay.
+  const linger = leaseDuration + REDELIVERY_DELAY_BASE;
   const { storage } = ctx;
 
   const db = new DurableObjectSqliteDriver(storage);
@@ -167,8 +176,8 @@ function createHost<Router extends WorkflowRouter>(
     maxWait: options.maxWait,
   });
 
-  // The time the alarm is set to, null when it is deleted, and undefined when
-  // unknown: after a restart, a failed write, or the alarm firing.
+  // The time the alarm is set to, null when none is set, and undefined when
+  // unknown: after a restart or a failed write.
   let armedAt: number | null | undefined;
   // After `alarm` fails, the alarm is not set earlier than this.
   let retryAt = 0;
@@ -179,36 +188,63 @@ function createHost<Router extends WorkflowRouter>(
   let nudge: (() => void) | undefined;
   let pumping: Promise<void> | undefined;
 
-  // Sets the alarm to the earliest claim time, and returns whether that time
-  // has changed since the last call. An alarm that is already set, earlier
-  // than the claim time and still ahead of the clock is left alone: each lease
-  // renewal moves the claim time later, and the alarm sets itself again when
-  // it fires. An alarm at or behind the clock is always written, and never at
-  // the clock itself: on Cloudflare an alarm set inside the alarm handler to
-  // the handler's own scheduled time fires up to a minute late, and the clock
-  // in the handler often reads that time. One millisecond later fires on time.
-  const arm = () => {
+  // Makes the alarm cover the earliest claim time, and returns whether that
+  // time has changed since the last call. Each alarm write is billed as a row
+  // written, so the alarm is written only when the one that is set does not
+  // cover that time:
+  //
+  // - An execution due later needs the alarm at its claim time. While a
+  //   delivery is in flight, an earlier alarm is left alone if it is more
+  //   than `ALARM_MARGIN` ahead of the clock: each lease renewal moves the
+  //   claim time later, and the alarm sets itself again when it fires.
+  // - An execution due now, which the pump of this instance is about to
+  //   claim, needs the alarm only in case the instance stops first. Any alarm
+  //   within a lease of the clock covers it. A claim then moves the claim
+  //   time to about the same time, the end of the lease, so the admission and
+  //   the claim share one write. With `strict`, or with every slot busy,
+  //   nothing here is about to claim and the alarm is set to the clock.
+  // - With nothing to claim, an alarm that fires within `linger` is left to
+  //   fire and find nothing: that costs a request, which is less than the
+  //   write that deletes it, and it covers the next execution to arrive.
+  //
+  // The alarm is never set to the clock itself: on Cloudflare an alarm set
+  // inside the alarm handler to the handler's own scheduled time fires up to
+  // a minute late, and the clock in the handler often reads that time. One
+  // millisecond later fires on time.
+  const arm = (strict = false) => {
     const at = runtime.executions.nextClaimAt();
     const changed = at !== claimAt;
     claimAt = at;
-    const covered =
-      at === null
-        ? armedAt === null
-        : typeof armedAt === "number" &&
-          armedAt <= at &&
-          (armedAt === at || armedAt > Date.now() + ALARM_MARGIN);
-    if (!covered) {
-      armedAt = at;
-      const write =
-        at === null
-          ? storage.deleteAlarm()
-          : storage.setAlarm(Math.max(at, Date.now() + 1, retryAt));
-      write.catch((err) => {
-        armedAt = undefined;
-        logger.error({ err }, "Failed to set the Durable Object alarm");
-      });
+    const now = Date.now();
+    if (at === null) {
+      if (typeof armedAt === "number" && armedAt > now + linger) writeAlarm(null);
+      return changed;
     }
+    const due = at <= now;
+    const claiming =
+      due &&
+      !strict &&
+      (changed || pumping !== undefined) &&
+      dispatcher.activeDeliveries < concurrency;
+    const target = Math.max(due ? now + (claiming ? leaseDuration : 1) : at, now + 1, retryAt);
+    // With nothing in flight and nothing about to be claimed, the claim time
+    // stays where it is until the alarm fires.
+    const moving = !strict || dispatcher.activeDeliveries > 0;
+    const covered =
+      typeof armedAt === "number" &&
+      armedAt <= target &&
+      (due || armedAt === target || (moving && armedAt > now + ALARM_MARGIN));
+    if (!covered) writeAlarm(target);
     return changed;
+  };
+
+  const writeAlarm = (at: number | null) => {
+    armedAt = at;
+    const write = at === null ? storage.deleteAlarm() : storage.setAlarm(at);
+    write.catch((err) => {
+      armedAt = undefined;
+      logger.error({ err }, "Failed to set the Durable Object alarm");
+    });
   };
 
   const pump = () => {
@@ -226,7 +262,9 @@ function createHost<Router extends WorkflowRouter>(
     while (requested || dispatcher.activeDeliveries > 0) {
       requested = false;
       await dispatcher.tick();
-      arm();
+      // The tick has claimed what it could, so nothing is about to claim an
+      // execution that is still due, unless a write has asked for another.
+      arm(!requested);
       if (requested || dispatcher.activeDeliveries === 0) continue;
       let timer: ReturnType<typeof setTimeout> | undefined;
       await new Promise<void>((resolve) => {
@@ -253,10 +291,15 @@ function createHost<Router extends WorkflowRouter>(
     const starting = !pumping;
     const pumped = pump();
     if (!starting) return;
-    // If this fails, the alarm set above runs the pump again.
     ctx.waitUntil(
       pumped.catch((err) => {
         logger.error({ err }, "Failed to claim due executions");
+        // The alarm may be a lease away, and it is what runs the pump again.
+        try {
+          arm(true);
+        } catch (err) {
+          logger.error({ err }, "Failed to set the alarm after a failed claim");
+        }
       })
     );
   };
@@ -270,7 +313,7 @@ function createHost<Router extends WorkflowRouter>(
       // A commit or the alarm handler has set the alarm since.
       if (armedAt !== undefined || pumping) return;
       armedAt = current;
-      arm();
+      arm(true);
     })
     .catch((err) => {
       logger.error({ err }, "Failed to read the Durable Object alarm");
@@ -303,7 +346,7 @@ function createHost<Router extends WorkflowRouter>(
      */
     async alarm(): Promise<void> {
       // Cloudflare clears the alarm before it calls the handler.
-      armedAt = undefined;
+      armedAt = null;
       let timer: ReturnType<typeof setTimeout> | undefined;
       try {
         await Promise.race([
@@ -314,7 +357,7 @@ function createHost<Router extends WorkflowRouter>(
         ]);
         retryAt = 0;
         alarmFailures = 0;
-        arm();
+        arm(true);
       } catch (err) {
         const delay = Math.min(
           MAX_ALARM_RETRY_DELAY,
