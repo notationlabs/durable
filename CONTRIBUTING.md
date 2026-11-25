@@ -144,7 +144,7 @@ export BENCH_URL=https://durable-bench.<subdomain>.workers.dev
 
 node --import tsx bench/run.ts > results.md   # the times of every scenario
 node --import tsx bench/run.ts chain burst    # some scenarios; BENCH_REPEAT=2 doubles the measurements, BENCH_OBJECTS sets how many sets of objects share them
-node --import tsx bench/cost.ts >> results.md # what Cloudflare bills for one execution of each, about 5 minutes
+node --import tsx bench/cost.ts >> results.md # what Cloudflare bills for one execution of each, about 15 minutes
 
 pnpm exec wrangler delete -c bench/wrangler.jsonc
 pnpm exec wrangler workflows delete durable-bench-native
@@ -165,7 +165,7 @@ The scenarios and what each measures:
 
 The `Bench` Durable Object drives each measurement and is its clock. A step function reports that it started by calling `mark` on that object, which records its own `Date.now()`, and the driver reads its times in the same object. So no figure compares the clocks of two machines, and none depends on the Worker's clock advancing during CPU work. A call to the clock takes 10 to 20 ms, which is as long as some of the measured times. So `mark` calls twice in a row, the time between the two arrivals gives the round trip, and the driver takes half of it off each figure that starts or ends at a step. The three systems take turns within each scenario, and the first execution of each workflow is not measured.
 
-`cost.ts` runs each workflow with step functions that do nothing, and prints the cost of a million executions and the billed units behind it. The two Durable classes count their own units: requests, rows read and written, alarm writes, and the time with a request, an alarm or a delivery in progress. The units of Cloudflare Workflows come from Cloudflare's analytics for each instance, which `cost.ts` reads with the `cf` CLI, so `cf auth login` must be signed in to the account of the Worker. The prices are constants at the top of `cost.ts`.
+`cost.ts` runs each workflow with step functions that do nothing, and prints the cost of a million executions and the billed units behind it. It also runs four workflows whose steps wait on a timer (`WAITS` in `shared.ts`), because Durable Objects bill the time a step takes and Cloudflare Workflows does not. The two Durable classes count their own units: requests, rows read and written, alarm writes, and the time with a request, an alarm or a delivery in progress. For Cloudflare Workflows, `cost.ts` reads each instance's step count from Cloudflare's API and the CPU time from Cloudflare's analytics, both with the `cf` CLI, so `cf auth login` must be signed in to the account of the Worker. The analytics sample their events, so they do not give an exact step count. The prices are constants at the top of `cost.ts`.
 
 Two more suites run inside workerd with `@cloudflare/vitest-plugin`, on real Durable Object storage and alarms. They need no Cloudflare account and no build, and CI runs them in the `workerd` job. `test/cloudflare-e2e/conformance` runs the runtime conformance suites. `test/cloudflare-e2e/host` runs the workflow object's scenarios; its alarms are the ones workerd fires. Local workerd puts every instance of a class in one isolate and has no CPU limit, so the suite covers the calls between an object and the instances that run its deliveries, and the deployed scenarios cover the isolation. `test/cloudflare-e2e` is outside the pnpm workspace, so install it with npm first:
 

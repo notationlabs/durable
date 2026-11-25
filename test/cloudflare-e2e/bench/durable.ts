@@ -86,6 +86,14 @@ const burst = workflow<Run & { index: number }>(async function* (step, event) {
   yield* step.run("done", () => mark(event.params, `done${event.params.index}`));
 });
 
+const wait = workflow<Run & { steps: number; ms: number }>(async function* (step, event) {
+  for (let i = 0; i < event.params.steps; i++) {
+    yield* step.run(`w${i}`, async () => {
+      await sleep(event.params.ms);
+    });
+  }
+});
+
 export const router = createWorkflowRouter({
   start,
   chain,
@@ -96,6 +104,7 @@ export const router = createWorkflowRouter({
   child,
   children,
   burst,
+  wait,
 });
 
 export type Router = typeof router;

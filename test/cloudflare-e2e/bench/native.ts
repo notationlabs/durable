@@ -20,6 +20,7 @@ type Env = { BENCH: Namespace<Clock>; NATIVE: NativeBinding };
 export type NativeParams =
   | (Run & { scenario: Exclude<Scenario, "burst"> })
   | (Run & { scenario: "burst"; index: number })
+  | (Run & { scenario: "wait"; steps: number; ms: number })
   | { scenario: "child"; parent: string; index: number };
 
 // The same workflows as `durable.ts`, written for Cloudflare Workflows. One
@@ -100,6 +101,14 @@ export class NativeWorkflow extends WorkflowEntrypoint<Env, NativeParams> {
           })
         );
         await step.do("b", () => mark("b"));
+        return;
+
+      case "wait":
+        for (let i = 0; i < params.steps; i++) {
+          await step.do(`w${i}`, async () => {
+            await sleep(params.ms);
+          });
+        }
         return;
 
       case "burst":

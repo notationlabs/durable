@@ -4,14 +4,18 @@ import { WorkflowObject } from "../../../packages/durable/dist/cloudflare.js";
 import { Gate, router, type Router } from "./durable";
 import { NativeWorkflow, type NativeBinding, type NativeInstance } from "./native";
 import {
+  COST_SCENARIOS,
   SCENARIOS,
   SYSTEMS,
+  WAITS,
   range,
   sizes,
   sleep,
+  type CostScenario,
   type Namespace,
   type Run,
   type Scenario,
+  type WaitScenario,
   type SystemName,
   type Usage,
 } from "./shared";
@@ -202,6 +206,8 @@ export class InlineWorkflows extends createClass(false) {}
 type System<Execution = any> = {
   start(scenario: Scenario, run: Run): Promise<Execution>;
   startBurst(run: Run, count: number): Promise<Execution[]>;
+  // Starts `count` executions of the workflow whose steps wait.
+  startWaits(run: Run, wait: { steps: number; ms: number }, count: number): Promise<Execution[]>;
   // Resolves when the execution has completed, in the way a caller in a
   // Worker waits for a result. `pollMs` is the interval between two reads of
   // the status, where the system has no call that waits.
@@ -211,7 +217,7 @@ type System<Execution = any> = {
   // object, and what Cloudflare Workflows has, later, from Cloudflare's
   // analytics by instance ID.
   usage?(): Promise<Usage>;
-  instanceIds?(execution: Execution, scenario: Scenario): string[];
+  instanceIds?(execution: Execution, scenario: CostScenario): string[];
 };
 
 function durable(namespace: Namespace<WorkflowsStub>, object: string): System<string> {
@@ -226,6 +232,8 @@ function durable(namespace: Namespace<WorkflowsStub>, object: string): System<st
     start: (scenario, run) => trigger(scenario, run),
     startBurst: (run, count) =>
       Promise.all(range(count).map((index) => trigger("burst", { ...run, index }))),
+    startWaits: (run, wait, count) =>
+      Promise.all(range(count).map(() => trigger("wait", { ...run, ...wait }))),
     async completed(executionId) {
       const view = await sdk.wait(executionId, { timeout: 120_000 });
       if (view?.status !== "completed") throw new Error(`execution ${JSON.stringify(view)}`);
@@ -244,6 +252,13 @@ function native(binding: NativeBinding): System<NativeInstance> {
     async startBurst(run, count) {
       const { created, errors } = await binding.createBatch({
         instances: range(count).map((index) => ({ params: { scenario: "burst", ...run, index } })),
+      });
+      if (errors.length) throw new Error(`createBatch: ${JSON.stringify(errors.slice(0, 3))}`);
+      return created;
+    },
+    async startWaits(run, wait, count) {
+      const { created, errors } = await binding.createBatch({
+        instances: range(count).map(() => ({ params: { scenario: "wait", ...run, ...wait } })),
       });
       if (errors.length) throw new Error(`createBatch: ${JSON.stringify(errors.slice(0, 3))}`);
       return created;
@@ -386,17 +401,20 @@ const COST_POLL_MS = 250;
 // Runs a scenario with step functions that make no call to the clock, and
 // returns what it was billed for: the counts of the Durable object, or the
 // IDs of the Cloudflare Workflows instances.
-async function cost(system: System, scenario: Scenario, bench: string, repeats: number) {
+async function cost(system: System, scenario: CostScenario, bench: string, repeats: number) {
   const before = await system.usage?.();
   const instances: string[] = [];
   let executions = 0;
   for (let i = 0; i < repeats; i++) {
     const run = { bench, run: crypto.randomUUID(), quiet: true };
     let started: unknown[];
-    if (scenario === "burst") {
+    if (scenario in WAITS) {
+      const { steps, ms, burst } = WAITS[scenario as WaitScenario];
+      started = await system.startWaits(run, { steps, ms }, burst);
+    } else if (scenario === "burst") {
       started = await system.startBurst(run, sizes.burst);
     } else {
-      started = [await system.start(scenario, run)];
+      started = [await system.start(scenario as Scenario, run)];
       if (scenario === "signal") {
         await sleep(SIGNAL_AFTER_MS);
         await system.signal(started[0], run);
@@ -475,9 +493,10 @@ export class Bench extends DurableObject<Env> {
   async fetch(request: Request) {
     const { searchParams, pathname } = new URL(request.url);
     const bench = searchParams.get("bench")!;
-    const scenario = searchParams.get("scenario") as Scenario;
+    const scenario = searchParams.get("scenario") as CostScenario;
     const name = searchParams.get("system") as SystemName;
-    if (!SCENARIOS.includes(scenario) || !SYSTEMS.includes(name)) {
+    const known: readonly string[] = pathname === "/cost" ? COST_SCENARIOS : SCENARIOS;
+    if (!known.includes(scenario) || !SYSTEMS.includes(name)) {
       return json({ error: "unknown scenario or system" }, 400);
     }
     const system =
@@ -493,7 +512,7 @@ export class Bench extends DurableObject<Env> {
     }
     const run = { bench, run: crypto.randomUUID() };
     try {
-      const metrics = await measures[scenario]({
+      const metrics = await measures[scenario as Scenario]({
         system,
         run,
         marked: (...labels) => this.marked(run.run, labels),

@@ -1,10 +1,12 @@
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
+import { promisify } from "node:util";
 import {
-  SCENARIOS,
+  COST_SCENARIOS,
   SYSTEMS,
+  WAITS,
   systemTitles,
   workflowTitles,
-  type Scenario,
+  type CostScenario as Scenario,
   type SystemName,
   type Usage,
 } from "./shared";
@@ -14,9 +16,9 @@ import {
 // execution as Markdown on stdout, with progress on stderr.
 //
 // A Durable object counts its own usage. The usage of Cloudflare Workflows is
-// read from Cloudflare's analytics with the `cf` CLI, which must be signed in
-// to the account of the Worker (`cf auth login`). `CLOUDFLARE_ACCOUNT_ID`
-// picks the account when the login has several.
+// read from Cloudflare's API and analytics with the `cf` CLI, which must be
+// signed in to the account of the Worker (`cf auth login`).
+// `CLOUDFLARE_ACCOUNT_ID` picks the account when the login has several.
 const base = process.env.BENCH_URL ?? "http://localhost:8798";
 const secret = process.env.BENCH_SECRET ?? "local";
 const bench = `cost-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
@@ -47,6 +49,10 @@ const repeats: Record<Scenario, number> = {
   signal: 5,
   children: 5,
   burst: 2,
+  wait: 5,
+  longWait: 3,
+  waits: 3,
+  waitBurst: 2,
 };
 
 type NativeUsage = { instances: number; steps: number; cpuMs: number };
@@ -58,7 +64,23 @@ type ObjectUsage = {
   storedBytes: number;
 };
 
+const failures: string[] = [];
+
+// A failed run is run again from the start, with new executions, so nothing
+// of the failed one is in the counts.
 async function run(scenario: Scenario, system: SystemName, n: number) {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await runOnce(scenario, system, n);
+    } catch (err) {
+      failures.push(String(err));
+      console.error(`  failed: ${err}`);
+      if (attempt === 3) throw err;
+    }
+  }
+}
+
+async function runOnce(scenario: Scenario, system: SystemName, n: number) {
   const url = new URL(`${base}/cost`);
   url.searchParams.set("bench", bench);
   url.searchParams.set("scenario", scenario);
@@ -114,33 +136,64 @@ function analytics(query: string): Record<string, any>[] {
   return JSON.parse(out).data;
 }
 
-// The events that Cloudflare recorded for the instances, or undefined while
-// an instance has no event for its end yet. The dataset is sampled when an
-// account sends many events, so each row counts for `sampleInterval` events.
-function instanceEvents(ids: string[]) {
-  const rows: Record<string, any>[] = [];
+// The CPU time that Cloudflare recorded for the instances, in milliseconds.
+// The dataset is sampled when an account sends many events, and each row
+// counts for `sampleInterval` events, so the sum is an estimate.
+function cpuTime(ids: string[]) {
+  let total = 0;
   for (let i = 0; i < ids.length; i += 40) {
     const list = ids
       .slice(i, i + 40)
       .map((id) => `'${id}'`)
       .join(", ");
-    rows.push(
-      ...analytics(
-        `SELECT instanceId, eventType, sum(allStepCountDiff * sampleInterval) AS steps, sum(cpuTimeDiffMs * sampleInterval) AS cpuMs FROM events.workflows WHERE workflowName = '${WORKFLOW_NAME}' AND timestamp > now() - INTERVAL '6' HOUR AND instanceId IN (${list}) GROUP BY instanceId, eventType LIMIT 1000`
-      )
+    const [row] = analytics(
+      `SELECT sum(cpuTimeDiffMs * sampleInterval) AS cpuMs FROM events.workflows WHERE workflowName = '${WORKFLOW_NAME}' AND timestamp > now() - INTERVAL '6' HOUR AND instanceId IN (${list}) LIMIT 1`
     );
+    total += Number(row?.cpuMs ?? 0);
   }
-  const ended = new Set(rows.filter((r) => r.eventType === "WORKFLOW_SUCCESS").map((r) => r.instanceId));
-  return ids.every((id) => ended.has(id)) ? rows : undefined;
+  return total;
+}
+
+const exec = promisify(execFile);
+
+// The number of steps that Cloudflare counted for an instance. The API gives
+// the exact count, and the analytics do not, because they are sampled.
+async function stepCount(id: string) {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      const { stdout } = await exec("cf", [
+        "workflows", "instances", "get", id, "--workflow-name", WORKFLOW_NAME, "--simple", "true",
+      ]);
+      const instance = JSON.parse(stdout);
+      if (instance.status !== "complete") throw new Error(`instance ${id} is ${instance.status}`);
+      return instance.step_count as number;
+    } catch (err) {
+      if (attempt === 4) throw err;
+      await sleep(2_000 * attempt);
+    }
+  }
+}
+
+async function pooled<T, R>(items: T[], size: number, fn: (item: T) => Promise<R>) {
+  const results: R[] = new Array(items.length);
+  let next = 0;
+  const worker = async () => {
+    while (next < items.length) {
+      const i = next++;
+      results[i] = await fn(items[i]);
+    }
+  };
+  await Promise.all(Array.from({ length: size }, worker));
+  return results;
 }
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const requested = process.argv.slice(2) as Scenario[];
 for (const name of requested) {
-  if (!SCENARIOS.includes(name)) throw new Error(`unknown scenario ${name}`);
+  if (!COST_SCENARIOS.includes(name)) throw new Error(`unknown scenario ${name}`);
 }
-const chosen = requested.length ? requested : [...SCENARIOS];
+const chosen = requested.length ? requested : [...COST_SCENARIOS];
 
 // The first request to a Durable object creates the runtime's tables.
 for (const system of SYSTEMS) await run("start", system, 1);
@@ -157,21 +210,28 @@ for (const scenario of chosen) {
 }
 
 const allInstances = Object.values(natives).flatMap((n) => n.instances);
-console.error(`Reading ${allInstances.length} Cloudflare Workflows instances from the analytics`);
-let events: Record<string, any>[] | undefined;
-for (let attempt = 0; !events; attempt++) {
-  if (attempt === 40) throw new Error("the analytics do not have every instance after 20 minutes");
-  if (attempt) await sleep(30_000);
-  events = instanceEvents(allInstances);
+console.error(`Reading ${allInstances.length} Cloudflare Workflows instances from Cloudflare`);
+const steps = new Map<string, number>();
+const counted = await pooled(allInstances, 8, stepCount);
+allInstances.forEach((id, i) => steps.set(id, counted[i]));
+
+// An instance's events reach the analytics over a few minutes, so the CPU
+// time is read until two reads in a row agree.
+const cpuMs: Record<string, number> = {};
+let previous = "";
+for (let attempt = 0; ; attempt++) {
+  await sleep(attempt ? 30_000 : 60_000);
+  for (const [scenario, { instances }] of Object.entries(natives)) cpuMs[scenario] = cpuTime(instances);
+  const read = JSON.stringify(cpuMs);
+  if (read === previous || attempt === 20) break;
+  previous = read;
 }
 const native: Record<string, NativeUsage> = {};
 for (const [scenario, { executions, instances }] of Object.entries(natives)) {
-  const mine = events.filter((row) => instances.includes(row.instanceId));
-  const sum = (column: string) => mine.reduce((total, row) => total + Number(row[column]), 0);
   native[scenario] = {
     instances: instances.length / executions,
-    steps: sum("steps") / executions,
-    cpuMs: sum("cpuMs") / executions,
+    steps: instances.reduce((total, id) => total + steps.get(id)!, 0) / executions,
+    cpuMs: cpuMs[scenario] / executions,
   };
 }
 
@@ -229,11 +289,18 @@ const objectUnits = (system: SystemName) =>
   );
 const secondCost = dollars(OBJECT_GB * price.objectGbSecond * million);
 
-const durableUsages = chosen.flatMap((s) => [objects[`${s}/durable`], objects[`${s}/inline`]]);
-const share = (part: (usage: ObjectUsage) => number) => {
-  const shares = durableUsages.map((usage) => (100 * part(usage)) / objectCost(usage));
+// The range, over the workflows whose steps wait or over the others, of the
+// share that one unit has in a Durable figure.
+const share = (waiting: boolean, part: (usage: ObjectUsage) => number) => {
+  const shares = chosen
+    .filter((scenario) => scenario in WAITS === waiting)
+    .flatMap((s) => [objects[`${s}/durable`], objects[`${s}/inline`]])
+    .map((usage) => (100 * part(usage)) / objectCost(usage));
+  if (!shares.length) return "–";
   return `${Math.round(Math.min(...shares))}% to ${Math.round(Math.max(...shares))}%`;
 };
+const rowsShare = (usage: ObjectUsage) => usage.rowsWritten * price.rowWritten;
+const durationShare = (usage: ObjectUsage) => usage.seconds * OBJECT_GB * price.objectGbSecond;
 // The size of an object's database grows a page at a time, so only the
 // workflows that store many pages over the pass give a figure.
 const stored = chosen
@@ -243,16 +310,19 @@ const stored = chosen
     const monthly = dollars((bytes / 1e9) * price.storedGbMonth * million);
     return `${size(bytes)} for "${workflowTitles[scenario]}" (${monthly} a month for a million of them)`;
   });
+const failureNote = failures.length
+  ? ` ${failures.length} run${failures.length > 1 ? "s" : ""} failed and ran again: ${[...new Set(failures)].join("; ")}.`
+  : "";
 const storedNote = stored.length ? `, and one execution added ${stored.join(", ")}` : "";
 
 const notes = [
-  `**The executions** – Each figure is the mean of ${repeats.start} executions, or of ${repeats.burst} bursts. The step functions do nothing here and make no call to the clock. A burst's figures are for one of its executions, and a parent's figures include its children.`,
-  `**Cloudflare Workflows** – An instance costs ${dollars(price.workflowRequest * million)} per million, a step ${dollars(price.workflowStep * million)} per million, and a millisecond of CPU time ${dollars(price.workflowCpuMs * million)} per million. A sleep and a wait for an event each count as a step. The counts come from Cloudflare's analytics for each instance.`,
+  `**The executions** – Each figure is the mean of 2 to ${repeats.start} runs of the workflow. A step function does nothing unless its row says that it waits, and a step that waits does so on a timer. A burst's figures are for one of its executions, and a parent's figures include its children.${failureNote}`,
+  `**Cloudflare Workflows** – An instance costs ${dollars(price.workflowRequest * million)} per million, a step ${dollars(price.workflowStep * million)} per million, and a millisecond of CPU time ${dollars(price.workflowCpuMs * million)} per million. A sleep and a wait for an event each count as a step. The step count of each instance comes from Cloudflare's API. The CPU time comes from Cloudflare's analytics, which sample their events, so it is an estimate. It is under 1% of every figure.`,
   `**Durable** – A request to an object costs ${dollars(price.objectRequest * million)} per million, a row written ${dollars(price.rowWritten * million)} per million, a row read ${dollars(price.rowRead * million)} per million, and a second of an object's duration ${secondCost} per million. The object counts them itself: its trigger requests, alarms, RPC calls, the rows that each SQL cursor reports, and the time it has a request, an alarm or a delivery in progress. A call to \`setAlarm\` or \`deleteAlarm\` counts as a row written.`,
-  `**Where Durable's cost comes from** – Rows written are ${share((u) => u.rowsWritten * price.rowWritten)} of each Durable figure. Cloudflare counts a row for each index that a write changes, as well as the row itself. Duration is ${share((u) => u.seconds * OBJECT_GB * price.objectGbSecond)} of each figure, and it is an estimate: it leaves out the time a response waits for storage to confirm a write.`,
+  `**Where Durable's cost comes from** – Where no step waits, rows written are ${share(false, rowsShare)} of a Durable figure and duration is ${share(false, durationShare)}. Where a step waits, duration is ${share(true, durationShare)}. Cloudflare counts a row for each index that a write changes, as well as the row itself. Duration is an estimate: it leaves out the time a response waits for storage to confirm a write.`,
   `**Deliveries in other instances** – By default each delivery is one more request, to the instance that runs it, and that instance is billed for the delivery's duration too. The instance sends each step result to the object over a stub it was given. These calls are not counted as requests, which is how Cloudflare's pricing page describes calls on a stub that a call returns.`,
   `**Not counted** – A request that reads an execution's status or waits for its result is one more request to the object, and the object is billed for the time a wait stays open. Reading the status of a Cloudflare Workflows instance is not billed.`,
-  `**Steps that take time** – Durable Objects bill duration while a step function runs, and Cloudflare Workflows bills only CPU time. A step that waits one second for another service adds ${secondCost} per million executions with deliveries in the object and ${dollars(2 * OBJECT_GB * price.objectGbSecond * million)} by default. On Cloudflare Workflows it adds nothing.`,
+  `**Steps that take time** – Durable Objects bill duration while a step function runs, and Cloudflare Workflows bills only CPU time. So each second that a step waits adds ${secondCost} per million executions with deliveries in the object, and ${dollars(2 * OBJECT_GB * price.objectGbSecond * million)} by default, where both the object and the instance that runs the delivery are billed. On Cloudflare Workflows it adds nothing. An object is billed once for any number of executions that wait at the same time, so the executions that wait at once share the object's second, and each instance that runs a delivery is still billed for its own.`,
   `**Storage** – Both cost ${dollars(price.storedGbMonth)} per GB-month, and it is not in the figures above. Cloudflare Workflows deletes an instance 7 days after it ends by default. Durable keeps an execution until it is deleted${storedNote}. Cloudflare's analytics do not give a usable size for a Workflows instance.`,
 ];
 

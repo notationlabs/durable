@@ -22,6 +22,20 @@ export const SCENARIOS = [
 ] as const;
 export type Scenario = (typeof SCENARIOS)[number];
 
+// Workflows whose step functions wait, as a call to another service does.
+// Only the cost pass runs them: how long a waiting step takes says nothing
+// about either system, and what it costs does. `burst` executions start at once.
+export const WAITS = {
+  wait: { steps: 1, ms: 1_000, burst: 1 },
+  longWait: { steps: 1, ms: 30_000, burst: 1 },
+  waits: { steps: 10, ms: 1_000, burst: 1 },
+  waitBurst: { steps: 1, ms: 1_000, burst: 100 },
+} as const;
+export type WaitScenario = keyof typeof WAITS;
+export const WAIT_SCENARIOS = Object.keys(WAITS) as WaitScenario[];
+export const COST_SCENARIOS = [...SCENARIOS, ...WAIT_SCENARIOS];
+export type CostScenario = Scenario | WaitScenario;
+
 export const SYSTEMS = ["native", "durable", "inline"] as const;
 export type SystemName = (typeof SYSTEMS)[number];
 
@@ -31,7 +45,7 @@ export const systemTitles: Record<SystemName, string> = {
   inline: "Durable, deliveries in the object",
 };
 
-export const workflowTitles: Record<Scenario, string> = {
+export const workflowTitles: Record<CostScenario, string> = {
   start: "One step",
   chain: `${sizes.chainSteps} steps in sequence`,
   payload: `${sizes.payloadSteps} steps that each return ${sizes.payloadBytes / 1000} KB`,
@@ -40,6 +54,10 @@ export const workflowTitles: Record<Scenario, string> = {
   signal: "A wait for a signal from outside",
   children: `A parent that runs ${sizes.children} one-step children`,
   burst: `${sizes.burst} three-step executions triggered at once`,
+  wait: `One step that waits ${WAITS.wait.ms / 1000} s`,
+  longWait: `One step that waits ${WAITS.longWait.ms / 1000} s`,
+  waits: `${WAITS.waits.steps} steps that each wait ${WAITS.waits.ms / 1000} s`,
+  waitBurst: `${WAITS.waitBurst.burst} executions at once of one step that waits ${WAITS.waitBurst.ms / 1000} s`,
 };
 
 /** The `Bench` object that drives a run, and the name of one measurement in it. */
