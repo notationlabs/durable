@@ -23,7 +23,7 @@ export function declaredImportsOnly(packageRoot: string): Plugin {
     name: "declared-imports-only",
     setup(build) {
       build.onResolve({ filter: /^[^./]/ }, (args) => {
-        if (args.path.startsWith("node:") || args.path.startsWith("bun:")) return undefined;
+        if (/^(node|bun|cloudflare):/.test(args.path)) return undefined;
         const name = packageName(args.path);
         if (builtins.has(name) || declared.has(name) || name.startsWith("@durable/")) return undefined;
         return {

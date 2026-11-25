@@ -16,6 +16,9 @@ export class StepResponsesDao {
     this.setupDb();
   }
 
+  // WITHOUT ROWID stores each record in the primary key's index, so a record
+  // is one row to write. A table that an earlier version created keeps its
+  // rowid and its second index, which repeats the primary key.
   setupDb() {
     this.db.run(`
       CREATE TABLE IF NOT EXISTS step_responses (
@@ -25,9 +28,7 @@ export class StepResponsesDao {
         step_done BOOL NOT NULL,
         step_response TEXT NOT NULL,
         PRIMARY KEY (execution_id, step_key, step_attempt)
-      );
-      CREATE INDEX IF NOT EXISTS idx_execution_step_attempt 
-      ON step_responses(execution_id, step_key, step_attempt DESC);
+      ) WITHOUT ROWID;
     `);
   }
 
@@ -55,6 +56,20 @@ export class StepResponsesDao {
     });
 
     return result;
+  }
+
+  /** The latest attempt of every step of an execution. */
+  getLatestStepResponses(executionId: string) {
+    return this.db
+      .query<StepReponseRow>(
+        `SELECT * FROM step_responses AS latest
+         WHERE execution_id = $executionId
+         AND step_attempt = (
+           SELECT MAX(step_attempt) FROM step_responses
+           WHERE execution_id = latest.execution_id AND step_key = latest.step_key
+         )`
+      )
+      .all({ $executionId: executionId });
   }
 
   getStepResponse(executionId: string, stepKey: string, stepAttempt: number) {

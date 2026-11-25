@@ -9,6 +9,7 @@
   },
   "type": "module",
   "dependencies": {
+    "@durable/cloudflare": "workspace:*",
     "@durable/core": "workspace:*",
     "@durable/http-server": "workspace:*",
     "@durable/runtime-conformance": "workspace:*",

@@ -8,18 +8,14 @@ import type {
 import {
   InfrastructureError,
   WorkerExitedError,
-  durableValueCodec,
+  decodeThrownValue,
+  decodeWorkflowRunOutcome,
   encodeExecutionEvent,
 } from "@durable/core";
 import { EventEmitter } from "node:events";
 import { fork } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import type {
-  SerializedOutcome,
-  WorkerDelivery,
-  WorkerMessage,
-  WorkerRequest,
-} from "./worker";
+import type { WorkerDelivery, WorkerMessage, WorkerRequest } from "./worker";
 
 /**
  * Runs each delivery in a forked worker process. `deliver` resolves with the
@@ -148,52 +144,18 @@ export function createWorkflowInvoker(params: {
             case "outcome": {
               const { outcome } = message;
               try {
-                settle({ outcome: deserializeOutcome(outcome) });
+                settle({ outcome: decodeWorkflowRunOutcome(outcome) });
               } catch (error) {
                 settle({ error: error as Error });
               }
               return;
             }
             case "error":
-              settle({ error: decodeWorkerError(message.error) });
+              settle({ error: decodeThrownValue(message.error) });
               return;
           }
         });
       });
     },
   };
-}
-
-function deserializeOutcome(outcome: SerializedOutcome): WorkflowRunOutcome {
-  switch (outcome.status) {
-    case "suspended":
-    case "cancelled":
-      return outcome;
-    case "completed":
-      return { status: "completed", result: decodeOrThrow(outcome.result) };
-    case "failed": {
-      const error = decodeOrThrow(outcome.error);
-      return {
-        status: "failed",
-        error: error instanceof Error ? error : new Error(String(error)),
-      };
-    }
-  }
-}
-
-function decodeWorkerError(encoded: string): Error {
-  const decoding = durableValueCodec.decode(encoded);
-  if (decoding.status === "invalid") {
-    return new Error(`Worker sent an invalid error: ${decoding.message}`);
-  }
-  const error = decoding.value;
-  return error instanceof Error ? error : new Error(String(error));
-}
-
-function decodeOrThrow(encoded: string) {
-  const decoding = durableValueCodec.decode(encoded);
-  if (decoding.status === "invalid") {
-    throw new Error(`Worker sent an invalid outcome: ${decoding.message}`);
-  }
-  return decoding.value;
 }

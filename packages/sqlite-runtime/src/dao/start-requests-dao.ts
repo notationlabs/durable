@@ -33,7 +33,7 @@ export class StartRequestsDao {
         params TEXT,
         execution_id TEXT NOT NULL,
         PRIMARY KEY (caller_execution_id, step_key)
-      );
+      ) WITHOUT ROWID;
     `);
     this.setupDetached();
   }

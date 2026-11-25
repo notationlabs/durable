@@ -24,7 +24,7 @@ export class EffectWaitersDao {
         execution_id TEXT NOT NULL,
         step_key TEXT NOT NULL,
         PRIMARY KEY (effect_id, execution_id, step_key)
-      );
+      ) WITHOUT ROWID;
       CREATE INDEX IF NOT EXISTS idx_effect_waiters_step
       ON effect_waiters(execution_id, step_key);
     `);

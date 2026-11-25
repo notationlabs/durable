@@ -22,6 +22,7 @@ import {
   defineStore,
   workflow,
 } from "@durable/sdk";
+import { ISOLATED_DELIVERIES } from "./isolated-test-invoker";
 
 const logger = { info() {}, error() {}, warn() {} } as unknown as Logger;
 
@@ -192,7 +193,9 @@ test("delay and retry wake times read the runtime clock", async () => {
 
 // Outcomes
 
-test("a runtime call failing inside try/catch does not run the catch and is not acknowledged", async () => {
+// A delivery in another instance calls the store client's compare-and-swap
+// methods, so the `updateStore` this test makes fail is never called.
+test.skipIf(ISOLATED_DELIVERIES)("a runtime call failing inside try/catch does not run the catch and is not acknowledged", async () => {
   const Counter = defineStore("delivery-counter", testSchema<{ n: number }>(), {
     initial: () => ({ n: 0 }),
   });

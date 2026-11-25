@@ -22,9 +22,29 @@ jobs:
       - run: pnpm exec pok build
       - run: pnpm exec pok typecheck
       - run: pnpm exec pok test bun
+      # The same suites, with every delivery sent through the remote runtime
+      # that a Cloudflare object uses to run it in another instance.
+      - run: pnpm exec pok test isolated
       # Node cannot resolve the extensionless imports in the private packages'
       # source. tsx loads it, in the suite and in the processes the suite starts.
       - run: node ./node_modules/vitest/vitest.mjs run
         env:
           NODE_OPTIONS: --import tsx
       - run: pnpm exec pok test conformance
+
+  workerd:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 26
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile --filter '!@notation/durable-docs'
+      # Outside the pnpm workspace. It adds workerd and the Vitest plugin; the
+      # suites import the private packages' source, so nothing is built.
+      - run: npm install
+        working-directory: test/cloudflare-e2e
+      - run: node ./node_modules/vitest/vitest.mjs run --root test/cloudflare-e2e/conformance
+      - run: node ./node_modules/vitest/vitest.mjs run --root test/cloudflare-e2e/host

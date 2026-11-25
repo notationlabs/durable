@@ -45,7 +45,7 @@ export type WorkerDelivery = {
 
 Inside the child process, `createWorkflowWorker` decodes incoming parameters and context via `decodeExecutionEvent`, stores the context map for `getContext()`, and calls `WorkflowRunner.run` directly against its own backing runtime. The worker supplies an idle local `AbortController` because lease loss kills the child process directly.
 
-`serializeOutcome` prepares `WorkflowRunOutcome` for IPC return:
+`encodeWorkflowRunOutcome` prepares `WorkflowRunOutcome` for IPC return:
 
 - **`"suspended"` and `"cancelled"`** – Forwarded directly inside `SerializedOutcome` without re-encoding.
 - **`"completed"`** – Encodes the return value via `durableValueCodec`, or turns non-durable outputs into a failure carrying `WorkflowValueError` (`INVALID_STEP_VALUE`).

@@ -15,6 +15,7 @@ export default defineConfig({
     sqlite: source("sqlite-runtime/src/index.ts"),
     "sqlite-bun": source("sqlite-runtime/src/bun.ts"),
     "sqlite-node": source("sqlite-runtime/src/node.ts"),
+    cloudflare: source("cloudflare/src/index.ts"),
     testing: source("test-utils/src/testing.ts"),
   },
   format: "esm",
@@ -23,7 +24,8 @@ export default defineConfig({
   dts: true,
   splitting: true,
   clean: true,
-  external: ["bun:sqlite"],
+  // workerd provides cloudflare:workers, and only the cloudflare entry imports it.
+  external: ["bun:sqlite", "cloudflare:workers"],
   // node:sqlite has no unprefixed form, so the prefix must survive the build.
   removeNodeProtocol: false,
   esbuildPlugins: [declaredImportsOnly(here)],

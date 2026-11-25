@@ -83,6 +83,8 @@ export type SqliteExecutionClientOptions = {
 
 export class SqliteExecutionClient implements ExecutionClient {
   constructor(db: SqliteDriver, options?: SqliteExecutionClientOptions);
+  // The earliest time claimDue could return an execution, or null.
+  nextClaimAt(): number | null;
 }
 
 export class SqliteEffectClient implements EffectClient {
@@ -95,6 +97,8 @@ export class SqliteEffectClient implements EffectClient {
 
 export class SqliteHeapClient implements HeapClient {
   constructor(db: SqliteDriver, options?: { clock?: () => number });
+  // The record readStep returns for every step of the execution that has one, by step key.
+  readSteps(executionId: string): Map<string, HeapRecord>;
 }
 
 export class SqliteJoinClient implements JoinClient {
@@ -143,9 +147,12 @@ export interface SqliteStatement<Row> {
 export interface SqliteDriver {
   run(sql: string): void;
   query<Row>(sql: string): SqliteStatement<Row>;
+  transaction?<R>(fn: () => R): R;
   close(): void;
 }
 ```
+
+`transaction` is optional. A driver without it gets `BEGIN IMMEDIATE`, `COMMIT` and `ROLLBACK` through `run`. Some databases reject these statements, so their drivers must implement `transaction`. It commits when `fn` returns and rolls back when `fn` throws. The [Durable Object driver](./cloudflare.md) is one such driver.
 
 `@notation/durable/sqlite/bun` and `@notation/durable/sqlite/node` also export their concrete driver classes:
 
@@ -169,6 +176,6 @@ export class NodeSqliteDriver implements SqliteDriver {
 
 Custom drivers must satisfy three requirements:
 
-- **Synchronous execution** – All methods on `SqliteDriver` and `SqliteStatement` must execute synchronously so nothing awaits between `BEGIN IMMEDIATE` and `COMMIT`.
+- **Synchronous execution** – All methods on `SqliteDriver` and `SqliteStatement` must execute synchronously so nothing awaits between `BEGIN IMMEDIATE` and `COMMIT`, or inside `transaction`.
 - **Exact named parameters** – Queries bind `$`-prefixed named keys matching the SQL statement exactly, because native drivers vary on whether unused keys are ignored or throw.
 - **Undefined for missing rows** – `SqliteStatement.get` must return `undefined` rather than `null` when no row matches.

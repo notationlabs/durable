@@ -65,6 +65,7 @@ export async function cancelExport(sessionToken: string, executionId: string) {
 | :--- | :--- |
 | `url` | Base URL of the Durable routes including any server `basePath` |
 | `fetchOptions` | `RequestInit` options forwarded to every `fetch` request |
+| `fetch` | Sends each request in place of the global `fetch`, such as a function that calls a [Durable Object stub](./cloudflare.md) |
 
 `fetchOptions` accepts any `RequestInit` property except method and body, and applies to every request the SDK sends. Calling the SDK factory function performs no network requests.
 

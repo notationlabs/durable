@@ -626,6 +626,7 @@ export class ExecutionDispatcher {
   stop(): Promise<void>;
   tick(): Promise<number>;
   drain(): Promise<void>;
+  settled(): Promise<void>;
 }
 ```
 
@@ -1121,11 +1122,23 @@ export const durableValueCodec: DurableValueCodec;
 
 export function decodeParsedValue(parsed: unknown, path?: string): DurableValue;
 export function encodeThrownValue(value: unknown): string;
+export function decodeThrownValue(encoded: string): Error;
+
+export type EncodedWorkflowRunOutcome =
+  | { status: "suspended"; wakeAt?: number }
+  | { status: "cancelled" }
+  | { status: "completed"; result: string }
+  | { status: "failed"; error: string };
+
+export function encodeWorkflowRunOutcome(outcome: WorkflowRunOutcome): EncodedWorkflowRunOutcome;
+export function decodeWorkflowRunOutcome(outcome: EncodedWorkflowRunOutcome): WorkflowRunOutcome;
 
 export class DurableValueError extends Error {}
 ```
 
-The runtime subpath also exports `Durable<T>` and `IfDurable<T, Otherwise>`. `encodeThrownValue` serializes durable thrown values directly or coerces non-durable throws into plain `Error` instances.
+The runtime subpath also exports `Durable<T>` and `IfDurable<T, Otherwise>`. `encodeThrownValue` serializes durable thrown values directly or coerces non-durable throws into plain `Error` instances, and `decodeThrownValue` reads one back as an `Error`.
+
+An invoker that runs deliveries in another process or isolate passes each outcome across with `encodeWorkflowRunOutcome` and `decodeWorkflowRunOutcome`. A completed result that is not a durable value encodes as a `failed` outcome with a `WorkflowValueError`, as acknowledgement would record it. `decodeWorkflowRunOutcome` throws when an encoding is invalid.
 
 ## Errors
 

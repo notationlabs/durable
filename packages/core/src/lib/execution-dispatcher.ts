@@ -200,6 +200,14 @@ export class ExecutionDispatcher {
     }
   }
 
+  /**
+   * Waits for one in-flight delivery to settle and for its outcome to be
+   * acknowledged. Resolves at once when no delivery is in flight.
+   */
+  async settled() {
+    if (this.inFlight.size > 0) await Promise.race([...this.inFlight]);
+  }
+
   private schedule(delay: number) {
     if (this.timer) clearTimeout(this.timer);
     this.timer = setTimeout(() => {

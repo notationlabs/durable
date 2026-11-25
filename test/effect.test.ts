@@ -19,6 +19,7 @@ import {
   type EffectDescriptor,
   type EffectLookup,
 } from "@durable/sdk";
+import { ISOLATED_DELIVERIES } from "./isolated-test-invoker";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -315,7 +316,9 @@ describe("workflow driver", () => {
     expect(provider.perform).toHaveBeenCalledTimes(1);
   });
 
-  test("an interruption after lookup returns not-found looks up again before performing", async () => {
+  // The signal of a delivery in another instance never aborts: the object
+  // aborts the instance, which this test cannot do to a step in its own process.
+  test.skipIf(ISOLATED_DELIVERIES)("an interruption after lookup returns not-found looks up again before performing", async () => {
     const { deliver, log, provider, beginElsewhere } = setup();
     await beginElsewhere();
     const controller = new AbortController();
