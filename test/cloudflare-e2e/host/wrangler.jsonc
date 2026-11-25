@@ -7,8 +7,14 @@
     "bindings": [
       { "name": "WORKFLOWS", "class_name": "Workflows" },
       { "name": "SHORT_LEASE", "class_name": "ShortLeaseWorkflows" },
-      { "name": "ISOLATED", "class_name": "IsolatedWorkflows" }
+      { "name": "ISOLATED", "class_name": "IsolatedWorkflows" },
+      { "name": "COUNTED", "class_name": "CountedWorkflows" }
     ]
   },
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Workflows", "ShortLeaseWorkflows", "IsolatedWorkflows"] }]
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["Workflows", "ShortLeaseWorkflows", "IsolatedWorkflows", "CountedWorkflows"]
+    }
+  ]
 }

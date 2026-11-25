@@ -71,7 +71,18 @@ const hold = createWorkflow(async function* (step, event: { params: { key: strin
   });
 });
 
-export const router = { double, delayed, slow, child, parent, stuckOnce, hold };
+const steps = createWorkflow(async function* (step, event: { params: { steps: number } }) {
+  for (let i = 0; i < event.params.steps; i++) yield* step.run(`step-${i}`, () => i);
+});
+
+const delays = createWorkflow(async function* (step, event: { params: { delays: number } }) {
+  for (let i = 0; i < event.params.delays; i++) {
+    yield* step.run(`step-${i}`, () => i);
+    yield* step.delay(`delay-${i}`, 200);
+  }
+});
+
+export const router = { double, delayed, slow, child, parent, stuckOnce, hold, steps, delays };
 export type Router = typeof router;
 
 export const CONCURRENCY = 2;
@@ -100,6 +111,52 @@ export class Workflows {
   async alarm() {
     this.alarms++;
     await this.durable.alarm();
+  }
+}
+
+// What Cloudflare bills as rows written: the rows and index entries that each
+// SQL statement writes, and one for each alarm write.
+export const written = { rows: 0, alarmWrites: 0 };
+
+type Cursor = { toArray(): unknown[]; rowsWritten: number };
+
+// Counts what the runtime writes. The driver reads every cursor to its end
+// with `toArray`, and the cursor's count is final after that.
+function counted(ctx: DurableObjectStateLike): DurableObjectStateLike {
+  const { storage } = ctx;
+  return {
+    waitUntil: (promise) => ctx.waitUntil(promise),
+    storage: {
+      sql: {
+        exec(query, ...bindings) {
+          const cursor = storage.sql.exec(query, ...bindings) as Cursor;
+          return {
+            toArray() {
+              const rows = cursor.toArray();
+              written.rows += cursor.rowsWritten;
+              return rows;
+            },
+          };
+        },
+      },
+      transactionSync: (closure) => storage.transactionSync(closure),
+      getAlarm: () => storage.getAlarm(),
+      setAlarm(at) {
+        written.alarmWrites++;
+        return storage.setAlarm(at);
+      },
+      deleteAlarm() {
+        written.alarmWrites++;
+        return storage.deleteAlarm();
+      },
+      sync: () => storage.sync?.() ?? Promise.resolve(),
+    },
+  };
+}
+
+export class CountedWorkflows extends Workflows {
+  constructor(ctx: DurableObjectStateLike, env?: unknown) {
+    super(counted(ctx), env);
   }
 }
 

@@ -31,28 +31,65 @@ function createObject(binding: "WORKFLOWS" | "SHORT_LEASE" = "WORKFLOWS") {
       claimAt: instance.durable.runtime.executions.nextClaimAt(),
       alarms: instance.alarms,
     }));
-  return { stub, sdk, inObject, inspect };
+  // The alarm that covers a lease is this far ahead of the claim.
+  const lease = (binding === "WORKFLOWS" ? 30_000 : SHORT_LEASE) + 1_000;
+  // Whether nothing is left to claim and no alarm is set further ahead than a
+  // lease. The object leaves a nearer alarm to fire, and deletes any other.
+  const settled = async () => {
+    const { alarm, claimAt } = await inspect();
+    return claimAt === null && (alarm === null || alarm <= Date.now() + lease);
+  };
+  return { stub, sdk, inObject, inspect, settled };
 }
 
-test("a trigger over the object's routes runs the workflow and deletes the alarm", async () => {
-  const { sdk, inspect } = createObject();
+test("a trigger over the object's routes runs the workflow, and the alarm it leaves fires and sets no other", async () => {
+  const { sdk, inspect } = createObject("SHORT_LEASE");
 
   const execution = await sdk.trigger({ workflowId: "double", params: { n: 20 } });
   expect(await execution.waitForResult()).toBe(41);
-  await expect.poll(inspect).toMatchObject({ alarm: null, claimAt: null });
+  const after = await inspect();
+  expect(after).toMatchObject({ claimAt: null, alarms: 0 });
+  expect(after.alarm).toBeLessThanOrEqual(Date.now() + SHORT_LEASE + 1_000);
+
+  await expect.poll(inspect, { timeout: 5_000 }).toMatchObject({ alarm: null, alarms: 1 });
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  expect(await inspect()).toMatchObject({ alarm: null, claimAt: null, alarms: 1 });
+});
+
+test("executions that finish within a lease of the first write the alarm once", async () => {
+  const { sdk, inObject, inspect } = createObject();
+
+  const first = await sdk.trigger({ workflowId: "double", params: { n: 1 } });
+  expect(await first.waitForResult()).toBe(3);
+  const { alarm } = await inspect();
+  expect(alarm).toBeGreaterThan(Date.now() + 25_000);
+
+  const writes = await inObject((_instance, state) => {
+    const counts = { set: 0, deleted: 0 };
+    const { storage } = state;
+    const setAlarm = storage.setAlarm.bind(storage);
+    const deleteAlarm = storage.deleteAlarm.bind(storage);
+    storage.setAlarm = (at) => (counts.set++, setAlarm(at));
+    storage.deleteAlarm = () => (counts.deleted++, deleteAlarm());
+    return counts;
+  });
+  const second = await sdk.trigger({ workflowId: "double", params: { n: 2 } });
+  expect(await second.waitForResult()).toBe(5);
+  expect(await inspect()).toMatchObject({ alarm, claimAt: null, alarms: 0 });
+  expect(writes).toEqual({ set: 0, deleted: 0 });
 });
 
 test("a delay ends the pump, and the alarm resumes the workflow", async () => {
-  const { sdk, inspect } = createObject();
+  const { sdk, inspect, settled } = createObject();
 
   const execution = await sdk.trigger({ workflowId: "delayed", params: { ms: 300 } });
   expect(await execution.waitForResult()).toBeGreaterThanOrEqual(295);
   expect((await inspect()).alarms).toBeGreaterThanOrEqual(1);
-  await expect.poll(inspect).toMatchObject({ alarm: null, claimAt: null });
+  await expect.poll(settled).toBe(true);
 });
 
 test("the alarm is set to the end of a delay that follows the first delivery", async () => {
-  const { sdk, inspect } = createObject();
+  const { sdk, inspect, settled } = createObject();
 
   const { executionId } = await sdk.trigger({ workflowId: "delayed", params: { ms: 5_000 } });
   await expect.poll(async () => (await sdk.poll(executionId))?.status).toBe("suspended");
@@ -64,7 +101,7 @@ test("the alarm is set to the end of a delay that follows the first delivery", a
 
   await sdk.cancel(executionId);
   await expect.poll(async () => (await sdk.poll(executionId))?.status).toBe("cancelled");
-  await expect.poll(inspect).toMatchObject({ alarm: null, claimAt: null });
+  await expect.poll(settled).toBe(true);
 });
 
 test("a write through the local SDK wakes the object", async () => {
@@ -92,15 +129,15 @@ test("more executions than slots all run", async () => {
 });
 
 test("a parent joins a child started in the same object", async () => {
-  const { sdk, inspect } = createObject();
+  const { sdk, settled } = createObject();
 
   const execution = await sdk.trigger({ workflowId: "parent" });
   expect(await execution.waitForResult()).toBe(21);
-  await expect.poll(inspect).toMatchObject({ alarm: null, claimAt: null });
+  await expect.poll(settled).toBe(true);
 });
 
 test("after an eviction with a lease held, the alarm delivers the execution again", async () => {
-  const { stub, sdk, inObject, inspect } = createObject();
+  const { stub, sdk, inObject, inspect, settled } = createObject();
 
   // A second runtime over the same storage claims the execution, so the
   // object's own host sees no commit and starts no delivery. The storage is
@@ -125,11 +162,11 @@ test("after an eviction with a lease held, the alarm delivers the execution agai
     result: 9,
   });
   expect((await inspect()).alarms).toBeGreaterThanOrEqual(1);
-  await expect.poll(inspect).toMatchObject({ alarm: null, claimAt: null });
+  await expect.poll(settled).toBe(true);
 });
 
 test("after an eviction during a delivery, the alarm delivers the execution again", async () => {
-  const { stub, sdk, inspect } = createObject("SHORT_LEASE");
+  const { stub, sdk, inspect, settled } = createObject("SHORT_LEASE");
   const key = crypto.randomUUID();
 
   const { executionId } = await sdk.trigger({ workflowId: "stuckOnce", params: { key } });
@@ -149,5 +186,5 @@ test("after an eviction during a delivery, the alarm delivers the execution agai
     result: 2,
   });
   expect((await inspect()).alarms).toBeGreaterThanOrEqual(1);
-  await expect.poll(inspect).toMatchObject({ alarm: null, claimAt: null });
+  await expect.poll(settled).toBe(true);
 }, 20_000);
