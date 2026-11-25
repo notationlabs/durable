@@ -1,0 +1,20 @@
+{
+  "name": "durable-bench",
+  "main": "worker.ts",
+  "compatibility_date": "2026-10-15",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "durable_objects": {
+    "bindings": [
+      { "name": "WORKFLOWS", "class_name": "Workflows" },
+      { "name": "INLINE", "class_name": "InlineWorkflows" },
+      { "name": "BENCH", "class_name": "Bench" }
+    ]
+  },
+  "workflows": [
+    { "name": "durable-bench-native", "binding": "NATIVE", "class_name": "NativeWorkflow" }
+  ],
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["Workflows", "InlineWorkflows", "Bench"] }
+  ]
+}

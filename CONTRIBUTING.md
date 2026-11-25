@@ -134,6 +134,36 @@ A step function may run in another instance than the object that admitted its ex
 
 `evict-many` runs `evict` on ten objects with delays from 5 to 60 minutes (`E2E_EVICT_DELAYS_MS`). A run fails unless a different instance ran the step after the delay, so it does not pass on local workerd, which keeps the object in memory. `deploy` needs a `wrangler deploy` with a changed `padding.ts` about 20 seconds after it starts. Each `run.ts` process uses a new object unless `E2E_OBJECT` names one, so scenarios can run at the same time in separate processes.
 
+`test/cloudflare-e2e/bench` compares Notation Durable with Cloudflare Workflows. Its Worker holds the same workflows written for both (`durable.ts` and `native.ts`), and `run.ts` prints the medians and 90th percentiles as Markdown tables. Deploy it with a secret, run it, and delete the Worker and its workflow afterwards. A full run takes about 15 minutes:
+
+```sh
+cd test/cloudflare-e2e
+export BENCH_SECRET=$(openssl rand -hex 16)
+pnpm exec wrangler deploy -c bench/wrangler.jsonc --var BENCH_SECRET:$BENCH_SECRET
+export BENCH_URL=https://durable-bench.<subdomain>.workers.dev
+
+node --import tsx bench/run.ts > results.md   # every scenario
+node --import tsx bench/run.ts chain burst    # some scenarios; BENCH_REPEAT=2 doubles the measurements, BENCH_OBJECTS sets how many sets of objects share them
+
+pnpm exec wrangler delete -c bench/wrangler.jsonc
+pnpm exec wrangler workflows delete durable-bench-native
+```
+
+The scenarios and what each measures:
+
+| Scenario | Workflow | Measured |
+| :--- | :--- | :--- |
+| `start` | One step | The trigger call, the time until the step function starts, and the time until a caller in a Worker holds the result |
+| `chain` | 100 steps in sequence | The time per step |
+| `payload` | 20 steps that each return 100 KB | The time per step |
+| `sleep` | 5 sleeps of 1 s | The time beyond 1 s until the next step starts |
+| `fanout` | 20 concurrent steps that each wait 100 ms | The time beyond 100 ms until the next step starts |
+| `signal` | A wait for a signal from outside | The time from the signal to the next step starting |
+| `children` | A parent that runs 5 children | The time from starting the children to joining their results |
+| `burst` | 100 three-step executions triggered at once | The trigger calls, and the time until the median and the last execution finish |
+
+The `Bench` Durable Object drives each measurement and is its clock. A step function reports that it started by calling `mark` on that object, which records its own `Date.now()`, and the driver reads its times in the same object. So no figure compares the clocks of two machines, and none depends on the Worker's clock advancing during CPU work. A call to the clock takes 10 to 20 ms, which is as long as some of the measured times. So `mark` calls twice in a row, the time between the two arrivals gives the round trip, and the driver takes half of it off each figure that starts or ends at a step. The three systems take turns within each scenario, and the first execution of each workflow is not measured.
+
 Two more suites run inside workerd with `@cloudflare/vitest-plugin`, on real Durable Object storage and alarms. They need no Cloudflare account and no build, and CI runs them in the `workerd` job. `test/cloudflare-e2e/conformance` runs the runtime conformance suites. `test/cloudflare-e2e/host` runs the workflow object's scenarios; its alarms are the ones workerd fires. Local workerd puts every instance of a class in one isolate and has no CPU limit, so the suite covers the calls between an object and the instances that run its deliveries, and the deployed scenarios cover the isolation. `test/cloudflare-e2e` is outside the pnpm workspace, so install it with npm first:
 
 ```sh
