@@ -1,8 +1,8 @@
 # Cloudflare Workflows and Notation Durable on a deployed Worker
 
-Measured on 2026-11-25. Every figure is a time, and a lower one is better.
+Measured on 2026-11-25. In every table a lower figure is better.
 
-## Median
+## Time: median
 
 | Workflow | Measured | Cloudflare Workflows | Durable | Durable, deliveries in the object |
 | :--- | :--- | ---: | ---: | ---: |
@@ -19,7 +19,7 @@ Measured on 2026-11-25. Every figure is a time, and a lower one is better.
 |  | Trigger to the median execution's last step | 1.23 s | 652 ms | 529 ms |
 |  | Trigger to the last execution's last step | 3.93 s | 1.10 s | 879 ms |
 
-## 90th percentile
+## Time: 90th percentile
 
 | Workflow | Measured | Cloudflare Workflows | Durable | Durable, deliveries in the object |
 | :--- | :--- | ---: | ---: | ---: |
@@ -36,7 +36,7 @@ Measured on 2026-11-25. Every figure is a time, and a lower one is better.
 |  | Trigger to the median execution's last step | 3.01 s | 834 ms | 814 ms |
 |  | Trigger to the last execution's last step | 5.07 s | 1.52 s | 1.16 s |
 
-## How to read it
+## How to read the times
 
 - **The systems** – All three run in one Worker. "Durable" is `WorkflowObject` with its defaults, which runs each delivery in another instance of the class. "Durable, deliveries in the object" sets `isolateDeliveries: false`.
 - **The objects** – One Durable object holds every execution it is given. The measurements are spread evenly over 3 such objects for each Durable column, because the time of a call between two objects depends on where Cloudflare runs them.
@@ -45,3 +45,68 @@ Measured on 2026-11-25. Every figure is a time, and a lower one is better.
 - **The caller holding the result** – The Durable caller uses `sdk.wait`. The Cloudflare Workflows caller reads `instance.status()` every 10 ms.
 - **The burst** – Cloudflare Workflows runs each instance on its own. One Durable object runs 10 deliveries at once by default (`concurrency`).
 - **Measurements for each figure** – One step: 21; 100 steps in sequence: 12; 20 steps that each return 100 KB: 12; 5 sleeps of 1 s: 30; 20 concurrent steps that each wait 100 ms: 15; A wait for a signal from outside: 15; A parent that runs 5 one-step children: 15; 100 three-step executions triggered at once: 9. One execution of each workflow ran unmeasured first in each object.
+
+## Cost
+
+US dollars for one million executions, measured on 2026-11-25. The prices are those beyond the monthly allowances of the Workers Paid plan. Storage is not in these figures.
+
+| Workflow | Cloudflare Workflows | Durable | Durable, deliveries in the object |
+| :--- | ---: | ---: | ---: |
+| One step | $8.31 | $21.6 | $21.3 |
+| 100 steps in sequence | $817 | $328 | $324 |
+| 20 steps that each return 100 KB | $177 | $85.8 | $84.3 |
+| 5 sleeps of 1 s | $88.4 | $119 | $117 |
+| 20 concurrent steps that each wait 100 ms | $176 | $88.2 | $87.5 |
+| A wait for a signal from outside | $16.3 | $50.3 | $49.5 |
+| A parent that runs 5 one-step children | $178 | $238 | $213 |
+| 100 three-step executions triggered at once | $24.3 | $24.8 | $24.5 |
+
+### What Cloudflare bills for one execution on Cloudflare Workflows
+
+| Workflow | Instances | Steps | CPU time |
+| :--- | ---: | ---: | ---: |
+| One step | 1 | 1 | 0.6 ms |
+| 100 steps in sequence | 1 | 102 | 23 ms |
+| 20 steps that each return 100 KB | 1 | 22 | 13 ms |
+| 5 sleeps of 1 s | 1 | 11 | 3.2 ms |
+| 20 concurrent steps that each wait 100 ms | 1 | 22 | 4.8 ms |
+| A wait for a signal from outside | 1 | 2 | 0.4 ms |
+| A parent that runs 5 one-step children | 6 | 22 | 11 ms |
+| 100 three-step executions triggered at once | 1 | 3 | 1.2 ms |
+
+### What Cloudflare bills for one execution on Durable
+
+| Workflow | Requests | Rows written | Rows read | Duration |
+| :--- | ---: | ---: | ---: | ---: |
+| One step | 2 | 21 | 32 | 186 ms |
+| 100 steps in sequence | 2 | 324 | 277 | 2.31 s |
+| 20 steps that each return 100 KB | 2 | 84 | 88 | 862 ms |
+| 5 sleeps of 1 s | 12 | 116 | 480 | 595 ms |
+| 20 concurrent steps that each wait 100 ms | 2 | 87 | 83 | 509 ms |
+| A wait for a signal from outside | 4 | 49 | 76 | 391 ms |
+| A parent that runs 5 one-step children | 9 | 235 | 346 | 897 ms |
+| 100 three-step executions triggered at once | 2 | 24 | 119 | 97 ms |
+
+### What Cloudflare bills for one execution on Durable, with deliveries in the object
+
+| Workflow | Requests | Rows written | Rows read | Duration |
+| :--- | ---: | ---: | ---: | ---: |
+| One step | 1 | 21 | 31 | 55 ms |
+| 100 steps in sequence | 1 | 324 | 233 | 59 ms |
+| 20 steps that each return 100 KB | 1 | 84 | 73 | 65 ms |
+| 5 sleeps of 1 s | 6 | 116 | 418 | 73 ms |
+| 20 concurrent steps that each wait 100 ms | 1 | 87 | 79 | 179 ms |
+| A wait for a signal from outside | 2 | 49 | 72 | 91 ms |
+| A parent that runs 5 one-step children | 1 | 213 | 254 | 45 ms |
+| 100 three-step executions triggered at once | 1 | 24 | 104 | 3 ms |
+
+### How to read it
+
+- **The executions** – Each figure is the mean of 5 executions, or of 2 bursts. The step functions do nothing here and make no call to the clock. A burst's figures are for one of its executions, and a parent's figures include its children.
+- **Cloudflare Workflows** – An instance costs $0.30 per million, a step $8.00 per million, and a millisecond of CPU time $0.02 per million. A sleep and a wait for an event each count as a step. The counts come from Cloudflare's analytics for each instance.
+- **Durable** – A request to an object costs $0.15 per million, a row written $1.00 per million, a row read $0.001 per million, and a second of an object's duration $1.60 per million. The object counts them itself: its trigger requests, alarms, RPC calls, the rows that each SQL cursor reports, and the time it has a request, an alarm or a delivery in progress. A call to `setAlarm` or `deleteAlarm` counts as a row written.
+- **Where Durable's cost comes from** – Rows written are 97% to 100% of each Durable figure. Cloudflare counts a row for each index that a write changes, as well as the row itself. Duration is 0% to 2% of each figure, and it is an estimate: it leaves out the time a response waits for storage to confirm a write.
+- **Deliveries in other instances** – By default each delivery is one more request, to the instance that runs it, and that instance is billed for the delivery's duration too. The instance sends each step result to the object over a stub it was given. These calls are not counted as requests, which is how Cloudflare's pricing page describes calls on a stub that a call returns.
+- **Not counted** – A request that reads an execution's status or waits for its result is one more request to the object, and the object is billed for the time a wait stays open. Reading the status of a Cloudflare Workflows instance is not billed.
+- **Steps that take time** – Durable Objects bill duration while a step function runs, and Cloudflare Workflows bills only CPU time. A step that waits one second for another service adds $1.60 per million executions with deliveries in the object and $3.20 by default. On Cloudflare Workflows it adds nothing.
+- **Storage** – Both cost $0.20 per GB-month, and it is not in the figures above. Cloudflare Workflows deletes an instance 7 days after it ends by default. Durable keeps an execution until it is deleted, and one execution added 22.9 KB for "100 steps in sequence" ($4.59 a month for a million of them), 2.0 MB for "20 steps that each return 100 KB" ($402 a month for a million of them), 1.2 KB for "100 three-step executions triggered at once" ($0.25 a month for a million of them). Cloudflare's analytics do not give a usable size for a Workflows instance.

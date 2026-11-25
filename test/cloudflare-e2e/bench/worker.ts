@@ -13,6 +13,7 @@ import {
   type Run,
   type Scenario,
   type SystemName,
+  type Usage,
 } from "./shared";
 
 export { NativeWorkflow };
@@ -20,6 +21,7 @@ export { NativeWorkflow };
 type WorkflowsStub = {
   fetch(input: string, init?: RequestInit): Promise<Response>;
   openGate(id: string): Promise<void>;
+  usage(): Promise<Usage>;
 };
 type BenchStub = { fetch(request: Request): Promise<Response> };
 type Env = {
@@ -30,12 +32,164 @@ type Env = {
   BENCH_SECRET?: string;
 };
 
+type Storage = {
+  sql: {
+    exec(
+      query: string,
+      ...bindings: unknown[]
+    ): { toArray(): unknown[]; rowsRead: number; rowsWritten: number };
+    databaseSize: number;
+  };
+  transactionSync<R>(closure: () => R): R;
+  getAlarm(): Promise<number | null>;
+  setAlarm(at: number | Date): Promise<void>;
+  deleteAlarm(): Promise<void>;
+  sync(): Promise<void>;
+};
+type State = {
+  storage: Storage;
+  waitUntil(promise: Promise<unknown>): void;
+  abort(reason?: string): void;
+  id: { toString(): string };
+  exports?: object;
+};
+
+// A `ctx` that counts the rows and the alarm writes of the runtime. The
+// driver reads every cursor to its end with `toArray`, and the cursor's
+// counts are final after that.
+function counted(ctx: State, usage: Usage) {
+  const { storage } = ctx;
+  return {
+    id: ctx.id,
+    exports: ctx.exports,
+    abort: (reason?: string) => ctx.abort(reason),
+    waitUntil: (promise: Promise<unknown>) => ctx.waitUntil(promise),
+    storage: {
+      sql: {
+        exec(query: string, ...bindings: unknown[]) {
+          const cursor = storage.sql.exec(query, ...bindings);
+          return {
+            toArray() {
+              const rows = cursor.toArray();
+              usage.rowsRead += cursor.rowsRead;
+              usage.rowsWritten += cursor.rowsWritten;
+              return rows;
+            },
+          };
+        },
+      },
+      transactionSync: <R>(closure: () => R) => storage.transactionSync(closure),
+      getAlarm: () => storage.getAlarm(),
+      setAlarm(at: number | Date) {
+        usage.alarmWrites++;
+        return storage.setAlarm(at);
+      },
+      deleteAlarm() {
+        usage.alarmWrites++;
+        return storage.deleteAlarm();
+      },
+      sync: () => storage.sync(),
+    },
+  };
+}
+
+// The class under test, with counters for what Cloudflare bills. The counters
+// add no call and no write of their own.
 function createClass(isolateDeliveries: boolean) {
   return class extends WorkflowObject({ router, basePath: "/durable", isolateDeliveries }) {
+    private storage: Storage;
+    private counts: Usage = {
+      instance: crypto.randomUUID(),
+      trigger: 0,
+      observe: 0,
+      alarm: 0,
+      rpc: 0,
+      deliveries: 0,
+      deliveryMs: 0,
+      activeMs: 0,
+      rowsRead: 0,
+      rowsWritten: 0,
+      alarmWrites: 0,
+      storedBytes: 0,
+    };
+    private inProgress = 0;
+    private activeSince = 0;
+    private hooked = false;
+
+    constructor(ctx: State, env: unknown) {
+      super(ctx, env);
+      this.storage = ctx.storage;
+      this.ctx = counted(ctx, this.counts);
+    }
+
+    // Counts a request, an alarm or a delivery as in progress until the
+    // returned function is called. Cloudflare bills an object's duration once
+    // for any number of them at the same time.
+    private begin() {
+      if (this.inProgress++ === 0) this.activeSince = Date.now();
+      return () => {
+        if (--this.inProgress === 0) this.counts.activeMs += Date.now() - this.activeSince;
+      };
+    }
+
+    private get host() {
+      const host = this.durable;
+      if (!this.hooked) {
+        this.hooked = true;
+        const { deliver } = host.invoker;
+        host.invoker.deliver = async (event, options) => {
+          const end = this.begin();
+          const started = Date.now();
+          this.counts.deliveries++;
+          try {
+            return await deliver(event, options);
+          } finally {
+            this.counts.deliveryMs += Date.now() - started;
+            end();
+          }
+        };
+      }
+      return host;
+    }
+
+    async fetch(request: Request) {
+      if (!new URL(request.url).pathname.endsWith("/trigger")) {
+        this.counts.observe++;
+        return this.host.fetch(request);
+      }
+      this.counts.trigger++;
+      const end = this.begin();
+      try {
+        return await this.host.fetch(request);
+      } finally {
+        end();
+      }
+    }
+
+    async alarm() {
+      this.counts.alarm++;
+      const end = this.begin();
+      try {
+        await this.host.alarm();
+      } finally {
+        end();
+      }
+    }
+
     async openGate(id: string) {
-      await this.durable.runtime.stores.store(Gate, id).update((draft) => {
-        draft.open = true;
-      });
+      this.counts.rpc++;
+      const end = this.begin();
+      try {
+        await this.host.runtime.stores.store(Gate, id).update((draft) => {
+          draft.open = true;
+        });
+      } finally {
+        end();
+      }
+    }
+
+    usage(): Usage {
+      return { ...this.counts, storedBytes: this.storage.sql.databaseSize };
     }
   };
 }
@@ -47,11 +201,17 @@ export class InlineWorkflows extends createClass(false) {}
 // returns for a started execution.
 type System<Execution = any> = {
   start(scenario: Scenario, run: Run): Promise<Execution>;
-  startBurst(run: Run, count: number): Promise<void>;
+  startBurst(run: Run, count: number): Promise<Execution[]>;
   // Resolves when the execution has completed, in the way a caller in a
-  // Worker waits for a result.
-  completed(execution: Execution): Promise<void>;
+  // Worker waits for a result. `pollMs` is the interval between two reads of
+  // the status, where the system has no call that waits.
+  completed(execution: Execution, pollMs?: number): Promise<void>;
   signal(execution: Execution, run: Run): Promise<void>;
+  // The cost pass reads what a Durable object has been billed for from the
+  // object, and what Cloudflare Workflows has, later, from Cloudflare's
+  // analytics by instance ID.
+  usage?(): Promise<Usage>;
+  instanceIds?(execution: Execution, scenario: Scenario): string[];
 };
 
 function durable(namespace: Namespace<WorkflowsStub>, object: string): System<string> {
@@ -64,14 +224,14 @@ function durable(namespace: Namespace<WorkflowsStub>, object: string): System<st
     (await sdk.trigger({ workflowId, params } as never)).executionId;
   return {
     start: (scenario, run) => trigger(scenario, run),
-    async startBurst(run, count) {
-      await Promise.all(range(count).map((index) => trigger("burst", { ...run, index })));
-    },
+    startBurst: (run, count) =>
+      Promise.all(range(count).map((index) => trigger("burst", { ...run, index }))),
     async completed(executionId) {
       const view = await sdk.wait(executionId, { timeout: 120_000 });
       if (view?.status !== "completed") throw new Error(`execution ${JSON.stringify(view)}`);
     },
     signal: (_, run) => stub.openGate(run.run),
+    usage: () => stub.usage(),
   };
 }
 
@@ -82,12 +242,13 @@ function native(binding: NativeBinding): System<NativeInstance> {
   return {
     start: (scenario, run) => binding.create({ params: { scenario, ...run } }),
     async startBurst(run, count) {
-      const { errors } = await binding.createBatch({
+      const { created, errors } = await binding.createBatch({
         instances: range(count).map((index) => ({ params: { scenario: "burst", ...run, index } })),
       });
       if (errors.length) throw new Error(`createBatch: ${JSON.stringify(errors.slice(0, 3))}`);
+      return created;
     },
-    async completed(instance) {
+    async completed(instance, pollMs = NATIVE_POLL_MS) {
       const deadline = Date.now() + 120_000;
       for (;;) {
         const { status, error } = await instance.status();
@@ -95,10 +256,14 @@ function native(binding: NativeBinding): System<NativeInstance> {
         if (status === "errored" || status === "terminated" || Date.now() > deadline) {
           throw new Error(`instance ${status}: ${JSON.stringify(error)}`);
         }
-        await sleep(NATIVE_POLL_MS);
+        await sleep(pollMs);
       }
     },
     signal: (instance) => instance.sendEvent({ type: "go", payload: {} }),
+    instanceIds: (instance, scenario) => [
+      instance.id,
+      ...(scenario === "children" ? range(sizes.children).map((i) => `${instance.id}-c${i}`) : []),
+    ],
   };
 }
 
@@ -214,6 +379,45 @@ const measures: Record<Scenario, (context: Context) => Promise<Metrics>> = {
 
 const MARK_TIMEOUT_MS = 120_000;
 const SIGNAL_AFTER_MS = 3_000;
+// A Durable object's last delivery settles just after the caller sees the result.
+const COST_SETTLE_MS = 2_000;
+const COST_POLL_MS = 250;
+
+// Runs a scenario with step functions that make no call to the clock, and
+// returns what it was billed for: the counts of the Durable object, or the
+// IDs of the Cloudflare Workflows instances.
+async function cost(system: System, scenario: Scenario, bench: string, repeats: number) {
+  const before = await system.usage?.();
+  const instances: string[] = [];
+  let executions = 0;
+  for (let i = 0; i < repeats; i++) {
+    const run = { bench, run: crypto.randomUUID(), quiet: true };
+    let started: unknown[];
+    if (scenario === "burst") {
+      started = await system.startBurst(run, sizes.burst);
+    } else {
+      started = [await system.start(scenario, run)];
+      if (scenario === "signal") {
+        await sleep(SIGNAL_AFTER_MS);
+        await system.signal(started[0], run);
+      }
+    }
+    await Promise.all(started.map((execution) => system.completed(execution, COST_POLL_MS)));
+    executions += started.length;
+    instances.push(...started.flatMap((e) => system.instanceIds?.(e, scenario) ?? []));
+  }
+  if (!before) return { executions, instances };
+  await sleep(COST_SETTLE_MS);
+  const after = await system.usage!();
+  if (after.instance !== before.instance) throw new Error("the object restarted during the pass");
+  const usage = Object.fromEntries(
+    Object.entries(after).map(([key, value]) => [
+      key,
+      typeof value === "number" ? value - (before as Record<string, any>)[key] : value,
+    ])
+  );
+  return { executions, usage };
+}
 
 const json = (value: unknown, status = 200) =>
   new Response(JSON.stringify(value), { status, headers: { "content-type": "application/json" } });
@@ -269,7 +473,7 @@ export class Bench extends DurableObject<Env> {
   }
 
   async fetch(request: Request) {
-    const { searchParams } = new URL(request.url);
+    const { searchParams, pathname } = new URL(request.url);
     const bench = searchParams.get("bench")!;
     const scenario = searchParams.get("scenario") as Scenario;
     const name = searchParams.get("system") as SystemName;
@@ -280,6 +484,13 @@ export class Bench extends DurableObject<Env> {
       name === "native"
         ? native(this.env.NATIVE)
         : durable(name === "durable" ? this.env.WORKFLOWS : this.env.INLINE, bench);
+    if (pathname === "/cost") {
+      try {
+        return json(await cost(system, scenario, bench, Number(searchParams.get("repeats") ?? 1)));
+      } catch (err) {
+        return json({ error: String(err) }, 500);
+      }
+    }
     const run = { bench, run: crypto.randomUUID() };
     try {
       const metrics = await measures[scenario]({

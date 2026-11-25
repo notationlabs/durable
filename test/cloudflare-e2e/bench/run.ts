@@ -1,4 +1,12 @@
-import { SCENARIOS, SYSTEMS, sizes, type Scenario, type SystemName } from "./shared";
+import {
+  SCENARIOS,
+  SYSTEMS,
+  sizes,
+  systemTitles as columns,
+  workflowTitles,
+  type Scenario,
+  type SystemName,
+} from "./shared";
 
 // Usage: BENCH_URL=https://durable-bench.<subdomain>.workers.dev BENCH_SECRET=... tsx run.ts [scenario ...]
 // Prints the results as Markdown on stdout and progress on stderr.
@@ -24,58 +32,37 @@ const iterations: Record<Scenario, number> = {
   burst: 9,
 };
 
-const columns: Record<SystemName, string> = {
-  native: "Cloudflare Workflows",
-  durable: "Durable",
-  inline: "Durable, deliveries in the object",
-};
-
 const rows: { scenario: Scenario; metric: string; workflow: string; measured: string }[] = [
-  { scenario: "start", metric: "accepted", workflow: "One step", measured: "Trigger call returns" },
+  { scenario: "start", metric: "accepted", workflow: workflowTitles.start, measured: "Trigger call returns" },
   { scenario: "start", metric: "firstStep", workflow: "", measured: "Trigger to the step function starting" },
   { scenario: "start", metric: "result", workflow: "", measured: "Trigger to the caller holding the result" },
-  {
-    scenario: "chain",
-    metric: "perStep",
-    workflow: `${sizes.chainSteps} steps in sequence`,
-    measured: "Time per step",
-  },
-  {
-    scenario: "payload",
-    metric: "perStep",
-    workflow: `${sizes.payloadSteps} steps that each return ${sizes.payloadBytes / 1000} KB`,
-    measured: "Time per step",
-  },
+  { scenario: "chain", metric: "perStep", workflow: workflowTitles.chain, measured: "Time per step" },
+  { scenario: "payload", metric: "perStep", workflow: workflowTitles.payload, measured: "Time per step" },
   {
     scenario: "sleep",
     metric: "late",
-    workflow: `${sizes.sleeps} sleeps of ${sizes.sleepMs / 1000} s`,
+    workflow: workflowTitles.sleep,
     measured: `Time beyond ${sizes.sleepMs / 1000} s until the next step starts`,
   },
   {
     scenario: "fanout",
     metric: "over",
-    workflow: `${sizes.fanOut} concurrent steps that each wait ${sizes.fanOutMs} ms`,
+    workflow: workflowTitles.fanout,
     measured: `Time beyond ${sizes.fanOutMs} ms until the next step starts`,
   },
   {
     scenario: "signal",
     metric: "wake",
-    workflow: "A wait for a signal from outside",
+    workflow: workflowTitles.signal,
     measured: "Signal sent to the next step starting",
   },
   {
     scenario: "children",
     metric: "total",
-    workflow: `A parent that runs ${sizes.children} one-step children`,
+    workflow: workflowTitles.children,
     measured: "Children started to all results joined",
   },
-  {
-    scenario: "burst",
-    metric: "accepted",
-    workflow: `${sizes.burst} three-step executions triggered at once`,
-    measured: "Trigger calls return",
-  },
+  { scenario: "burst", metric: "accepted", workflow: workflowTitles.burst, measured: "Trigger calls return" },
   { scenario: "burst", metric: "median", workflow: "", measured: "Trigger to the median execution's last step" },
   { scenario: "burst", metric: "last", workflow: "", measured: "Trigger to the last execution's last step" },
 ];
@@ -201,17 +188,17 @@ const roundTripMedians = SYSTEMS.map((system) => {
 
 console.log(`# Cloudflare Workflows and Notation Durable on a deployed Worker
 
-Measured on ${new Date().toISOString().slice(0, 10)}. Every figure is a time, and a lower one is better.
+Measured on ${new Date().toISOString().slice(0, 10)}. In every table a lower figure is better.
 
-## Median
+## Time: median
 
 ${table(50, shown)}
 
-## 90th percentile
+## Time: 90th percentile
 
 ${table(90, shown)}
 
-## How to read it
+## How to read the times
 
 - **The systems** – All three run in one Worker. "Durable" is \`WorkflowObject\` with its defaults, which runs each delivery in another instance of the class. "Durable, deliveries in the object" sets \`isolateDeliveries: false\`.
 - **The objects** – One Durable object holds every execution it is given. The measurements are spread evenly over ${benches.length} such objects for each Durable column, because the time of a call between two objects depends on where Cloudflare runs them.
