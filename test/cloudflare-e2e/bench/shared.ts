@@ -98,19 +98,27 @@ export type Namespace<Stub = unknown> = {
 };
 
 export type Clock = {
-  mark(run: string, label: string, call: 0 | 1): Promise<void>;
+  warm(): void;
+  mark(run: string, label: string, call: 0 | 1, warmMs?: number): Promise<void>;
 };
 
 // Reports that a step function has started, by calling the `Bench` object
-// that is the clock of the run. The second call leaves when the first has
-// returned, so the time between the two arrivals is one round trip to the
-// clock. The driver subtracts half of it from the first arrival to find when
-// the step function started, and adds half to the second to find when it
-// carried on.
+// that is the clock of the run.
+// 1. A call on a new stub takes longer than the next call on it, so the first
+//    call only warms the stub. The step function times it with its own clock,
+//    which is current after an awaited call.
+// 2. The second call leaves when the first has returned, and the third when
+//    the second has returned. The time between their arrivals is one round
+//    trip to the clock.
+// The driver takes the warm-up and half a round trip off the second call's
+// arrival to find when the step function started, and adds half a round trip
+// to the third call's arrival to find when it carried on.
 export async function mark(env: { BENCH: Namespace<Clock> }, run: Run, label: string) {
   if (run.quiet) return;
   const stub = env.BENCH.get(env.BENCH.idFromName(run.bench));
-  await stub.mark(run.run, label, 0);
+  const before = Date.now();
+  await stub.warm();
+  await stub.mark(run.run, label, 0, Date.now() - before);
   await stub.mark(run.run, label, 1);
 }
 

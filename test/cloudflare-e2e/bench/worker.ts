@@ -282,8 +282,9 @@ function native(binding: NativeBinding): System<NativeInstance> {
   };
 }
 
-// The arrival times of the two calls that `mark` in `shared.ts` makes.
-type Marks = Map<string, [number?, number?]>;
+// The arrival times of the two timed calls that `mark` in `shared.ts` makes,
+// and how long its warm-up call took.
+type Marks = Map<string, [number?, number?, number?]>;
 type Metrics = Record<string, number | number[]>;
 type Context = {
   system: System;
@@ -299,9 +300,9 @@ type Marked = {
 };
 
 function read(marks: Marks, label: string): Marked {
-  const [first, second] = marks.get(label) as [number, number];
+  const [first, second, warmMs] = marks.get(label) as [number, number, number];
   const roundTrip = second - first;
-  return { started: first - roundTrip / 2, reported: second + roundTrip / 2, roundTrip };
+  return { started: first - warmMs - roundTrip / 2, reported: second + roundTrip / 2, roundTrip };
 }
 
 // Each function runs one execution, or one burst, and returns its
@@ -447,13 +448,18 @@ export class Bench extends DurableObject<Env> {
   private runs = new Map<string, Marks>();
   private pending: { run: string; labels: string[]; resolve(): void }[] = [];
 
-  mark(run: string, label: string, call: 0 | 1) {
+  warm() {}
+
+  mark(run: string, label: string, call: 0 | 1, warmMs = 0) {
     const now = Date.now();
     const marks = this.marksOf(run);
     let times = marks.get(label);
     if (!times) marks.set(label, (times = []));
     // A step function that runs twice keeps its first times.
-    times[call] ??= now;
+    if (times[call] === undefined) {
+      times[call] = now;
+      if (call === 0) times[2] = warmMs;
+    }
     this.pending = this.pending.filter((waiter) => {
       if (waiter.run !== run || !this.complete(marks, waiter.labels)) return true;
       waiter.resolve();
